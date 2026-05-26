@@ -1,0 +1,65 @@
+{
+  "business_hours": {
+    "start": "08:00",
+    "end": "23:00"
+  },
+  "llm": {
+    "model_name": "qwen3.6-flash",
+    "api_key": "your-api-key-here",
+    "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "max_tokens": 256,
+    "temperature": 0.5,
+    "transport_retry_max": 1,
+    "request_timeout_sec": 35
+  },
+  "embedder": {
+    "model_name": "text-embedding-v4",
+    "api_key": "your-api-key-here",
+    "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  },
+  "knowledge_base": {
+    "contents_db_path": "./Agent/CustomerAgent/knowledge",
+    "vector_db_path": ""
+  },
+  "prompt": {
+    "description": "角色：美甲灯类目电商客服（售前/售后与产品答疑）。",
+    "additional_context": "",
+    "instructions": [],
+    "append_natural_style": true
+  },
+  "db_path": "",
+  "chat": {
+    "manual_mode_send_notice": false,
+    "ai_watchdog_enabled": true,
+    "ai_watchdog_escalate_sec": 150,
+    "ai_watchdog_escalate_notice": "",
+    "queue_degrade_enabled": true,
+    "queue_degrade_threshold_sec": 120,
+    "queue_degrade_notice": "感谢亲亲选择我们的产品，当前咨询较多请耐心等待；如需人工请直接回复「人工」。",
+    "queue_degrade_emit_assist": true,
+    "queue_p95_cap_sec": 30,
+    "queue_stats_window_size": 100,
+    "queue_stats_recent_size": 20,
+    "queue_prior_duration_sec": 8,
+    "queue_stats_min_samples": 10,
+    "llm_sync_retry_enabled": true,
+    "llm_sync_retry_delay_sec": 1.5,
+    "image_video_forward_human": true,
+    "image_video_buyer_notice": "",
+    "message_consumer_max_concurrent": 28,
+    "memory": {
+      "enabled": true,
+      "short_term_rounds": 10,
+      "short_term_rounds_min": 6,
+      "short_term_rounds_max": 12,
+      "max_messages_load": 80,
+      "summarize_with_llm": false
+    }
+  },
+  "pinduoduo_open": {
+    "enabled": false,
+    "client_id": "your-client-id-here",
+    "client_secret": "your-client-secret-here",
+    "access_token": "your-access-token-here"
+  }
+}

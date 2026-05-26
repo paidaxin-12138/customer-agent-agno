@@ -1,0 +1,357 @@
+"""
+人工协助弹窗 - 当检测到转人工关键词时显示
+显示买家信息、账号信息和最近消息，支持一键跳转对话
+"""
+from typing import Dict, Any, Optional
+
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtWidgets import (
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QWidget,
+    QGraphicsDropShadowEffect,
+)
+
+from qfluentwidgets import FluentIcon as FIF
+from utils.logger_loguru import get_logger
+
+logger = get_logger("HumanAssistDialog")
+
+
+class HumanAssistDialog(QDialog):
+    """人工协助弹窗"""
+
+    # 点击去处理时发出的信号，携带跳转所需数据
+    go_to_chat_requested = pyqtSignal(dict)
+
+    def __init__(self, payload: Dict[str, Any], parent=None):
+        super().__init__(parent)
+        self.payload = payload
+        self.setWindowTitle("🔔 买家申请转人工")
+        self.setModal(False)  # 非模态，不阻塞主窗口
+        self.setFixedSize(450, 280)
+        
+        logger.info(f"人工协助弹窗初始化：buyer={payload.get('buyer_nickname', '未知')}")
+
+        # 窗口标志：保持在最前
+        # 使用 Dialog 标志，确保在 macOS 上正常显示
+        self.setWindowFlags(
+            Qt.WindowType.Dialog
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.MSWindowsFixedSizeDialogHint  # 在 macOS 上也有助于保持窗口大小
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        # 不使用 WA_ShowWithoutActivating，确保窗口获得焦点
+
+        # 初始化 UI
+        self._init_ui()
+        
+        logger.info("人工协助弹窗 UI 初始化完成")
+
+        # 不再自动关闭，等待用户手动操作
+        # 如果用户 30 秒内没有操作，才自动关闭
+        self._auto_close_timer = QTimer(self)
+        self._auto_close_timer.timeout.connect(self.close)
+        self._auto_close_timer.setSingleShot(True)
+        self._auto_close_timer.start(30000)  # 30 秒后自动关闭
+        logger.info("弹窗将在 30 秒后自动关闭")
+
+    def _init_ui(self):
+        """初始化界面"""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # 创建主容器（带圆角和阴影）
+        container = QWidget(self)
+        container.setObjectName("humanAssistContainer")
+        container.setStyleSheet("""
+            QWidget#humanAssistContainer {
+                background-color: #1E1E1E;
+                border-radius: 12px;
+                border: 1px solid #3A3A3A;
+            }
+        """)
+
+        # 添加阴影效果
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(30)
+        shadow.setXOffset(0)
+        shadow.setYOffset(4)
+        shadow.setColor(QColor(0, 0, 0, 100))
+        container.setGraphicsEffect(shadow)
+
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(24, 20, 24, 20)
+        container_layout.setSpacing(16)
+
+        # 标题栏
+        title_label = QLabel("🔔 买家申请转人工")
+        title_label.setStyleSheet("""
+            QLabel {
+                color: #FFFFFF;
+                font-size: 16px;
+                font-weight: 700;
+                font-family: "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+            }
+        """)
+        container_layout.addWidget(title_label)
+
+        # 信息区域
+        info_widget = self._create_info_widget()
+        container_layout.addWidget(info_widget)
+
+        # 按钮区域
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(12)
+
+        # 忽略按钮
+        ignore_btn = QPushButton("稍后再说")
+        ignore_btn.setObjectName("ignoreButton")
+        ignore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        ignore_btn.setStyleSheet("""
+            QPushButton#ignoreButton {
+                background-color: transparent;
+                color: #8E8E93;
+                border: 1px solid #3A3A3A;
+                border-radius: 8px;
+                padding: 10px 20px;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            QPushButton#ignoreButton:hover {
+                background-color: #2C2C2E;
+                color: #FFFFFF;
+            }
+            QPushButton#ignoreButton:pressed {
+                background-color: #3A3A3A;
+            }
+        """)
+        ignore_btn.clicked.connect(self.close)
+
+        # 去处理按钮
+        handle_btn = QPushButton("去处理")
+        handle_btn.setObjectName("handleButton")
+        handle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        handle_btn.setStyleSheet("""
+            QPushButton#handleButton {
+                background-color: #0A84FF;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 24px;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QPushButton#handleButton:hover {
+                background-color: #0070E0;
+            }
+            QPushButton#handleButton:pressed {
+                background-color: #0058B8;
+            }
+        """)
+        handle_btn.clicked.connect(self._on_handle_clicked)
+
+        button_layout.addStretch()
+        button_layout.addWidget(ignore_btn)
+        button_layout.addWidget(handle_btn)
+        container_layout.addLayout(button_layout)
+
+        layout.addWidget(container)
+
+    def _create_info_widget(self) -> QWidget:
+        """创建信息展示区域"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        # 买家信息
+        buyer_layout = QHBoxLayout()
+        buyer_layout.setSpacing(8)
+
+        # 买家头像（字母）
+        avatar_label = QLabel(self._get_avatar_letter())
+        avatar_label.setFixedSize(40, 40)
+        avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        avatar_label.setStyleSheet("""
+            QLabel {
+                background-color: #0A84FF;
+                color: #FFFFFF;
+                border-radius: 20px;
+                font-size: 18px;
+                font-weight: 600;
+                font-family: "SF Pro Text";
+            }
+        """)
+        buyer_layout.addWidget(avatar_label)
+
+        # 买家名称
+        buyer_name = self.payload.get("buyer_nickname", "买家")
+        buyer_name_label = QLabel(buyer_name)
+        buyer_name_label.setStyleSheet("""
+            QLabel {
+                color: #FFFFFF;
+                font-size: 14px;
+                font-weight: 600;
+                font-family: "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+            }
+        """)
+        buyer_layout.addWidget(buyer_name_label)
+
+        buyer_layout.addStretch()
+        layout.addLayout(buyer_layout)
+
+        # 账号信息
+        login_username = self.payload.get("login_username", "")
+        if not login_username:
+            login_username = self.payload.get("account_name", "未知账号")
+        
+        account_info = self._create_info_row(
+            "🏪 账号名称",
+            login_username,
+        )
+        layout.addWidget(account_info)
+
+        # 店铺信息（如果有）
+        shop_name = self.payload.get("shop_name", "")
+        if shop_name:
+            shop_info = self._create_info_row("📦 店铺", shop_name)
+            layout.addWidget(shop_info)
+
+        # 最近消息
+        message_label = QLabel("💬 最近消息")
+        message_label.setStyleSheet("""
+            QLabel {
+                color: #8E8E93;
+                font-size: 12px;
+                font-weight: 600;
+                font-family: "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+            }
+        """)
+        layout.addWidget(message_label)
+
+        # 消息内容
+        question = self.payload.get("question", "")
+        if len(question) > 150:
+            question = question[:150] + "..."
+
+        message_content = QLabel(question or "无消息内容")
+        message_content.setWordWrap(True)
+        message_content.setFont(QFont("SF Pro Text", 13))
+        message_content.setStyleSheet("""
+            QLabel {
+                color: #E5E5EA;
+                background-color: #2C2C2E;
+                border-radius: 8px;
+                padding: 12px;
+                line-height: 1.5;
+            }
+        """)
+        message_content.setMinimumHeight(60)
+        layout.addWidget(message_content)
+
+        return widget
+
+    def _create_info_row(self, label_text: str, value_text: str) -> QWidget:
+        """创建单行信息"""
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        label = QLabel(label_text)
+        label.setStyleSheet("""
+            QLabel {
+                color: #8E8E93;
+                font-size: 11px;
+                font-family: "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+            }
+        """)
+        label.setFixedWidth(100)
+        layout.addWidget(label)
+
+        value = QLabel(value_text)
+        value.setStyleSheet("""
+            QLabel {
+                color: #E5E5EA;
+                font-size: 12px;
+                font-weight: 500;
+                font-family: "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+            }
+        """)
+        value.setWordWrap(True)
+        layout.addWidget(value)
+
+        layout.addStretch()
+        return widget
+
+    def _get_avatar_letter(self) -> str:
+        """获取买家头像字母"""
+        buyer_name = self.payload.get("buyer_nickname", "买家")
+        if not buyer_name or buyer_name == "买家":
+            return "买"
+        return buyer_name[0].upper() if buyer_name.isascii() else buyer_name[0]
+
+    def _on_handle_clicked(self):
+        """点击去处理按钮"""
+        # 停止自动关闭定时器
+        self._auto_close_timer.stop()
+
+        # 发出跳转信号
+        self.go_to_chat_requested.emit(self.payload)
+
+        # 关闭弹窗
+        self.close()
+
+    def showEvent(self, event):
+        """窗口显示时的处理"""
+        super().showEvent(event)
+        
+        # 先激活窗口，确保它会被显示
+        self.activateWindow()
+        self.raise_()
+        
+        logger.info(f"人工协助弹窗已显示，位置：{self.x()}, {self.y()}")
+        
+        # 窗口居中显示
+        self._center_on_parent()
+        
+        # 再次激活，确保在最前面
+        QTimer.singleShot(100, self._bring_to_front)
+
+    def _bring_to_front(self):
+        """将窗口带到最前面"""
+        if self.isVisible():
+            self.activateWindow()
+            self.raise_()
+            logger.info("弹窗已带到最前面")
+
+    def _center_on_parent(self):
+        """在父窗口居中显示"""
+        if self.parent() and self.parent().isVisible():
+            parent_rect = self.parent().geometry()
+            my_rect = self.geometry()
+
+            # 计算居中位置
+            x = parent_rect.x() + (parent_rect.width() - my_rect.width()) // 2
+            y = parent_rect.y() + (parent_rect.height() - my_rect.height()) // 2
+
+            self.move(x, y)
+            logger.info(f"弹窗已居中到父窗口：{x}, {y}")
+        else:
+            # 如果没有父窗口或父窗口不可见，在屏幕居中
+            screen = self.window().screen()
+            if screen:
+                screen_geometry = screen.availableGeometry()
+                my_rect = self.geometry()
+                
+                x = screen_geometry.x() + (screen_geometry.width() - my_rect.width()) // 2
+                y = screen_geometry.y() + (screen_geometry.height() - my_rect.height()) // 2
+                
+                self.move(x, y)
+                logger.info(f"弹窗已在屏幕居中：{x}, {y}")
