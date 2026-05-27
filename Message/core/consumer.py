@@ -109,6 +109,19 @@ class MessageConsumer:
                         self.logger.debug(f"metadata enrich skipped: {e}")
                     metadata["user_key"] = user_key
 
+                    watchdog_epoch = 0
+                    try:
+                        from Message.handlers.ai_reply_watchdog import start_inbound_watchdog
+
+                        watchdog_epoch = await start_inbound_watchdog(
+                            wrapper.context,
+                            metadata,
+                            str(wrapper.context.content or ""),
+                        )
+                        metadata["_watchdog_epoch"] = watchdog_epoch
+                    except Exception as wd_err:
+                        self.logger.warning(f"inbound watchdog 启动失败: {wd_err}")
+
                     for handler in self.handlers:
                         try:
                             if handler.can_handle(wrapper.context):

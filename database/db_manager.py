@@ -4,7 +4,8 @@ from datetime import datetime
 from sqlalchemy import create_engine, func, or_, desc
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Tuple, Union
+from utils.chat_time import now_for_db
 from utils.logger_loguru import get_logger
 from database.models import Base, Channel, Shop, Account, Keyword, ChatSession, ChatMessage, QuickReply
 
@@ -41,6 +42,7 @@ class DatabaseManager:
         Base.metadata.create_all(self.engine)
         self._migrate_chat_session_memory_columns()
         self._migrate_ops_schema()
+        self._migrate_utc_timestamps_to_shanghai()
         
         self._initialized = True    
         # 初始化数据库
@@ -87,6 +89,58 @@ class DatabaseManager:
         except Exception as e:
             if hasattr(self, "logger"):
                 self.logger.warning(f"ops 表迁移跳过: {e}")
+
+    def _migrate_utc_timestamps_to_shanghai(self) -> None:
+        """历史库 naive UTC 时间 +8h 转为上海墙钟（仅执行一次）。"""
+        import sqlite3
+
+        path = self.engine.url.database
+        if not path:
+            return
+        conn = sqlite3.connect(path)
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)"
+            )
+            row = conn.execute(
+                "SELECT value FROM app_meta WHERE key='timestamps_shanghai_v1'"
+            ).fetchone()
+            if row and str(row[0]) == "1":
+                return
+            patches = [
+                ("chat_sessions", ("updated_at", "created_at")),
+                ("chat_messages", ("created_at", "read_at")),
+                ("ops_sessions", ("updated_at",)),
+                ("ops_traces", ("created_at",)),
+                ("ops_knowledge_revisions", ("created_at",)),
+                ("ops_low_confidence", ("updated_at",)),
+                ("ops_tickets", ("created_at", "updated_at")),
+                ("ops_eval_runs", ("created_at",)),
+                ("ops_cost_logs", ("created_at",)),
+                ("ops_security_audits", ("created_at",)),
+            ]
+            n = 0
+            for table, cols in patches:
+                for col in cols:
+                    try:
+                        cur = conn.execute(
+                            f"UPDATE {table} SET {col} = datetime({col}, '+8 hours') "
+                            f"WHERE {col} IS NOT NULL"
+                        )
+                        n += cur.rowcount
+                    except sqlite3.OperationalError:
+                        pass
+            conn.execute(
+                "INSERT OR REPLACE INTO app_meta (key, value) VALUES "
+                "('timestamps_shanghai_v1', '1')"
+            )
+            conn.commit()
+            if n > 0:
+                self.logger.info(f"时间字段 UTC→上海迁移: 约 {n} 行")
+        except Exception as e:
+            self.logger.warning(f"时间迁移失败: {e}")
+        finally:
+            conn.close()
 
     def init_db(self):
         """初始化渠道信息"""
@@ -1075,11 +1129,13 @@ class DatabaseManager:
                 )
                 .first()
             )
-            now = datetime.utcnow()
+            now = now_for_db()
             if s:
                 s.buyer_nickname = buyer_nickname or s.buyer_nickname
                 if avatar_url:
                     s.avatar_url = avatar_url
+                if s.status == "closed":
+                    s.status = "active"
                 s.updated_at = now
                 session.commit()
                 return s.id
@@ -1116,8 +1172,8 @@ class DatabaseManager:
             if not s:
                 return False
             s.last_message = message
-            s.last_message_time = t or datetime.utcnow()
-            s.updated_at = datetime.utcnow()
+            s.last_message_time = t or now_for_db()
+            s.updated_at = now_for_db()
             session.commit()
             return True
         except SQLAlchemyError as e:
@@ -1134,13 +1190,78 @@ class DatabaseManager:
             if not s:
                 return False
             s.status = "closed"
-            s.updated_at = datetime.utcnow()
+            s.updated_at = now_for_db()
             session.commit()
             return True
         except SQLAlchemyError as e:
             session.rollback()
             self.logger.error(f"close_chat_session 失败: {e}")
             return False
+        finally:
+            session.close()
+
+    def close_idle_chat_sessions(self, idle_seconds: int = 300) -> List[Tuple[int, str, str]]:
+        """
+        买家最后一条消息超过 idle_seconds 的 active 会话标为 closed（已解决）。
+
+        跳过：当前在「实时聊天」中打开的会话；从未收到买家消息的会话。
+
+        Returns:
+            [(account_id, buyer_uid, account_key), ...]
+        """
+        from datetime import timedelta
+
+        from database.chat_persist import is_active_chat
+        from utils.chat_time import shanghai_naive_now
+
+        now = shanghai_naive_now()
+        cutoff = now - timedelta(seconds=int(idle_seconds))
+        closed: List[Tuple[int, str, str]] = []
+        session = self.get_session()
+        try:
+            rows = (
+                session.query(ChatSession)
+                .filter(ChatSession.status == "active")
+                .all()
+            )
+            for cs in rows:
+                if is_active_chat(int(cs.account_id), str(cs.buyer_uid)):
+                    continue
+                last_customer = (
+                    session.query(func.max(ChatMessage.sent_at))
+                    .filter(
+                        ChatMessage.session_id == cs.id,
+                        ChatMessage.sender_type == "customer",
+                    )
+                    .scalar()
+                )
+                if last_customer is None:
+                    continue
+                if last_customer > cutoff:
+                    continue
+                cs.status = "closed"
+                cs.updated_at = now_for_db()
+                acc = (
+                    session.query(Account, Shop, Channel)
+                    .join(Shop, Account.shop_id == Shop.id)
+                    .join(Channel, Shop.channel_id == Channel.id)
+                    .filter(Account.id == cs.account_id)
+                    .first()
+                )
+                account_key = ""
+                if acc:
+                    _acc, _shop, _ch = acc
+                    account_key = (
+                        f"{_ch.channel_name}:{_shop.shop_id}:{_acc.username}"
+                    )
+                closed.append((int(cs.account_id), str(cs.buyer_uid), account_key))
+            if closed:
+                session.commit()
+            return closed
+        except SQLAlchemyError as e:
+            session.rollback()
+            self.logger.error(f"close_idle_chat_sessions 失败: {e}")
+            return []
         finally:
             session.close()
 
@@ -1151,7 +1272,7 @@ class DatabaseManager:
             if not s:
                 return False
             s.ai_mode = ai_mode
-            s.updated_at = datetime.utcnow()
+            s.updated_at = now_for_db()
             session.commit()
             return True
         except SQLAlchemyError as e:
@@ -1198,7 +1319,7 @@ class DatabaseManager:
                 s.long_term_summary = long_term_summary
             if memory_summary_through_id is not None:
                 s.memory_summary_through_id = memory_summary_through_id
-            s.updated_at = datetime.utcnow()
+            s.updated_at = now_for_db()
             session.commit()
             return True
         except SQLAlchemyError as e:
@@ -1233,7 +1354,7 @@ class DatabaseManager:
                 )
                 if ex:
                     return ex.id
-            now = datetime.utcnow()
+            now = now_for_db()
             st = sent_at or now
             msg = ChatMessage(
                 session_id=session_id,
@@ -1343,7 +1464,7 @@ class DatabaseManager:
     def mark_chat_messages_read(self, session_id: int) -> bool:
         session = self.get_session()
         try:
-            now = datetime.utcnow()
+            now = now_for_db()
             session.query(ChatMessage).filter(
                 ChatMessage.session_id == session_id,
                 ChatMessage.sender_type == "customer",

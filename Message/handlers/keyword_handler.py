@@ -130,7 +130,11 @@ class KeywordDetectionHandler(BaseHandler):
                 # 固定转人工话术：先告知用户正在上报
                 try:
                     sender = SendMessage(shop_id, user_id)
-                    sender.send_text(from_uid, self._HUMAN_TRANSFER_NOTICE)
+                    result = sender.send_text(from_uid, self._HUMAN_TRANSFER_NOTICE)
+                    if isinstance(result, dict) and result.get("success"):
+                        from Message.handlers.ai_reply_watchdog import notify_outbound_reply
+
+                        notify_outbound_reply(context, metadata)
                 except Exception as e:
                     self.logger.debug(f"发送转人工提示失败: {e}")
             

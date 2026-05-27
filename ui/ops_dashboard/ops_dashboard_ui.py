@@ -1,5 +1,5 @@
 """
-运营看板：会话、链路、知识、低置信度、工单、评测、成本、安全审计。
+后台看板：会话、链路、知识、低置信度、工单、评测、成本、安全审计。
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ logger = get_logger(__name__)
 class OpsDashboardUI(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName("运营看板")
+        self.setObjectName("后台看板")
         self._repo = get_ops_repository()
         self._trace_cache: List[Dict[str, Any]] = []
         self._init_ui()
@@ -42,7 +42,7 @@ class OpsDashboardUI(QFrame):
 
         head = QHBoxLayout()
         title_col = QVBoxLayout()
-        title_col.addWidget(SubtitleLabel("运营看板"))
+        title_col.addWidget(SubtitleLabel("后台看板"))
         title_col.addWidget(
             CaptionLabel(
                 "会话列表 · 链路追踪 · 知识管理 · 低置信度池 · 工单 · 评测 · 成本 · 安全审计"
@@ -396,19 +396,32 @@ class OpsDashboardUI(QFrame):
             from Agent.CustomerAgent.agent_knowledge import knowledge_manager
 
             docs = knowledge_manager.get_all_documents()
-            n = 0
+            created = skipped = errors = 0
             for d in docs:
-                ok = self._repo.add_knowledge_revision(
-                    str(d.get("id", "")),
+                doc_id = str(d.get("id", "")).strip()
+                if not doc_id:
+                    continue
+                result = self._repo.add_knowledge_revision(
+                    doc_id,
                     str(d.get("title", d.get("filename", "未命名"))),
                     str(d.get("content", ""))[:8000],
                     status="published",
                     operator="sync",
                     note="从当前知识库同步",
+                    skip_if_unchanged=True,
                 )
-                if ok:
-                    n += 1
-            QMessageBox.information(self, "同步完成", f"已写入 {n} 条知识版本记录")
+                if result == "created":
+                    created += 1
+                elif result == "unchanged":
+                    skipped += 1
+                else:
+                    errors += 1
+            QMessageBox.information(
+                self,
+                "同步完成",
+                f"新增版本 {created} 条；内容未变已跳过 {skipped} 条"
+                + (f"；失败 {errors} 条" if errors else ""),
+            )
             self._load_knowledge()
         except Exception as e:
             QMessageBox.warning(self, "同步失败", str(e))

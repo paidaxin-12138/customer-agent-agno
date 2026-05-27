@@ -128,7 +128,7 @@ config_base = {
         "message_consumer_max_concurrent": 28,
         "ai_watchdog_enabled": True,
         "ai_watchdog_escalate_sec": 150,
-        "ai_watchdog_escalate_notice": "",
+        "ai_watchdog_escalate_notice": "不好意思亲亲，让你久等了",
         "queue_degrade_enabled": True,
         "queue_degrade_threshold_sec": 120,
         "queue_degrade_notice": (
@@ -142,6 +142,38 @@ config_base = {
         "queue_stats_min_samples": 10,
         "llm_sync_retry_enabled": True,
         "llm_sync_retry_delay_sec": 1.5,
+        "after_sales_apply_enabled": True,
+        "after_sales_apply_after_sales_type": 3,
+        "after_sales_apply_question_type": 1,
+        "after_sales_apply_refund_amount_fen": 0,
+        "after_sales_apply_card_message": None,
+        "after_sales_apply_follow_text": "亲，请点击上方卡片填写退换货申请，有问题随时跟我说~",
+        "after_sales_apply_cooldown_sec": 300,
+        "after_sales_apply_order_cache_ttl_sec": 3600,
+        "session_idle_resolve_enabled": True,
+        "session_idle_resolve_minutes": 5,
+        "session_idle_resolve_check_interval_sec": 60,
+        "after_sales_apply_check_orders_by_uid": True,
+        "after_sales_apply_no_orders_notice": (
+            "亲，暂未查到您在本店的订单记录，请确认是否用下单账号咨询，"
+            "或从订单页进入客服后再申请售后~"
+        ),
+        "after_sales_apply_orders_query_fail_notice": (
+            "亲，订单查询暂时失败，请稍后再试或回复「人工」协助处理~"
+        ),
+        "after_sales_apply_need_order_notice": (
+            "亲，麻烦发一下订单号（订单详情可复制，格式类似 250105-xxxxxxxx），"
+            "或从订单页进聊天发订单卡片，我这边给您发退换货申请~"
+        ),
+        "after_sales_apply_fail_notice": (
+            "亲，退换货申请卡片发送未成功，请您在订单里点击「申请售后」，或回复「人工」为您处理~"
+        ),
+        "after_sales_apply_already_in_progress_notice": (
+            "亲，看到您这笔订单已在售后处理中，请在订单详情查看进度；有疑问可回复「人工」。"
+        ),
+        "after_sales_apply_amount_unknown_notice": (
+            "亲，暂未获取到订单金额，请您在订单详情页直接申请售后，或回复「人工」协助处理~"
+        ),
     },
     "pinduoduo_open": {
         "enabled": True,

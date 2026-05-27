@@ -39,6 +39,15 @@ def get_human_assist_bus(parent=None) -> HumanAssistBus:
     global _BUS
     if _BUS is None:
         _BUS = HumanAssistBus(parent)
+        try:
+            from PyQt6.QtCore import QThread
+            from PyQt6.QtWidgets import QApplication
+
+            app = QApplication.instance()
+            if app is not None and _BUS.thread() is not app.thread():
+                _BUS.moveToThread(app.thread())
+        except Exception:
+            pass
     elif parent is not None and _BUS.parent() is None:
         _BUS.setParent(parent)
     return _BUS
@@ -129,6 +138,10 @@ def emit_human_assist(
 ) -> None:
     payload = build_escalation_payload(reason, context, metadata, question)
     if not payload:
+        _bus_log.warning(
+            "emit_human_assist 跳过：无法解析账号/买家 (reason={})",
+            reason,
+        )
         return
     labels = {
         "keyword_human": "买家申请转人工",
@@ -139,29 +152,37 @@ def emit_human_assist(
         "queue_degrade": "排队繁忙已自动安抚（可关注是否需人工）",
     }
     note = f"[系统] {labels.get(reason, reason)}"
-    try:
-        from database.chat_persist import persist_escalation_system_note
+    meta_copy = dict(metadata) if metadata else {}
 
-        persist_escalation_system_note(payload, note)
-    except Exception as e:
-        _bus_log.warning("persist_escalation_system_note 失败: {}", e)
-    get_human_assist_bus().assist_requested.emit(payload)
-    try:
-        from core.ops_telemetry import record_human_transfer
+    def _emit_on_main() -> None:
+        get_human_assist_bus().assist_requested.emit(payload)
+        _bus_log.info("已发出人工协助信号: reason={} buyer={}", reason, payload.get("buyer_uid"))
+        try:
+            from database.chat_persist import persist_escalation_system_note
 
-        sk = metadata.get("user_key") or (
-            f"{payload.get('channel_name', 'pinduoduo')}:"
-            f"{payload.get('shop_id', '')}:"
-            f"{payload.get('user_id', '')}:"
-            f"{payload.get('buyer_uid', '')}"
-        )
-        record_human_transfer(
-            str(sk),
-            str(payload.get("buyer_nickname") or payload.get("buyer_uid") or ""),
-            reason=labels.get(reason, reason),
-        )
-    except Exception as e:
-        _bus_log.debug("ops record_human_transfer: {}", e)
+            persist_escalation_system_note(payload, note)
+        except Exception as e:
+            _bus_log.warning("persist_escalation_system_note 失败: {}", e)
+        try:
+            from core.ops_telemetry import record_human_transfer
+
+            sk = meta_copy.get("user_key") or (
+                f"{payload.get('channel_name', 'pinduoduo')}:"
+                f"{payload.get('platform_shop_id', '')}:"
+                f"{payload.get('seller_user_id', '')}:"
+                f"{payload.get('buyer_uid', '')}"
+            )
+            record_human_transfer(
+                str(sk),
+                str(payload.get("buyer_nickname") or payload.get("buyer_uid") or ""),
+                reason=labels.get(reason, reason),
+            )
+        except Exception as e:
+            _bus_log.debug("ops record_human_transfer: {}", e)
+
+    from utils.qt_threading import run_on_main_thread
+
+    run_on_main_thread(_emit_on_main)
 
 
 def emit_buyer_conversation_ended(
@@ -176,13 +197,18 @@ def emit_buyer_conversation_ended(
     acc = db_manager.get_account(channel_name, platform_shop_id, seller_user_id)
     if not acc or not acc.get("id"):
         return
-    get_human_assist_bus().buyer_conversation_ended.emit(
-        {
-            "account_id": int(acc["id"]),
-            "channel_name": channel_name,
-            "platform_shop_id": platform_shop_id,
-            "seller_user_id": seller_user_id,
-            "login_username": login_username,
-            "buyer_uid": str(buyer_uid),
-        }
-    )
+    ended_payload = {
+        "account_id": int(acc["id"]),
+        "channel_name": channel_name,
+        "platform_shop_id": platform_shop_id,
+        "seller_user_id": seller_user_id,
+        "login_username": login_username,
+        "buyer_uid": str(buyer_uid),
+    }
+
+    def _on_main() -> None:
+        get_human_assist_bus().buyer_conversation_ended.emit(ended_payload)
+
+    from utils.qt_threading import run_on_main_thread
+
+    run_on_main_thread(_on_main)

@@ -84,6 +84,21 @@ class MainWindow(FluentWindow):
         
         # 延迟加载各个视图，让窗口先显示
         QTimer.singleShot(200, self.lazy_load_views)
+
+        from core.human_assist_ui import setup_human_assist_popup
+
+        setup_human_assist_popup(self)
+
+        from core.session_idle_closer import SessionIdleCloserService
+        from config import config as _cfg
+
+        _interval_ms = int(
+            _cfg.get("chat.session_idle_resolve_check_interval_sec", 60) or 60
+        ) * 1000
+        self._session_idle_closer = SessionIdleCloserService(
+            self, interval_ms=max(30_000, _interval_ms)
+        )
+        self._session_idle_closer.start()
     
     def initNavigation(self):
         """初始化导航栏 - macOS 风格"""
@@ -99,7 +114,7 @@ class MainWindow(FluentWindow):
         )
 
         self.addSubInterface(
-            self.ops_dashboard_view, FIF.PIE_SINGLE, '运营看板',
+            self.ops_dashboard_view, FIF.PIE_SINGLE, '后台看板',
             position=NavigationItemPosition.SCROLL
         )
         
@@ -152,7 +167,7 @@ class MainWindow(FluentWindow):
             if self.live_chat_view is None:
                 self.live_chat_view = Widget("实时聊天加载失败", self)
             if self.ops_dashboard_view is None:
-                self.ops_dashboard_view = Widget("运营看板加载失败", self)
+                self.ops_dashboard_view = Widget("后台看板加载失败", self)
             try:
                 self.initNavigation()
             except Exception as e2:
@@ -209,8 +224,8 @@ class MainWindow(FluentWindow):
             self.ops_dashboard_view = OpsDashboardUI(self)
             logger.info(f"OpsDashboardUI: {time.perf_counter()-t:.2f}s")
         except Exception as e:
-            logger.error(f"运营看板加载失败（界面将继续）: {e}")
-            self.ops_dashboard_view = Widget("运营看板暂不可用\n请重启应用或联系技术支持", self)
+            logger.error(f"后台看板加载失败（界面将继续）: {e}")
+            self.ops_dashboard_view = Widget("后台看板暂不可用\n请重启应用或联系技术支持", self)
 
         t = time.perf_counter()
         self.keyword_manager_view = KeywordManagerWidget(self)

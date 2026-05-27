@@ -26,6 +26,25 @@ def naive_shanghai_from_unix_ts(ts: Optional[float]) -> datetime:
         return shanghai_naive_now()
 
 
+def now_for_db() -> datetime:
+    """数据库写入用当前时间（上海墙钟 naive，与界面展示一致）。"""
+    return shanghai_naive_now()
+
+
+def format_display_datetime(t: Any) -> str:
+    """运营看板、列表等完整时间展示：YYYY-MM-DD HH:MM:SS（上海墙钟）。"""
+    if t is None:
+        return ""
+    if isinstance(t, datetime):
+        if t.tzinfo is not None:
+            local = t.astimezone(_SH).replace(tzinfo=None)
+        else:
+            local = t
+        return local.strftime("%Y-%m-%d %H:%M:%S")
+    s = str(t).strip()
+    return s[:19] if len(s) > 19 else s
+
+
 def format_chat_timestamp(t: Any) -> str:
     """界面气泡旁展示：月-日 时:分（按上海）。"""
     if t is None:

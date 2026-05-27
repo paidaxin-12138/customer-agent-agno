@@ -9,6 +9,7 @@ from .core.handlers import CatchAllHandler
 _cached_keyword_handler = None
 _cached_order_logistics_handler = None
 _cached_image_video_handler = None
+_cached_after_sales_apply_handler = None
 
 
 def _get_image_video_handler():
@@ -38,6 +39,23 @@ def _get_order_logistics_handler():
 
             get_logger("handler_chain").warning(f"OrderLogisticsHandler 导入失败: {e}")
     return _cached_order_logistics_handler
+
+
+def _get_after_sales_apply_handler():
+    """买家退换货意向 → 发送申请退换货卡片。"""
+    global _cached_after_sales_apply_handler
+    if _cached_after_sales_apply_handler is None:
+        try:
+            from .handlers.after_sales_apply_handler import AfterSalesApplyHandler
+
+            _cached_after_sales_apply_handler = AfterSalesApplyHandler()
+        except ImportError as e:
+            from utils.logger_loguru import get_logger
+
+            get_logger("handler_chain").warning(
+                f"AfterSalesApplyHandler 导入失败: {e}"
+            )
+    return _cached_after_sales_apply_handler
 
 
 def _get_keyword_handler():
@@ -72,6 +90,10 @@ def handler_chain(use_ai=True, businessHours=None, bot=None):
     iv_handler = _get_image_video_handler()
     if iv_handler is not None:
         handlers.append(iv_handler)
+
+    as_handler = _get_after_sales_apply_handler()
+    if as_handler is not None:
+        handlers.append(as_handler)
 
     keyword_handler = _get_keyword_handler()
     if keyword_handler is not None:

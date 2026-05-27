@@ -381,9 +381,12 @@ class ChatLiveWidget(QFrame):
         from core.human_assist_bus import get_human_assist_bus
 
         self._human_bus = get_human_assist_bus(self)
-        self._human_bus.buyer_conversation_ended.connect(self._on_buyer_conversation_ended)
-        self._human_bus.assist_requested.connect(self._on_human_assist_requested)
-        
+        self._human_bus.buyer_conversation_ended.connect(
+            self._on_buyer_conversation_ended,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        # assist_requested 由 main_ui.setup_human_assist_popup 统一挂接，避免延迟加载前无槽
+
         # 用于存储当前显示的人工协助弹窗
         self._current_assist_dialog = None
         
@@ -403,14 +406,15 @@ class ChatLiveWidget(QFrame):
             event_type = event.type()
             # 使用整数比较避免枚举值问题
             # KeyPress=6, FocusIn=8, FocusOut=9, MouseButtonPress=2, TextChange 用 QTextEdit 的信号
-            if event_type in (QEvent.Type.KeyPress, QEvent.Type.FocusIn, 
-                             QEvent.Type.MouseButtonPress) or \
-               (hasattr(QEvent.Type, 'TextChange') and event_type == QEvent.Type.TextChange):
-                # 重置定时器 - 用户有活动
-                if self._input_activity_timer.isActive():
-                    self._input_activity_timer.stop()
-                self._input_activity_timer.start(10000)  # 10 秒超时
-                self.logger.debug("输入框活动检测到，重置 10 秒定时器")
+            if event_type in (
+                QEvent.Type.KeyPress,
+                QEvent.Type.FocusIn,
+                QEvent.Type.MouseButtonPress,
+            ) or (
+                hasattr(QEvent.Type, "TextChange")
+                and event_type == QEvent.Type.TextChange
+            ):
+                self._reset_input_activity_timer()
             
             # Enter 键直接发送消息
             if event.type() == QEvent.Type.KeyPress:
@@ -973,10 +977,17 @@ class ChatLiveWidget(QFrame):
                 self._sync.sync_messages(int(self._filter_account_id))
         except Exception as e:
             self.logger.debug(f"同步钩子跳过: {e}")
+        try:
+            parent = self.window()
+            closer = getattr(parent, "_session_idle_closer", None)
+            if closer is not None:
+                closer.run_once()
+        except Exception as e:
+            self.logger.debug(f"空闲结案扫描: {e}")
         self._refresh_session_trees()
 
     def _on_hub_list_changed(self, _account_key: str):
-        self.account_list.reload()
+        self.account_list.reload(self._filter_account_id)
         self._refresh_session_trees()
     
     def _on_emoji_clicked(self) -> None:
@@ -1171,6 +1182,35 @@ class ChatLiveWidget(QFrame):
     def _on_account_filter(self, account_id):
         self._filter_account_id = account_id
         self._refresh_session_trees()
+        # 选中店铺后自动打开该店下首个会话（优先未读），否则右侧一直「未选择会话」
+        if account_id is not None:
+            self._auto_open_first_session()
+        elif self._current is None:
+            self._auto_open_first_session()
+
+    def _auto_open_first_session(self) -> None:
+        """打开当前筛选下第一个会话（未读优先，其次最近消息）。"""
+        best: Optional[tuple] = None
+        for i in range(self.session_tree.topLevelItemCount()):
+            parent = self.session_tree.topLevelItem(i)
+            for j in range(parent.childCount()):
+                child = parent.child(j)
+                cd = child.data(0, Qt.ItemDataRole.UserRole)
+                if not isinstance(cd, dict) or cd.get("type") != "session":
+                    continue
+                s = cd["session"]
+                unread = int(s.get("unread_count") or 0)
+                t = s.get("last_message_time") or s.get("updated_at")
+                ts = t.timestamp() if hasattr(t, "timestamp") else 0.0
+                key = (unread > 0, unread, ts)
+                if best is None or key > best[0]:
+                    best = (key, child)
+        if best is None:
+            return
+        child = best[1]
+        self.session_tree.setCurrentItem(child)
+        self.session_tree.scrollToItem(child)
+        self._on_session_clicked(child, 0)
 
     def _session_matches_filter(self, s: Dict[str, Any]) -> bool:
         if not self._session_filter:
@@ -1203,7 +1243,6 @@ class ChatLiveWidget(QFrame):
                 Qt.ItemDataRole.UserRole,
                 {"type": "account", "account": acc},
             )
-            parent.setFlags(parent.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self.session_tree.addTopLevelItem(parent)
             sessions = db_manager.get_chat_sessions(acc["id"], "active")
             for s in sessions:
@@ -1237,7 +1276,7 @@ class ChatLiveWidget(QFrame):
             return
         self._accounts = db_manager.list_all_accounts_for_chat()
         self._filter_account_id = aid
-        self.account_list.reload()
+        self.account_list.reload(aid)
         db_manager.get_or_create_chat_session(
             account_id=aid,
             platform_shop_id=str(payload["platform_shop_id"]),
@@ -1335,57 +1374,47 @@ class ChatLiveWidget(QFrame):
             account_id = int(payload.get("account_id", 0))
             buyer_uid = str(payload.get("buyer_uid", ""))
             buyer_nickname = str(payload.get("buyer_nickname", "买家"))
-            
-            self.logger.info(f"🚨 开始强制跳转到会话：{buyer_nickname}, account_id={account_id}")
-            
-            # 获取主窗口
+
+            self.logger.info(
+                f"🚨 开始强制跳转到会话：{buyer_nickname}, account_id={account_id}"
+            )
+
+            from utils.window_focus import (
+                restore_application_window,
+                switch_main_window_to_widget,
+            )
+
             parent_window = self.window()
-            if parent_window and hasattr(parent_window, 'stackedWidget'):
-                try:
-                    # 通过 stackedWidget 直接切换到实时聊天页面
-                    stacked_widget = parent_window.stackedWidget
-                    if stacked_widget:
-                        for i in range(stacked_widget.count()):
-                            widget = stacked_widget.widget(i)
-                            if widget is self:
-                                # 找到当前聊天 widget，切换到它
-                                stacked_widget.setCurrentIndex(i)
-                                self.logger.info(f"✅ 已切换到实时聊天页面（索引 {i}）")
-                                
-                                # 激活窗口，确保在前台
-                                parent_window.activateWindow()
-                                parent_window.raise_()
-                                parent_window.setFocus()
-                                
-                                # 等待页面切换和 UI 更新完成
-                                QTimer.singleShot(500, lambda: self._find_and_select_session_with_focus(account_id, buyer_uid, buyer_nickname))
-                                return
-                            
-                    # 如果找不到，直接尝试选中会话
-                    self.logger.warning("未找到实时聊天 widget，直接选中会话")
-                    QTimer.singleShot(200, lambda: self._find_and_select_session(account_id, buyer_uid, buyer_nickname))
-                        
-                except Exception as e:
-                    self.logger.error(f"切换页面失败：{e}", exc_info=True)
-                    # 失败时直接尝试选中会话
-                    QTimer.singleShot(200, lambda: self._find_and_select_session(account_id, buyer_uid, buyer_nickname))
-            else:
-                self.logger.error("无法获取主窗口或 stackedWidget")
-                # 直接尝试选中会话
-                QTimer.singleShot(200, lambda: self._find_and_select_session(account_id, buyer_uid, buyer_nickname))
-            
+            restore_application_window(parent_window)
+
+            if parent_window and switch_main_window_to_widget(parent_window, self):
+                self.logger.info("✅ 已恢复主窗口并切换到实时聊天页面")
+                QTimer.singleShot(
+                    500,
+                    lambda: self._find_and_select_session_with_focus(
+                        account_id, buyer_uid, buyer_nickname
+                    ),
+                )
+                return
+
+            self.logger.warning("未切换到实时聊天页，仍尝试选中会话")
+            QTimer.singleShot(
+                200,
+                lambda: self._find_and_select_session(
+                    account_id, buyer_uid, buyer_nickname
+                ),
+            )
+
         except Exception as e:
             self.logger.error(f"跳转对话窗口失败：{e}", exc_info=True)
     
     def _find_and_select_session_with_focus(self, account_id: int, buyer_uid: str, buyer_nickname: str) -> None:
         """查找并选中会话，同时确保窗口获得焦点"""
         try:
-            # 确保窗口在前台
+            from utils.window_focus import restore_application_window
+
             parent_window = self.window()
-            if parent_window:
-                parent_window.activateWindow()
-                parent_window.raise_()
-                parent_window.setFocus()
+            restore_application_window(parent_window)
             
             # 查找并选中会话
             self._find_and_select_session(account_id, buyer_uid, buyer_nickname)
@@ -1448,7 +1477,7 @@ class ChatLiveWidget(QFrame):
             self._set_chat_enabled(False)
             self._update_header_visuals()
         self._refresh_session_trees()
-        self.account_list.reload()
+        self.account_list.reload(self._filter_account_id)
         try:
             self._hub.total_unread_changed.emit(db_manager.get_total_unread_chat())
         except Exception as e:
@@ -1470,6 +1499,15 @@ class ChatLiveWidget(QFrame):
         self.logger.info("会话已自动切回 AI 接待模式（离开聊天窗口）")
         self._show_ai_mode_notice("检测到您已离开聊天窗口，已自动切换为 AI 接待")
     
+    def _reset_input_activity_timer(self) -> None:
+        """人工接待时：重置 10 秒无输入自动切回 AI 的倒计时。"""
+        if not self._current or self._current.get("ai_mode", True):
+            return
+        if self._input_activity_timer.isActive():
+            self._input_activity_timer.stop()
+        self._input_activity_timer.start(10000)
+        self.logger.debug("输入框活动检测到，重置 10 秒定时器")
+
     def _on_input_activity_timeout(self) -> None:
         """输入框 10 秒无活动，自动切回 AI 模式"""
         if not self._current:
@@ -1496,7 +1534,30 @@ class ChatLiveWidget(QFrame):
 
     def _on_session_clicked(self, item: QTreeWidgetItem, _col: int):
         data = item.data(0, Qt.ItemDataRole.UserRole)
-        if not isinstance(data, dict) or data.get("type") != "session":
+        if not isinstance(data, dict):
+            return
+        if data.get("type") == "account":
+            parent = item
+            pick: Optional[QTreeWidgetItem] = None
+            best_key: Optional[tuple] = None
+            for j in range(parent.childCount()):
+                child = parent.child(j)
+                cd = child.data(0, Qt.ItemDataRole.UserRole)
+                if not isinstance(cd, dict) or cd.get("type") != "session":
+                    continue
+                s = cd["session"]
+                unread = int(s.get("unread_count") or 0)
+                t = s.get("last_message_time") or s.get("updated_at")
+                ts = t.timestamp() if hasattr(t, "timestamp") else 0.0
+                key = (unread > 0, unread, ts)
+                if best_key is None or key > best_key:
+                    best_key = key
+                    pick = child
+            if pick is not None:
+                self.session_tree.setCurrentItem(pick)
+                self._on_session_clicked(pick, 0)
+            return
+        if data.get("type") != "session":
             return
         s = data["session"]
         fresh = db_manager.get_chat_session_by_id(int(s["id"]))
@@ -1516,10 +1577,12 @@ class ChatLiveWidget(QFrame):
         set_active_chat_session(int(acc["id"]), str(s["buyer_uid"]))
         db_manager.mark_chat_messages_read(int(s["id"]))
         self._update_header_visuals()
+        if not self._current.get("ai_mode", True):
+            self._reset_input_activity_timer()
         self._set_chat_enabled(True)
         self._rebuild_quick_replies(int(acc["id"]))
         self._render_messages_from_db()
-        self.account_list.reload()
+        self.account_list.reload(self._filter_account_id)
         self._refresh_session_trees()
         try:
             self._hub.total_unread_changed.emit(db_manager.get_total_unread_chat())
@@ -1676,6 +1739,12 @@ class ChatLiveWidget(QFrame):
         db_manager.set_session_ai_mode(sid, ai)
         self._current["ai_mode"] = ai
         self._update_header_visuals()
+        if ai:
+            if self._input_activity_timer.isActive():
+                self._input_activity_timer.stop()
+        else:
+            # 切到人工后：10 秒内输入框无活动则自动切回 AI
+            self._reset_input_activity_timer()
         self.logger.info("会话 AI 模式已切换: session_id={} ai_mode={}", sid, ai)
         tip = "已切换为 AI 自动接待，买家新消息将由 AI 回复。" if ai else "已切换为人工接待，AI 将不自动回复买家。"
         InfoBar.success(
@@ -1698,7 +1767,7 @@ class ChatLiveWidget(QFrame):
         self._set_chat_enabled(False)
         self._update_header_visuals()
         self._refresh_session_trees()
-        self.account_list.reload()
+        self.account_list.reload(self._filter_account_id)
 
     def _on_send(self):
         if not self._current:
@@ -1737,5 +1806,18 @@ class ChatLiveWidget(QFrame):
             self._pending_text,
             str(acc["seller_user_id"]),
         )
+        try:
+            from Message.handlers.ai_reply_watchdog import notify_outbound_reply
+
+            notify_outbound_reply(
+                metadata={
+                    "channel_name": acc.get("channel_name", "pinduoduo"),
+                    "shop_id": str(acc["platform_shop_id"]),
+                    "user_id": str(acc["seller_user_id"]),
+                    "from_uid": str(self._current["buyer_uid"]),
+                }
+            )
+        except Exception as e:
+            self.logger.debug("watchdog notify_outbound_reply: {}", e)
         self.input_edit.clear()
         self._render_messages_from_db()

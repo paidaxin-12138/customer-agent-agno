@@ -4,7 +4,7 @@ from datetime import datetime
 
 from sqlalchemy import Boolean, Column, DateTime, Float, Index, Integer, String, Text
 
-from database.models import Base
+from database.models import Base, _db_now
 
 
 class OpsSessionRow(Base):
@@ -25,7 +25,7 @@ class OpsSessionRow(Base):
     status = Column(String(30), default="active")
     is_resolved = Column(Boolean, default=False)
     transferred_to_human = Column(Boolean, default=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_db_now, onupdate=_db_now)
 
 
 class OpsTrace(Base):
@@ -46,7 +46,7 @@ class OpsTrace(Base):
     recall_json = Column(Text, nullable=True)
     rerank_json = Column(Text, nullable=True)
     final_answer = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_db_now)
 
 
 class OpsKnowledgeRevision(Base):
@@ -63,7 +63,7 @@ class OpsKnowledgeRevision(Base):
     status = Column(String(30), default="draft")  # draft/review/published/offline
     operator = Column(String(100), nullable=True)
     note = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_db_now)
 
 
 class OpsLowConfidence(Base):
@@ -78,7 +78,7 @@ class OpsLowConfidence(Base):
     suggested_answer = Column(Text, nullable=True)
     review_status = Column(String(30), default="pending")  # pending/approved/rejected
     channel = Column(String(50), nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_db_now, onupdate=_db_now)
 
 
 class OpsTicket(Base):
@@ -95,8 +95,8 @@ class OpsTicket(Base):
     result = Column(Text, nullable=True)
     session_key = Column(String(200), nullable=True)
     payload_json = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_db_now)
+    updated_at = Column(DateTime, default=_db_now, onupdate=_db_now)
 
 
 class OpsEvalRun(Base):
@@ -111,7 +111,7 @@ class OpsEvalRun(Base):
     pass_rate = Column(Float, nullable=True)
     failed_count = Column(Integer, default=0)
     total_count = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_db_now)
 
 
 class OpsEvalSample(Base):
@@ -143,7 +143,7 @@ class OpsCostLog(Base):
     completion_tokens = Column(Integer, default=0)
     cache_hit = Column(Boolean, default=False)
     cost_usd = Column(Float, default=0.0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_db_now)
 
 
 class OpsSecurityAudit(Base):
@@ -158,4 +158,4 @@ class OpsSecurityAudit(Base):
     user_label = Column(String(200), nullable=True)
     severity = Column(String(20), default="info")  # info/warn/block
     payload_json = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_db_now)

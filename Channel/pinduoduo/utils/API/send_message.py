@@ -1,5 +1,7 @@
 from ..base_request import BaseRequest
-from typing import Dict, Any
+from typing import Any, Dict, Optional
+
+from .chat_orders import _chat_mms_headers
 
 
 class SendMessage(BaseRequest):
@@ -102,26 +104,8 @@ class SendMessage(BaseRequest):
             "biz_type": biz_type
         }
 
-        # anti-content 从 cookies 中获取（由后端动态生成）
-        anti_content = self.cookies.get('anti_content') or self.cookies.get('anti-content', '')
-
-        # 构建完整请求头
-        headers = {
-            "accept": "application/json, text/plain, */*",
-            "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "anti-content": anti_content,
-            "content-type": "application/json;charset=UTF-8",
-            "origin": "https://mms.pinduoduo.com",
-            "priority": "u=1, i",
-            "referer": "https://mms.pinduoduo.com/chat-merchant/index.html",
-            "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-origin",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-        }
+        headers = _chat_mms_headers(self.cookies)
+        headers["priority"] = "u=1, i"
 
         result = self.post(url, json_data=data, headers=headers)
         if result:
@@ -130,6 +114,60 @@ class SendMessage(BaseRequest):
             else:
                 self.logger.error(f"商品卡片发送失败: {result.get('error_msg', '未知错误')}")
             return result
+
+    def send_ask_refund_apply(
+        self,
+        order_sn: str,
+        *,
+        after_sales_type: int = 3,
+        question_type: int = 1,
+        refund_amount: int,
+        message: Optional[str] = None,
+        user_ship_status: int = 0,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        向买家发送「申请退换货/退款」卡片（MMS 非公开接口，需商家 Cookie）。
+
+        Args:
+            order_sn: 拼多多订单号
+            after_sales_type: 售后类型（常见：2 仅退款，3 退货退款，4 换货，以抓包为准）
+            question_type: 原因类型（以商家后台抓包为准，默认 1）
+            refund_amount: 申请金额，单位：分
+            message: 附带说明（可为空）
+            user_ship_status: 发货状态，默认 0
+        """
+        from .chat_orders import ChatOrdersAPI
+
+        orders_api = ChatOrdersAPI(self.shop_id, self.user_id, self.channel_name)
+        orders_api.cookies = self.cookies
+        orders_api.default_headers = self.default_headers
+        repose_info = orders_api.get_order_pickup_info(order_sn)
+
+        url = "https://mms.pinduoduo.com/plateau/message/ask_refund_apply/send"
+        data: Dict[str, Any] = {
+            "order_sn": str(order_sn),
+            "manualEditedNote": False,
+            "after_sales_type": int(after_sales_type),
+            "question_type": int(question_type),
+            "refund_amount": int(refund_amount),
+            "message": message,
+            "user_ship_status": int(user_ship_status),
+            "reposeInfo": repose_info,
+        }
+        headers = _chat_mms_headers(self.cookies)
+        headers["priority"] = "u=1, i"
+
+        result = self.post(url, json_data=data, headers=headers)
+        if result and result.get("success"):
+            self.logger.info(
+                f"申请退换货卡片已发送: order_sn={order_sn}, type={after_sales_type}"
+            )
+        else:
+            err = None
+            if isinstance(result, dict):
+                err = result.get("errorMsg") or result.get("error_msg") or result
+            self.logger.error(f"申请退换货卡片发送失败: {err}")
+        return result
 
 
     def getAssignCsList(self):

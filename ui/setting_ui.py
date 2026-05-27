@@ -3,8 +3,8 @@
 import json
 import os
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QVBoxLayout, QWidget, QLabel, 
-                            QFormLayout, QGroupBox, QMessageBox)
+from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QVBoxLayout, QWidget, QLabel,
+                            QFormLayout, QGroupBox, QMessageBox, QCheckBox)
 from PyQt6.QtGui import QFont
 from qfluentwidgets import (CardWidget, SubtitleLabel, CaptionLabel, BodyLabel, 
                            PrimaryPushButton, PushButton, StrongBodyLabel, 
@@ -285,6 +285,79 @@ class PromptConfigCard(CardWidget):
             self.instructions_edit.setPlainText(instructions)
 
 
+class PinduoduoOpenConfigCard(CardWidget):
+    """拼多多开放平台配置（物流轨迹等，对应 .env 中 PDD_* / config.json pinduoduo_open）"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setupUI()
+
+    def setupUI(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(16)
+
+        title_label = StrongBodyLabel("拼多多开放平台")
+        title_label.setFont(QFont("Microsoft YaHei", 12, QFont.Weight.Bold))
+        layout.addWidget(title_label)
+
+        form_layout = QFormLayout()
+        form_layout.setSpacing(12)
+        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form_layout.setFormAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        self.enabled_cb = QCheckBox("启用开放平台 API（物流查询等）")
+        self.enabled_cb.setChecked(False)
+        form_layout.addRow("开关:", self.enabled_cb)
+
+        self.client_id_edit = LineEdit()
+        self.client_id_edit.setPlaceholderText("开放平台应用 client_id")
+        form_layout.addRow("Client ID:", self.client_id_edit)
+
+        self.client_secret_edit = PasswordLineEdit()
+        self.client_secret_edit.setPlaceholderText("应用 client_secret")
+        form_layout.addRow("Client Secret:", self.client_secret_edit)
+
+        self.access_token_edit = PasswordLineEdit()
+        self.access_token_edit.setPlaceholderText("店铺授权 access_token")
+        form_layout.addRow("Access Token:", self.access_token_edit)
+
+        layout.addLayout(form_layout)
+
+        description_label = CaptionLabel(
+            "用于买家咨询物流时调用开放平台接口（如 pdd.logistics.ordertrace.get）。\n"
+            "在 open.pinduoduo.com 创建应用并完成店铺授权后填写；未启用时不影响普通聊天与商品 MMS 接口。\n"
+            "与 .env 中 PDD_ENABLED / PDD_CLIENT_ID / PDD_CLIENT_SECRET / PDD_ACCESS_TOKEN 对应，保存后写入 config.json。"
+        )
+        description_label.setStyleSheet("color: #9EA6B8; padding: 8px 0;")
+        description_label.setWordWrap(True)
+        layout.addWidget(description_label)
+
+    @staticmethod
+    def _coerce_enabled(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+    def getConfig(self) -> dict:
+        return {
+            "enabled": self.enabled_cb.isChecked(),
+            "client_id": self.client_id_edit.text().strip(),
+            "client_secret": self.client_secret_edit.text().strip(),
+            "access_token": self.access_token_edit.text().strip(),
+        }
+
+    def setConfig(self, po: dict):
+        po = po or {}
+        self.enabled_cb.setChecked(self._coerce_enabled(po.get("enabled", False)))
+        self.client_id_edit.setText(str(po.get("client_id", "") or ""))
+        self.client_secret_edit.setText(str(po.get("client_secret", "") or ""))
+        self.access_token_edit.setText(str(po.get("access_token", "") or ""))
+
+
 class BusinessHoursCard(CardWidget):
     """业务时间配置卡片"""
     
@@ -469,6 +542,7 @@ class SettingUI(QFrame):
         self.embedder_config_card = EmbedderConfigCard()
         self.knowledge_config_card = KnowledgeConfigCard()
         self.prompt_config_card = PromptConfigCard()
+        self.pinduoduo_open_card = PinduoduoOpenConfigCard()
         self.business_hours_card = BusinessHoursCard()
 
         # 添加到布局
@@ -476,6 +550,7 @@ class SettingUI(QFrame):
         content_layout.addWidget(self.embedder_config_card)
         content_layout.addWidget(self.knowledge_config_card)
         content_layout.addWidget(self.prompt_config_card)
+        content_layout.addWidget(self.pinduoduo_open_card)
         content_layout.addWidget(self.business_hours_card)
         content_layout.addStretch()
 
@@ -491,6 +566,34 @@ class SettingUI(QFrame):
 
         return scroll_area
     
+    @staticmethod
+    def _load_pinduoduo_open_config() -> dict:
+        """读取开放平台配置；若 config.json 为空则回退 .env（PDD_*）。"""
+        po = config.get("pinduoduo_open")
+        if not isinstance(po, dict):
+            po = {}
+        out = {
+            "enabled": po.get("enabled", False),
+            "client_id": str(po.get("client_id", "") or ""),
+            "client_secret": str(po.get("client_secret", "") or ""),
+            "access_token": str(po.get("access_token", "") or ""),
+        }
+        env_map = (
+            ("enabled", "PDD_ENABLED"),
+            ("client_id", "PDD_CLIENT_ID"),
+            ("client_secret", "PDD_CLIENT_SECRET"),
+            ("access_token", "PDD_ACCESS_TOKEN"),
+        )
+        for key, env_key in env_map:
+            val = os.getenv(env_key)
+            if val is None or str(val).strip() == "":
+                continue
+            if key == "enabled":
+                out[key] = str(val).strip().lower() in ("1", "true", "yes", "on")
+            elif not out.get(key):
+                out[key] = str(val).strip()
+        return out
+
     def loadConfig(self):
         """从config模块加载配置"""
         try:
@@ -518,7 +621,8 @@ class SettingUI(QFrame):
                 "business_hours": {
                     "start": config.get("business_hours.start", "08:00"),
                     "end": config.get("business_hours.end", "23:00")
-                }
+                },
+                "pinduoduo_open": self._load_pinduoduo_open_config(),
             }
 
             # 验证并设置配置
@@ -558,7 +662,13 @@ class SettingUI(QFrame):
             "business_hours": {
                 "start": "08:00",
                 "end": "23:00"
-            }
+            },
+            "pinduoduo_open": {
+                "enabled": False,
+                "client_id": "",
+                "client_secret": "",
+                "access_token": "",
+            },
         }
 
         self._validateAndSetConfig(default_config)
@@ -587,7 +697,16 @@ class SettingUI(QFrame):
                 "additional_context": "",
                 "instructions": []
             }),
-            "business_hours": config_data.get("business_hours", {"start": "08:00", "end": "23:00"})
+            "business_hours": config_data.get("business_hours", {"start": "08:00", "end": "23:00"}),
+            "pinduoduo_open": config_data.get(
+                "pinduoduo_open",
+                {
+                    "enabled": False,
+                    "client_id": "",
+                    "client_secret": "",
+                    "access_token": "",
+                },
+            ),
         }
 
         # 验证business_hours格式
@@ -606,6 +725,7 @@ class SettingUI(QFrame):
         self.embedder_config_card.setConfig(validated_config["embedder"])
         self.knowledge_config_card.setConfig(validated_config["knowledge_base"])
         self.prompt_config_card.setConfig(validated_config["prompt"])
+        self.pinduoduo_open_card.setConfig(validated_config["pinduoduo_open"])
 
         # 处理业务时间配置
         business_hours_config = validated_config["business_hours"]
@@ -620,6 +740,7 @@ class SettingUI(QFrame):
             knowledge_config = self.knowledge_config_card.getConfig()
             prompt_config = self.prompt_config_card.getConfig()
             business_config = self.business_hours_card.getConfig()
+            pinduoduo_open_config = self.pinduoduo_open_card.getConfig()
 
             # 合并配置为新的结构
             new_config = {
@@ -627,10 +748,22 @@ class SettingUI(QFrame):
                 "embedder": embedder_config,
                 "knowledge_base": knowledge_config,
                 "prompt": prompt_config,
+                "pinduoduo_open": pinduoduo_open_config,
                 "business_hours": business_config.get("businessHours", {"start": "08:00", "end": "23:00"}),
                 # 保持与旧配置的兼容性
                 "db_path": config.get("db_path", "")
             }
+
+            if pinduoduo_open_config.get("enabled"):
+                if not pinduoduo_open_config.get("client_id") or not pinduoduo_open_config.get(
+                    "client_secret"
+                ):
+                    QMessageBox.warning(
+                        self,
+                        "配置提示",
+                        "已启用拼多多开放平台，请填写 Client ID 与 Client Secret。",
+                    )
+                    return
 
             # 验证 LLM 必填项
             if not llm_config.get("api_key"):

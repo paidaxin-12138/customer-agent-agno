@@ -49,11 +49,10 @@ from config import config
 
 from Message.ai_queue_load import get_ai_queue_tracker
 from Message.handlers.ai_reply_watchdog import (
-    begin_watchdog_turn,
     escalate_to_human,
     is_escalated,
-    mark_delivered,
-    schedule_watchdog,
+    notify_outbound_reply,
+    resolve_session_key,
 )
 
 _DEFAULT_DEGRADE_NOTICE = (
@@ -161,16 +160,7 @@ class AIReplyHandler(BaseHandler):
         return "general"
 
     def _get_session_key(self, context: Context, metadata: Dict[str, Any]) -> Optional[str]:
-        try:
-            channel_name = str(metadata.get("channel_name") or "pinduoduo")
-            shop_id = str(metadata.get("shop_id") or "")
-            user_id = str(metadata.get("user_id") or "")
-            buyer_uid = self._resolve_buyer_uid(context, metadata)
-            if not all([shop_id, user_id, buyer_uid]):
-                return None
-            return f"{channel_name}:{shop_id}:{user_id}:{buyer_uid}"
-        except Exception:
-            return None
+        return resolve_session_key(context, metadata)
 
     @staticmethod
     def _is_invalid_ai_content(content: Optional[str]) -> bool:
@@ -195,6 +185,8 @@ class AIReplyHandler(BaseHandler):
                 return
         notice = "稍等下 这边上报一下呢亲亲"
         ok = await self._send_reply(context, notice, metadata)
+        if ok:
+            notify_outbound_reply(context, metadata)
         if ok and key:
             self._manual_notice_last_sent[key] = now
 
@@ -219,6 +211,8 @@ class AIReplyHandler(BaseHandler):
                 self.logger.debug(f"emit_human_assist(queue_degrade): {e}")
 
         ok = await self._send_reply(context, notice, metadata)
+        if ok:
+            notify_outbound_reply(context, metadata)
         self._stats["queue_degrade"] += 1
         self.logger.info(
             "排队降级: estimated_wait={:.1f}s active={} effective={:.1f}s",
@@ -285,11 +279,8 @@ class AIReplyHandler(BaseHandler):
             if tracker.should_queue_degrade():
                 return await self._handle_queue_degrade(context, metadata, processed_content)
 
-            epoch = await begin_watchdog_turn(session_key)
-            if session_key and epoch:
-                schedule_watchdog(
-                    self, context, metadata, processed_content, session_key, epoch
-                )
+            watchdog_epoch = int(metadata.get("_watchdog_epoch") or 0)
+            epoch = watchdog_epoch if watchdog_epoch > 0 else 0
 
             ai_t0 = time.perf_counter()
             async with tracker.ai_inflight():
@@ -323,7 +314,6 @@ class AIReplyHandler(BaseHandler):
                     )
                 except Exception as e:
                     self.logger.debug(f"ops telemetry finish: {e}")
-                mark_delivered(session_key, epoch)
                 self._stats["ai_ok"] += 1
                 await self.log_message(context, "AI回复发送成功", f"回复: {reply[:120]}...")
             else:
@@ -448,6 +438,7 @@ class AIReplyHandler(BaseHandler):
                 except Exception as e:
                     self.logger.warning("persist_ai_message 失败: {}", e)
                 self._stats["send_ok"] += 1
+                notify_outbound_reply(context, metadata)
                 return True
             self._stats["send_fail"] += 1
             return False

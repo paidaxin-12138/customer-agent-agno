@@ -3,6 +3,13 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
+
+def _db_now() -> datetime:
+    from utils.chat_time import now_for_db
+
+    return now_for_db()
+
+
 Base = declarative_base()
 
 class Channel(Base):
@@ -87,8 +94,8 @@ class ChatSession(Base):
     task_state_json = Column(Text, nullable=True)
     long_term_summary = Column(Text, nullable=True)
     memory_summary_through_id = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_db_now)
+    updated_at = Column(DateTime, default=_db_now, onupdate=_db_now)
 
     account = relationship('Account', back_populates='chat_sessions')
     messages = relationship('ChatMessage', back_populates='session', cascade='all, delete-orphan')
@@ -118,7 +125,7 @@ class ChatMessage(Base):
     is_read = Column(Boolean, default=False)
     read_at = Column(DateTime, nullable=True)
     sent_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_db_now)
 
     session = relationship('ChatSession', back_populates='messages')
 
@@ -137,7 +144,7 @@ class QuickReply(Base):
     title = Column(String(100), nullable=True)
     content = Column(Text, nullable=False)
     usage_count = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_db_now)
 
     
 class Keyword(Base):

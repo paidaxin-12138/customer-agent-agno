@@ -124,6 +124,12 @@ def main():
 
     # 创建应用
     app = QApplication(sys.argv)
+    from utils.qt_threading import init_main_thread_bridge
+
+    init_main_thread_bridge()
+    from core.human_assist_bus import get_human_assist_bus
+
+    get_human_assist_bus()  # 确保总线对象驻留 GUI 主线程
     app.setApplicationName("Agent-Customer")
     _icon_path = get_app_icon_path()
     if _icon_path.exists():

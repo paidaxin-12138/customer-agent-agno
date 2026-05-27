@@ -180,14 +180,29 @@ class ConversationHub(QObject):
             st.updated_at = time.time()
             st.messages.append((role, preview, ts))
 
-        self.list_changed.emit(account_key)
-        self.message_logged.emit(account_key, peer_uid, role, preview, ts)
-        try:
-            from database.db_manager import db_manager
+        self._emit_hub_updates(account_key, peer_uid, role, preview, ts)
 
-            self.total_unread_changed.emit(db_manager.get_total_unread_chat())
-        except Exception as e:
-            _hub_log.warning("刷新未读总数失败: {}", e)
+    def _emit_hub_updates(
+        self,
+        account_key: str,
+        peer_uid: str,
+        role: str,
+        preview: str,
+        ts: float,
+    ) -> None:
+        def _do() -> None:
+            self.list_changed.emit(account_key)
+            self.message_logged.emit(account_key, peer_uid, role, preview, ts)
+            try:
+                from database.db_manager import db_manager
+
+                self.total_unread_changed.emit(db_manager.get_total_unread_chat())
+            except Exception as e:
+                _hub_log.warning("刷新未读总数失败: {}", e)
+
+        from utils.qt_threading import run_on_main_thread
+
+        run_on_main_thread(_do)
 
     def record_manual_sent(
         self,
@@ -222,14 +237,7 @@ class ConversationHub(QObject):
             st.preview = _preview_text(text)
             st.updated_at = ts
             st.messages.append(("agent", text, ts))
-        self.list_changed.emit(account_key)
-        self.message_logged.emit(account_key, customer_uid, "agent", text, ts)
-        try:
-            from database.db_manager import db_manager
-
-            self.total_unread_changed.emit(db_manager.get_total_unread_chat())
-        except Exception as e:
-            _hub_log.warning("刷新未读总数失败: {}", e)
+        self._emit_hub_updates(account_key, customer_uid, "agent", text, ts)
 
     def get_conversation_rows(self, account_key: str) -> List[Dict[str, Any]]:
         with self._lock:
@@ -262,7 +270,9 @@ class ConversationHub(QObject):
                 return
             if customer_uid in acc:
                 del acc[customer_uid]
-        self.list_changed.emit(account_key)
+        from utils.qt_threading import run_on_main_thread
+
+        run_on_main_thread(lambda: self.list_changed.emit(account_key))
 
 
 _conversation_hub: Optional[ConversationHub] = None

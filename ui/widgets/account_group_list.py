@@ -16,10 +16,16 @@ class AccountGroupList(QListWidget):
         super().__init__(parent)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-        self.itemClicked.connect(self._on_item)
+        # itemPressed：重复点击已选中项也会触发（itemClicked 不会）
+        self.itemPressed.connect(self._on_item)
         self._accounts: List[Dict] = []
 
-    def reload(self) -> None:
+    def reload(self, select_account_id: object = ...) -> None:
+        """刷新列表；select_account_id 为 ... 时保持当前选中项。"""
+        keep_id = select_account_id
+        if keep_id is ...:
+            cur = self.currentItem()
+            keep_id = cur.data(Qt.ItemDataRole.UserRole) if cur else None
         self.clear()
         self._accounts = db_manager.list_all_accounts_for_chat()
         all_unread = sum(
@@ -41,6 +47,19 @@ class AccountGroupList(QListWidget):
             it = QListWidgetItem(label)
             it.setData(Qt.ItemDataRole.UserRole, uid)
             self.addItem(it)
+        self._restore_selection(keep_id)
+
+    def _restore_selection(self, account_id: object) -> None:
+        for row in range(self.count()):
+            it = self.item(row)
+            if it.data(Qt.ItemDataRole.UserRole) == account_id:
+                self.setCurrentItem(it)
+                return
+
+    def select_account(self, account_id: object) -> None:
+        """程序化选中账号（None 表示「全部账号」）。"""
+        self._restore_selection(account_id)
+        self.account_selected.emit(account_id)
 
     def _on_item(self, item: QListWidgetItem):
         self.account_selected.emit(item.data(Qt.ItemDataRole.UserRole))

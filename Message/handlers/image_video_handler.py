@@ -64,7 +64,13 @@ class ImageVideoHumanHandler(BaseHandler):
             from Channel.pinduoduo.utils.API.send_message import SendMessage
 
             sender = SendMessage(str(shop_id), str(user_id))
-            await asyncio.to_thread(sender.send_text, str(from_uid), self._buyer_notice())
+            result = await asyncio.to_thread(
+                sender.send_text, str(from_uid), self._buyer_notice()
+            )
+            if isinstance(result, dict) and result.get("success"):
+                from Message.handlers.ai_reply_watchdog import notify_outbound_reply
+
+                notify_outbound_reply(context, metadata)
         except Exception as e:
             self.logger.error(f"图片/视频转人工后发送买家提示失败: {e}")
 

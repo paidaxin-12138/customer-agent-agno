@@ -227,11 +227,28 @@ class OrderLogisticsHandler(BaseHandler):
         except Exception as e:
             self.logger.debug(f"转接会话: {e}")
 
-    async def _send_reply(self, shop_id: Any, user_id: Any, from_uid: Any, reply: str) -> None:
+    async def _send_reply(
+        self,
+        shop_id: Any,
+        user_id: Any,
+        from_uid: Any,
+        reply: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        meta = metadata or {
+            "shop_id": str(shop_id),
+            "user_id": str(user_id),
+            "from_uid": str(from_uid),
+            "channel_name": "pinduoduo",
+        }
         try:
             from Channel.pinduoduo.utils.API.send_message import SendMessage
 
             sender = SendMessage(str(shop_id), str(user_id))
-            await asyncio.to_thread(sender.send_text, str(from_uid), reply)
+            result = await asyncio.to_thread(sender.send_text, str(from_uid), reply)
+            if isinstance(result, dict) and result.get("success"):
+                from Message.handlers.ai_reply_watchdog import notify_outbound_reply
+
+                notify_outbound_reply(metadata=meta)
         except Exception as e:
             self.logger.error(f"发送失败: {e}")

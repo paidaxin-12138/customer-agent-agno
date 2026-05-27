@@ -33,6 +33,16 @@ async def test_escalated_flag():
     assert w.is_escalated(key, e)
 
 
+def test_buyer_notice_ai_timeout_default(monkeypatch):
+    monkeypatch.setattr(
+        w.config,
+        "get",
+        lambda k, d=None: "" if k == "chat.ai_watchdog_escalate_notice" else d,
+    )
+    assert w._buyer_notice_for_escalation("ai_timeout", None) == "不好意思亲亲，让你久等了"
+    assert w._buyer_notice_for_escalation("ai_failed", None) == w._DEFAULT_ESCALATE_NOTICE
+
+
 @pytest.mark.asyncio
 async def test_sleep_until_delivered_exits_early():
     key = "sess_early"

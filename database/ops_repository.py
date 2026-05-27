@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
+
+RevisionAddResult = Literal["created", "unchanged", "error"]
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -20,6 +23,7 @@ from database.ops_models import (
     OpsTicket,
     OpsTrace,
 )
+from utils.chat_time import format_display_datetime, now_for_db
 from utils.logger_loguru import get_logger
 
 logger = get_logger("OpsRepository")
@@ -30,7 +34,7 @@ def _row_to_dict(obj, fields: List[str]) -> Dict[str, Any]:
     for f in fields:
         v = getattr(obj, f, None)
         if isinstance(v, datetime):
-            v = v.strftime("%Y-%m-%d %H:%M:%S")
+            v = format_display_datetime(v)
         out[f] = v
     return out
 
@@ -88,7 +92,7 @@ class OpsRepository:
                     status=cs.status or "active",
                     is_resolved=cs.status == "closed",
                     transferred_to_human=transferred,
-                    updated_at=cs.updated_at or datetime.utcnow(),
+                    updated_at=cs.updated_at or now_for_db(),
                 )
                 if existing:
                     for k, v in payload.items():
@@ -203,6 +207,24 @@ class OpsRepository:
         finally:
             session.close()
 
+    @staticmethod
+    def _revision_content_fingerprint(title: str, content: str) -> str:
+        """标题 + 正文一致则视为同一版本内容（用于去重）。"""
+        t = (title or "").strip()
+        c = content or ""
+        return hashlib.sha256(f"{t}\n---\n{c}".encode("utf-8")).hexdigest()
+
+    def _latest_revision_matches(
+        self, last: Optional[OpsKnowledgeRevision], title: str, content: str
+    ) -> bool:
+        if last is None:
+            return False
+        fp = self._revision_content_fingerprint(title, content)
+        last_fp = self._revision_content_fingerprint(
+            str(last.title or ""), str(last.content or "")
+        )
+        return fp == last_fp
+
     def add_knowledge_revision(
         self,
         doc_id: str,
@@ -211,7 +233,9 @@ class OpsRepository:
         status: str = "draft",
         operator: str = "admin",
         note: str = "",
-    ) -> bool:
+        *,
+        skip_if_unchanged: bool = False,
+    ) -> RevisionAddResult:
         session = self._db.get_session()
         try:
             last = (
@@ -220,6 +244,8 @@ class OpsRepository:
                 .order_by(OpsKnowledgeRevision.version.desc())
                 .first()
             )
+            if skip_if_unchanged and self._latest_revision_matches(last, title, content):
+                return "unchanged"
             ver = (last.version + 1) if last else 1
             session.add(
                 OpsKnowledgeRevision(
@@ -233,11 +259,11 @@ class OpsRepository:
                 )
             )
             session.commit()
-            return True
+            return "created"
         except SQLAlchemyError as e:
             session.rollback()
             logger.error(f"add_knowledge_revision: {e}")
-            return False
+            return "error"
         finally:
             session.close()
 
@@ -369,7 +395,7 @@ class OpsRepository:
                 row.repeat_count = int(row.repeat_count or 0) + 1
                 if suggested:
                     row.suggested_answer = suggested
-                row.updated_at = datetime.utcnow()
+                row.updated_at = now_for_db()
             else:
                 session.add(
                     OpsLowConfidence(
@@ -491,7 +517,7 @@ class OpsRepository:
             for k, v in fields.items():
                 if hasattr(row, k):
                     setattr(row, k, v)
-            row.updated_at = datetime.utcnow()
+            row.updated_at = now_for_db()
             session.commit()
             return True
         except SQLAlchemyError as e:
