@@ -31,9 +31,16 @@ class HumanAssistDialog(QDialog):
     def __init__(self, payload: Dict[str, Any], parent=None):
         super().__init__(parent)
         self.payload = payload
-        self.setWindowTitle("🔔 买家申请转人工")
+        reason = str(payload.get("reason") or "")
+        if reason == "ai_after_sales_pm":
+            self._dialog_title = "🔔 售后问题需人工处理"
+        elif reason == "after_sales_policy":
+            self._dialog_title = "🔔 售后需人工处理"
+        else:
+            self._dialog_title = "🔔 买家申请转人工"
+        self.setWindowTitle(self._dialog_title)
         self.setModal(False)  # 非模态，不阻塞主窗口
-        self.setFixedSize(450, 280)
+        self.setFixedSize(450, 300)
         
         logger.info(f"人工协助弹窗初始化：buyer={payload.get('buyer_nickname', '未知')}")
 
@@ -90,7 +97,7 @@ class HumanAssistDialog(QDialog):
         container_layout.setSpacing(16)
 
         # 标题栏
-        title_label = QLabel("🔔 买家申请转人工")
+        title_label = QLabel(getattr(self, "_dialog_title", "🔔 买家申请转人工"))
         title_label.setStyleSheet("""
             QLabel {
                 color: #FFFFFF;
@@ -223,8 +230,12 @@ class HumanAssistDialog(QDialog):
             shop_info = self._create_info_row("📦 店铺", shop_name)
             layout.addWidget(shop_info)
 
-        # 最近消息
-        message_label = QLabel("💬 最近消息")
+        # 最近消息 / 摘要
+        reason = str(self.payload.get("reason") or "")
+        if reason in ("ai_after_sales_pm", "after_sales_policy"):
+            message_label = QLabel("📋 问题摘要")
+        else:
+            message_label = QLabel("💬 最近消息")
         message_label.setStyleSheet("""
             QLabel {
                 color: #8E8E93;
@@ -236,9 +247,13 @@ class HumanAssistDialog(QDialog):
         layout.addWidget(message_label)
 
         # 消息内容
-        question = self.payload.get("question", "")
-        if len(question) > 150:
-            question = question[:150] + "..."
+        question = (
+            self.payload.get("summary")
+            or self.payload.get("question")
+            or ""
+        )
+        if len(question) > 220:
+            question = question[:220] + "..."
 
         message_content = QLabel(question or "无消息内容")
         message_content.setWordWrap(True)
@@ -252,7 +267,7 @@ class HumanAssistDialog(QDialog):
                 line-height: 1.5;
             }
         """)
-        message_content.setMinimumHeight(60)
+        message_content.setMinimumHeight(72)
         layout.addWidget(message_content)
 
         return widget

@@ -123,6 +123,7 @@ def build_escalation_payload(
             "buyer_uid": buyer_uid,
             "buyer_nickname": nick,
             "question": q,
+            "summary": q,
             "context_type": str(getattr(context.type, "value", context.type)),
         }
     except Exception as e:
@@ -150,6 +151,8 @@ def emit_human_assist(
         "ai_timeout": "AI 超时未回复（需人工接手）",
         "media_human": "买家发图片/视频需人工查看",
         "queue_degrade": "排队繁忙已自动安抚（可关注是否需人工）",
+        "after_sales_policy": "售后策略需人工处理",
+        "ai_after_sales_pm": "AI 无法处理的售后问题（已安抚买家）",
     }
     note = f"[系统] {labels.get(reason, reason)}"
     meta_copy = dict(metadata) if metadata else {}

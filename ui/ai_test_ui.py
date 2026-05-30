@@ -14,6 +14,7 @@ from openai import OpenAI
 
 from config import Config
 from utils.logger_loguru import get_logger
+from utils.human_transfer_intent import detect_human_transfer_intent
 from Agent.CustomerAgent.agent_knowledge import KnowledgeManager
 
 
@@ -174,15 +175,16 @@ class AITestWidget(QFrame):
             )
             return
 
-        # 本地规则：转人工固定话术 + 弹窗上报
-        if self._is_human_transfer_intent(text):
+        # 本地规则：转人工固定话术 + 弹窗上报（含赚人工/砖人工等错别字）
+        if detect_human_transfer_intent(text):
+            self.logger.info("AI测试识别转人工意图: {!r}", text)
             fixed = "稍等下 这边上报一下呢亲亲"
             self._append("user", text)
             self.input_box.clear()
             self._append("assistant", fixed)
             self._messages.append({"role": "user", "content": text})
             self._messages.append({"role": "assistant", "content": fixed})
-            self._show_human_transfer_popup()
+            self._show_human_transfer_popup(text)
             return
 
         # 场景视频检索：仅「明确要看教程/视频」或典型故障场景触发；勿用「美甲灯」等泛词误触
@@ -772,15 +774,36 @@ class AITestWidget(QFrame):
         }
         return any(token in lower_text for token in abusive_en)
 
-    def _is_human_transfer_intent(self, text: str) -> bool:
-        normalized = self._normalize_text(text)
-        keys = ("转人工", "人工客服", "真人客服", "我要人工", "找人工", "接人工")
-        return any(self._normalize_text(k) in normalized for k in keys)
+    def _show_human_transfer_popup(self, question: str = "") -> None:
+        """AI 测试页无真实买家会话，使用与线上一致的人工协助弹窗。"""
+        q = (question or "").strip() or "买家申请转人工（AI 测试）"
+        payload = {
+            "account_id": 0,
+            "buyer_uid": "ai_test_user",
+            "buyer_nickname": "AI测试用户",
+            "login_username": "AI测试（无真实账号）",
+            "shop_name": "",
+            "question": q,
+            "summary": q,
+            "reason": "keyword_human",
+        }
+        try:
+            from ui.widgets.human_assist_dialog import HumanAssistDialog
 
-    def _show_human_transfer_popup(self) -> None:
-        # 测试对话页没有真实买家上下文，这里用“测试账号/测试用户”展示统一文案
-        body = "测试账号下，用户「测试用户」需要转人工。"
-        QMessageBox.information(self, "人工协助", body)
+            prev = getattr(self, "_assist_dialog", None)
+            if prev is not None and prev.isVisible():
+                prev.close()
+            self._assist_dialog = HumanAssistDialog(payload, self.window())
+            self._assist_dialog.show()
+            self._assist_dialog.raise_()
+            self._assist_dialog.activateWindow()
+        except Exception as e:
+            self.logger.error(f"AI测试转人工弹窗失败: {e}")
+            QMessageBox.information(
+                self,
+                "人工协助",
+                f"AI测试用户需要转人工。\n买家消息：{q[:200]}",
+            )
 
     def _build_product_catalog_answer(self, query: str) -> str:
         if not self._is_product_catalog_intent(query):

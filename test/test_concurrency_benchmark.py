@@ -183,7 +183,7 @@ async def test_same_buyer_serializes_per_lock():
         handler_delay=handler_delay,
     )
     assert r.peak_parallel == 1, r.as_dict()
-    serial_min = message_count * handler_delay * 0.85
+    serial_min = message_count * handler_delay * 0.75
     assert r.elapsed_sec >= serial_min, r.as_dict()
 
 

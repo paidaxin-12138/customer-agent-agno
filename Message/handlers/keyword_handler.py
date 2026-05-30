@@ -3,8 +3,10 @@
 """
 from typing import Dict, Any
 from bridge.context import Context, ContextType
+from config import config
 from .base import BaseHandler
 from database.db_manager import db_manager
+from utils.human_transfer_intent import detect_human_transfer_intent
 from utils.logger_loguru import get_logger
 from Channel.pinduoduo.utils.API.send_message import SendMessage
 
@@ -66,7 +68,7 @@ class KeywordDetectionHandler(BaseHandler):
             return default_keywords
 
     def can_handle(self, context: Context) -> bool:
-        """检查消息是否包含关键词"""
+        """检查消息是否包含关键词或转人工语义（含错别字）。"""
         # 只处理文本类型的消息
         if context.type != ContextType.TEXT:
             return False
@@ -74,6 +76,12 @@ class KeywordDetectionHandler(BaseHandler):
         # 检查消息内容是否存在且为字符串
         if not context.content or not isinstance(context.content, str):
             return False
+
+        if self._semantic_human_transfer_enabled() and detect_human_transfer_intent(
+            context.content
+        ):
+            self.logger.debug(f"检测到转人工语义: '{context.content}'")
+            return True
 
         # 将消息内容转换为小写进行检测
         content_lower = context.content.lower()
@@ -86,14 +94,22 @@ class KeywordDetectionHandler(BaseHandler):
 
         return False
 
+    @staticmethod
+    def _semantic_human_transfer_enabled() -> bool:
+        return bool(config.get("chat.human_transfer_semantic_enabled", True))
+
     def _wants_local_human_assist(self, content: str) -> bool:
         c = (content or "").strip().lower()
         return any(p.lower() in c for p in self._LOCAL_HUMAN_ASSIST_PHRASES)
 
     def _wants_human_assist_bus(self, content: str) -> bool:
-        """是否触发本地人工协助（短语或已启用的强人工类关键词）。"""
+        """是否触发本地人工协助（短语、语义错别字或已启用的强人工类关键词）。"""
         if not isinstance(content, str) or not content.strip():
             return False
+        if self._semantic_human_transfer_enabled() and detect_human_transfer_intent(
+            content
+        ):
+            return True
         if self._wants_local_human_assist(content):
             return True
         content_lower = content.lower()
@@ -109,12 +125,26 @@ class KeywordDetectionHandler(BaseHandler):
             user_id = context.kwargs.user_id
             from_uid = context.kwargs.from_uid
             
-            if not all([shop_id, user_id, from_uid]):
-                return False
-
             wants_bus = False
             if context.type == ContextType.TEXT and isinstance(context.content, str):
                 wants_bus = self._wants_human_assist_bus(context.content)
+
+            if not all([shop_id, user_id, from_uid]):
+                if wants_bus:
+                    try:
+                        from core.human_assist_bus import emit_human_assist
+
+                        emit_human_assist(
+                            "keyword_human",
+                            context,
+                            metadata,
+                            context.content,
+                        )
+                    except Exception as e:
+                        self.logger.debug(f"emit_human_assist 跳过(无会话): {e}")
+                    return True
+                return False
+
             if wants_bus:
                 try:
                     from core.human_assist_bus import emit_human_assist

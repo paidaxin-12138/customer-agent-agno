@@ -90,11 +90,31 @@ class MessageTypeHandler:
     
     @staticmethod
     def handle_mall_system_msg(msg_data):
-        """处理商城消息"""
-        system_msg = {
-            "user_id":msg_data.get("message",{}).get("data",{}).get("user_id"),
+        """处理商城系统消息（含快捷退款卡过期 type=90）。"""
+        message = msg_data.get("message") or {}
+        data = message.get("data") or {}
+        inner_type = message.get("type")
+        system_msg: dict = {
+            "inner_type": inner_type,
+            "user_id": data.get("user_id") or data.get("uid"),
+            "msg_id": data.get("msg_id"),
+            "status": data.get("status"),
+            "text": data.get("text"),
         }
-        return ContextType.MALL_SYSTEM_MSG,system_msg
+        try:
+            status_code = int(data.get("status"))
+        except (TypeError, ValueError):
+            status_code = -1
+        try:
+            type_code = int(inner_type)
+        except (TypeError, ValueError):
+            type_code = -1
+        if type_code == 90:
+            if status_code == 4:
+                system_msg["event"] = "refund_card_expired"
+            elif status_code == 1:
+                system_msg["event"] = "refund_card_confirmed"
+        return ContextType.MALL_SYSTEM_MSG, system_msg
 
 
     @staticmethod
@@ -131,11 +151,37 @@ class PDDChatMessage(ChatMessage):
         self.to_user = basic_info.get("to_role")
         self.to_uid = basic_info.get("to_uid")
         
-        # 检查是否非用户消息
+        # 检查是否非用户消息（含 type=19 快捷退款卡下行）
         if self.from_user == "mall_cs":
+            message = self.msg.get("message") or {}
+            inner_type = message.get("type")
+            info = message.get("info") if isinstance(message.get("info"), dict) else {}
+            card_id = info.get("card_id") or message.get("template_name")
+            if inner_type == 19 and card_id == "ask_refund_apply":
+                goods = info.get("goods_info") if isinstance(
+                    info.get("goods_info"), dict
+                ) else {}
+                state = info.get("state") if isinstance(info.get("state"), dict) else {}
+                mstate = info.get("mstate") if isinstance(info.get("mstate"), dict) else {}
+                self.user_msg_type = ContextType.MALL_CS
+                state_expire = str(state.get("expire_text") or "")
+                mstate_expire = str(mstate.get("expire_text") or "")
+                self.content = {
+                    "event": "ask_refund_card_push",
+                    "card_msg_id": message.get("msg_id"),
+                    "order_sn": goods.get("order_sequence_no"),
+                    "expire_text": state_expire or mstate_expire,
+                    "state_expire_text": state_expire,
+                    "mstate_expire_text": mstate_expire,
+                    "card_status": state.get("status"),
+                    "mstate_status": mstate.get("status"),
+                    "mstate_text": mstate.get("text"),
+                    "valid_time": state.get("valid_time") or mstate.get("valid_time"),
+                    "to_uid": (message.get("to") or {}).get("uid"),
+                }
+                return
             self.user_msg_type = ContextType.MALL_CS
-            self.content = self.msg.get("message",{}).get("content")
-            
+            self.content = message.get("content")
             return
         # 处理消息
         self._process_message()

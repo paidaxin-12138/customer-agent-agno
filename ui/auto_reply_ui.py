@@ -5,9 +5,20 @@ from PyQt6.QtCore import Qt, pyqtSignal, QThread, pyqtSignal as Signal, QTimer
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QVBoxLayout, QWidget, QSizePolicy, QLabel,
                             QInputDialog, QMessageBox, QComboBox, QDialog, QFormLayout)
 from PyQt6.QtGui import QFont, QIcon, QPixmap
-from qfluentwidgets import (CardWidget, SubtitleLabel, CaptionLabel, BodyLabel, 
-                           PrimaryPushButton, PushButton, StrongBodyLabel, 
-                           InfoBadge, ScrollArea, FluentIcon as FIF)
+from qfluentwidgets import (
+    CardWidget,
+    SubtitleLabel,
+    CaptionLabel,
+    BodyLabel,
+    PrimaryPushButton,
+    PushButton,
+    StrongBodyLabel,
+    InfoBadge,
+    ScrollArea,
+    FluentIcon as FIF,
+    InfoBar,
+    InfoBarPosition,
+)
 from database.db_manager import db_manager
 from utils.logger_loguru import get_logger
 from utils.dialogs import confirm_action
@@ -568,6 +579,37 @@ class AutoReplyUI(QFrame):
         self.sync_timer.timeout.connect(self._sync_auto_reply_status)
         self.sync_timer.start(10000)  # 每10秒同步一次状态（减少频率）
 
+    @staticmethod
+    def _account_match_key(account_data: dict) -> tuple:
+        return (
+            str(account_data.get("channel_name") or ""),
+            str(account_data.get("shop_id") or ""),
+            str(account_data.get("user_id") or ""),
+        )
+
+    def _toast(
+        self,
+        title: str,
+        content: str = "",
+        *,
+        level: str = "success",
+        duration: int = 2800,
+    ) -> None:
+        """顶部轻提示（上线/离线/自动回复操作反馈）。"""
+        show = getattr(InfoBar, level, InfoBar.info)
+        try:
+            show(
+                title=title,
+                content=content,
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=duration,
+                parent=self.window() or self,
+            )
+        except Exception as e:
+            self.logger.debug(f"InfoBar 显示失败: {e}")
+
     def closeEvent(self, event):
         """窗口关闭时清理定时器"""
         try:
@@ -932,11 +974,16 @@ class AutoReplyUI(QFrame):
     def onAccountOnline(self, account_data: dict):
         """账号上线回调"""
         try:
+            name = account_data.get("username") or account_data.get("user_id") or "账号"
+            self._toast("正在上线", f"{name}：正在请求拼多多客服上线…", level="info", duration=2000)
+
             # 找到对应的卡片
             account_card = self.findAccountCard(account_data)
             if account_card:
                 account_card.setButtonLoading("online", True)
-            
+            else:
+                self.logger.warning(f"未找到账号卡片: {account_data}")
+
             # 创建设置状态线程
             self.status_thread = SetStatusThread(account_data, 1)  # 1表示在线
             
@@ -954,11 +1001,16 @@ class AutoReplyUI(QFrame):
     def onAccountOffline(self, account_data: dict):
         """账号离线回调"""
         try:
+            name = account_data.get("username") or account_data.get("user_id") or "账号"
+            self._toast("正在离线", f"{name}：正在请求拼多多客服离线…", level="info", duration=2000)
+
             # 找到对应的卡片
             account_card = self.findAccountCard(account_data)
             if account_card:
                 account_card.setButtonLoading("offline", True)
-            
+            else:
+                self.logger.warning(f"未找到账号卡片: {account_data}")
+
             # 创建设置状态线程
             self.status_thread = SetStatusThread(account_data, 3)  # 3表示离线
             
@@ -974,10 +1026,13 @@ class AutoReplyUI(QFrame):
             QMessageBox.critical(self, "错误", f"启动离线操作失败：{str(e)}")
     
     def findAccountCard(self, account_data: dict):
-        """查找对应的账号卡片"""
+        """查找对应的账号卡片（按渠道+店铺+用户 ID 匹配，避免 dict 引用不一致）。"""
+        key = self._account_match_key(account_data)
         for i in range(self.accounts_layout.count() - 1):  # -1 因为最后一个是stretch
             widget = self.accounts_layout.itemAt(i).widget()
-            if isinstance(widget, AutoReplyCard) and widget.account_data == account_data:
+            if isinstance(widget, AutoReplyCard) and self._account_match_key(
+                widget.account_data
+            ) == key:
                 return widget
         return None
     
@@ -994,10 +1049,15 @@ class AutoReplyUI(QFrame):
             # 更新卡片状态
             self.updateCardStatus(account_data, new_status)
             
-            # 显示成功消息
             status_text = "在线" if new_status == 1 else "离线"
-            self.logger.info(f"账号 '{account_data['username']}' 已成功设置为{status_text}状态")
-            
+            name = account_data.get("username") or account_data.get("user_id") or "账号"
+            self.logger.info(f"账号 '{name}' 已成功设置为{status_text}状态")
+            self._toast(
+                f"已{status_text}",
+                f"账号「{name}」拼多多客服状态已设为{status_text}。",
+                level="success",
+            )
+
         except Exception as e:
             self.logger.error(f"处理状态设置成功回调失败: {str(e)}")
     
@@ -1011,9 +1071,10 @@ class AutoReplyUI(QFrame):
                 account_card.setButtonLoading("online", False)
                 account_card.setButtonLoading("offline", False)
             
-            # 显示失败消息
-            self.logger.error(f"设置账号 '{account_data['username']}' 状态失败：{error_message}")
-            QMessageBox.warning(self, "失败", f"设置账号 '{account_data['username']}' 状态失败：{error_message}")
+            name = account_data.get("username") or account_data.get("user_id") or "账号"
+            self.logger.error(f"设置账号 '{name}' 状态失败：{error_message}")
+            self._toast("状态设置失败", f"{name}：{error_message}", level="error", duration=4000)
+            QMessageBox.warning(self, "失败", f"设置账号「{name}」状态失败：\n{error_message}")
             
         except Exception as e:
             self.logger.error(f"处理状态设置失败回调失败: {str(e)}")
@@ -1025,8 +1086,9 @@ class AutoReplyUI(QFrame):
             account_card = self.findAccountCard(account_data)
             if not account_card:
                 self.logger.error("找不到对应的账号卡片")
+                self._toast("操作失败", "未找到对应账号卡片，请点「刷新」后重试。", level="warning")
                 return
-            
+
             # 检查当前自动回复状态
             current_status = auto_reply_manager.is_running(account_data)
             
@@ -1057,13 +1119,17 @@ class AutoReplyUI(QFrame):
             success = auto_reply_manager.start_auto_reply(account_data)
             
             if success:
-                # 更新UI状态
                 account_card.setAutoReplyStatus(True)
-                self.logger.info(f"账号 '{account_data['username']}' 自动回复启动成功")
-                
-                # 连接自动回复管理器的信号（如果需要的话）
+                name = account_data.get("username") or account_data.get("user_id") or "账号"
+                self.logger.info(f"账号 '{name}' 自动回复启动成功")
+                self._toast(
+                    "正在连接",
+                    f"账号「{name}」自动回复已启动，连接成功后按钮会变为「停止回复」。",
+                    level="info",
+                    duration=3500,
+                )
                 self._connect_auto_reply_signals(account_data)
-                
+
             else:
                 # 启动失败，恢复按钮状态
                 account_card.auto_reply_btn.setText("开始回复")
@@ -1088,13 +1154,20 @@ class AutoReplyUI(QFrame):
             
             # 无论成功与否，都更新UI状态（因为已经从管理器中移除）
             account_card.setAutoReplyStatus(False)
-            
+            account_card.auto_reply_btn.setEnabled(True)
+
+            name = account_data.get("username") or account_data.get("user_id") or "账号"
             if success:
-                self.logger.info(f"账号 '{account_data['username']}' 自动回复停止成功")
+                self.logger.info(f"账号 '{name}' 自动回复停止成功")
+                self._toast("已停止回复", f"账号「{name}」自动回复已停止。", level="success")
             else:
-                self.logger.warning(f"账号 '{account_data['username']}' 自动回复停止可能未完全成功，但已从管理器中移除")
-            
-            # 更新统计信息
+                self.logger.warning(f"账号 '{name}' 自动回复停止可能未完全成功")
+                self._toast(
+                    "已停止回复",
+                    f"账号「{name}」已断开自动回复（如有异常请查看日志）。",
+                    level="warning",
+                )
+
             self.updateStats()
                 
         except Exception as e:
@@ -1131,12 +1204,27 @@ class AutoReplyUI(QFrame):
             if account_card:
                 account_card.auto_reply_btn.setText("停止回复")
                 account_card.auto_reply_btn.setEnabled(True)
-                
-            self.logger.info(f"账号 '{account_data['username']}' 自动回复连接成功")
-            
-            # 更新统计信息
+                account_card.updateStatus(1)
+
+            # 聊天已连通：标记账号在线，便于与「用户管理」状态一致
+            db_manager.update_account_status(
+                account_data["channel_name"],
+                account_data["shop_id"],
+                account_data["user_id"],
+                1,
+            )
+            account_data["status"] = 1
+
+            name = account_data.get("username") or account_data.get("user_id") or "账号"
+            self.logger.info(f"账号 '{name}' 自动回复连接成功")
+            self._toast(
+                "连接成功",
+                f"账号「{name}」已连接，可自动接待买家消息。",
+                level="success",
+            )
+
             self.updateStats()
-            
+
         except Exception as e:
             self.logger.error(f"处理自动回复成功回调失败: {str(e)}")
     

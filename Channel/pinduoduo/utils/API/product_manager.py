@@ -1,4 +1,7 @@
+from typing import Optional
+
 from ..base_request import BaseRequest
+from utils.product_image_urls import collect_product_images
 
 
 class ProductManager(BaseRequest):
@@ -35,6 +38,16 @@ class ProductManager(BaseRequest):
             "sec-fetch-site": "same-origin",
         }
 
+    def _resolve_mms_uid(self) -> str:
+        """商家后台 recommendGoods 需要的客服 uid（seller user_id）。"""
+        if self.user_id:
+            return str(self.user_id).strip()
+        for key in ("uid", "USER_ID", "user_id", "api_uid", "PASS_ID"):
+            val = (self.cookies or {}).get(key)
+            if val is not None and str(val).strip():
+                return str(val).strip()
+        return ""
+
     def __init__(self, shop_id: str = None, user_id: str = None, cookies=None):
         """
         初始化商品管理器
@@ -48,75 +61,111 @@ class ProductManager(BaseRequest):
         if cookies:
             self.update_cookies(cookies)
 
-    def get_product_list(self, page=1, size=10):
+    def _resolve_mms_uid(self) -> str:
+        """商家后台 recommendGoods 需要的 uid（聊天场景为**买家** UID，非客服账号）。"""
+        for key in ("uid", "USER_ID", "user_id", "api_uid"):
+            val = (self.cookies or {}).get(key)
+            if val is not None and str(val).strip():
+                return str(val).strip()
+        if self.user_id:
+            return str(self.user_id).strip()
+        return ""
+
+    def _mall_goods_list_headers(self) -> dict:
+        headers = self._mms_browser_headers("https://mms.pinduoduo.com/goods/goods_list")
+        headers["priority"] = "u=1, i"
+        return headers
+
+    def _fetch_mall_goods_list(self, page: int = 1, size: int = 10) -> Optional[dict]:
+        """商家后台「商品列表」全店在售（用于知识库同步，无需买家 UID）。"""
+        url = "https://mms.pinduoduo.com/vodka/v2/mms/query/display/mall/goodsList"
+        data = {
+            "page": int(page),
+            "page_size": int(size),
+            "pre_sale_type": 0,
+            "out_goods_sn_gray_flag": True,
+            "shipment_time_type": 3,
+            "is_onsale": 1,
+            "sold_out": 0,
+            "order_by": "created_at:desc,id:desc",
+        }
+        return self.post(url, json_data=data, headers=self._mall_goods_list_headers())
+
+    def _fetch_chat_recommend_goods(
+        self, buyer_uid: str, page: int = 1, size: int = 10
+    ) -> Optional[dict]:
+        """聊天工作台 recommendGoods（uid=买家 UID，需 showType=1）。"""
+        url = "https://mms.pinduoduo.com/latitude/goods/recommendGoods"
+        data = {
+            "uid": str(buyer_uid).strip(),
+            "pageNum": int(page),
+            "pageSize": int(size),
+            "showType": 1,
+        }
+        headers = self._mms_browser_headers(
+            "https://mms.pinduoduo.com/chat-merchant/index.html"
+        )
+        headers["priority"] = "u=1, i"
+        return self.post(url, json_data=data, headers=headers)
+
+    def get_product_list(self, page=1, size=10, buyer_uid: Optional[str] = None):
         """
-        获取店铺商品列表
+        获取店铺商品列表。
 
         Args:
-            page (int): 页码，默认1
-            size (int): 每页数量，默认10
+            page: 页码
+            size: 每页数量
+            buyer_uid: 聊天场景传入**买家 UID** 时走 recommendGoods；
+                       未传时走商家后台全店 goodsList（知识库同步用）。
 
         Returns:
-            dict: 商品列表结果，格式如下：
-                {
-                    "success": True/False,
-                    "products": [
-                        {
-                            "goods_id": int,
-                            "goods_name": str,
-                            "thumb_url": str,       # 商品缩略图
-                            "price": float,         # 价格
-                            "sold_quantity": int,   # 已售数量
-                            "goods_type": int,      # 商品类型
-                            "tag": str,             # 商品标签
-                        },
-                        ...
-                    ],
-                    "total": int,  # 总数量
-                    "page": int,   # 当前页码
-                    "error_msg": str  # 仅在失败时包含
-                }
+            dict: success / products / total / page / error_msg
         """
-        # 构建请求URL
-        url = "https://mms.pinduoduo.com/latitude/goods/recommendGoods"
+        page = int(page)
+        size = int(size)
+        buyer = (buyer_uid or "").strip()
 
-        # 构建请求数据
-        data = {
-            "uid": "",
-            "pageNum": page,
-            "pageSize": size
-        }
+        if buyer:
+            result = self._fetch_chat_recommend_goods(buyer, page=page, size=size)
+            source = "chat_recommend"
+        else:
+            result = self._fetch_mall_goods_list(page=page, size=size)
+            source = "mall_goods_list"
 
-        headers = self._mms_browser_headers("https://mms.pinduoduo.com/chat-merchant/index.html")
-        headers["priority"] = "u=1, i"
-        headers["sec-ch-ua"] = '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"'
-        headers["sec-ch-ua-mobile"] = "?0"
-        headers["sec-ch-ua-platform"] = '"Windows"'
-
-        # 发起请求
-        result = self.post(url, json_data=data, headers=headers)
-
-        if result and result.get("success") == True:
-            # 解析商品列表
-            products_data = self._parse_product_list(result)
+        if result and result.get("success") is True:
+            if source == "mall_goods_list":
+                products_data = self._parse_mall_goods_list(result)
+            else:
+                products_data = self._parse_product_list(result)
             return {
                 "success": True,
                 "products": products_data.get("products", []),
                 "total": products_data.get("total", 0),
-                "page": page
+                "page": page,
+                "source": source,
             }
-        else:
+
+        error_msg = (
+            (result.get("errorMsg") or result.get("error_msg")) if result else None
+        ) or "获取商品列表失败"
+        if not buyer and "频繁" in str(error_msg):
             error_msg = (
-                (result.get("errorMsg") or result.get("error_msg")) if result else None
-            ) or "获取商品列表失败"
-            self.logger.error(f"获取商品列表失败: {error_msg}")
-            return {
-                "success": False,
-                "error_msg": error_msg,
-                "products": [],
-                "total": 0,
-                "page": page
-            }
+                f"{error_msg}（商家后台商品列表接口限流，请稍后再试「同步商品」）"
+            )
+        elif not buyer and "bad params" in str(error_msg).lower():
+            error_msg = (
+                "商品列表接口参数无效。全店同步请稍后重试；"
+                "若在对话中查商品，需有买家会话上下文。"
+            )
+        self.logger.error(f"获取商品列表失败 [{source}]: {error_msg}")
+        return {
+            "success": False,
+            "error_msg": error_msg,
+            "products": [],
+            "total": 0,
+            "page": page,
+            "source": source,
+        }
 
     def get_product_detail(self, goods_id):
         """
@@ -166,7 +215,8 @@ class ProductManager(BaseRequest):
             product_info = self._parse_product_detail(result)
             return {
                 "success": True,
-                "product_info": product_info
+                "product_info": product_info,
+                "api_result": result,
             }
         else:
             error_msg = result.get('errorMsg') if result else "获取商品详情失败"
@@ -188,8 +238,12 @@ class ProductManager(BaseRequest):
         """
         try:
             result_data = response_data.get('result', {})
-            # 新接口数据在 onSaleGoods 字段中
-            goods_list = result_data.get('onSaleGoods', [])
+            # 聊天推荐接口：recommendGoods；部分环境仍返回 onSaleGoods
+            goods_list = (
+                result_data.get('onSaleGoods')
+                or result_data.get('recommendGoods')
+                or []
+            )
 
             products = []
             for goods in goods_list:
@@ -237,6 +291,75 @@ class ProductManager(BaseRequest):
                 "products": [],
                 "total": 0
             }
+
+    def _parse_mall_goods_list(self, response_data: dict) -> dict:
+        """解析商家后台 goodsList 接口（全店在售）。"""
+        try:
+            result_data = response_data.get("result", {}) or {}
+            goods_list = (
+                result_data.get("goods_list")
+                or result_data.get("goodsList")
+                or []
+            )
+            products = []
+            for goods in goods_list:
+                if not isinstance(goods, dict):
+                    continue
+                min_price = self._pick(
+                    goods,
+                    "min_on_sale_group_price",
+                    "minOnSaleGroupPrice",
+                    "min_group_price",
+                    "minGroupPrice",
+                )
+                max_price = self._pick(
+                    goods,
+                    "max_on_sale_group_price",
+                    "maxOnSaleGroupPrice",
+                    "max_group_price",
+                    "maxGroupPrice",
+                )
+                if min_price and max_price and min_price != max_price:
+                    price_str = f"{min_price/100:.2f}-{max_price/100:.2f}"
+                elif min_price:
+                    price_str = f"{min_price/100:.2f}"
+                else:
+                    price_str = None
+                products.append(
+                    {
+                        "goods_id": self._pick(goods, "goods_id", "goodsId", "id"),
+                        "goods_name": self._pick(goods, "goods_name", "goodsName", default=""),
+                        "thumb_url": self._pick(
+                            goods, "thumb_url", "thumbUrl", "image_url", default=""
+                        ),
+                        "price": price_str,
+                        "price_min": min_price,
+                        "price_max": max_price,
+                        "sold_quantity": goods.get("sold_quantity")
+                        or goods.get("soldQuantity")
+                        or 0,
+                        "sold_quantity_30d": goods.get("sold_quantity_30d")
+                        or goods.get("soldQuantity30d")
+                        or 0,
+                        "quantity": goods.get("quantity", 0),
+                        "goods_type": goods.get("goods_type") or goods.get("goodsType", ""),
+                        "is_spike": goods.get("is_spike") or goods.get("isSpike", False),
+                        "support_customize": goods.get("support_customize")
+                        or goods.get("supportCustomize", False),
+                        "goods_url": goods.get("goods_url") or goods.get("goodsUrl", ""),
+                        "tag": "",
+                    }
+                )
+            total = (
+                result_data.get("total")
+                or result_data.get("total_count")
+                or result_data.get("totalCount")
+                or len(products)
+            )
+            return {"products": products, "total": total}
+        except Exception as e:
+            self.logger.error(f"解析商家商品列表失败: {e}")
+            return {"products": [], "total": 0}
 
     @classmethod
     def _sku_display_name(cls, sku: dict) -> str:
@@ -378,6 +501,13 @@ class ProductManager(BaseRequest):
                 "price_min_fen": int(min_fen) if min_fen is not None else None,
                 "price_max_fen": int(max_fen) if max_fen is not None else None,
             }
+
+            img_groups = collect_product_images(
+                product_info, raw_api_result=result_data
+            )
+            product_info["main_image_urls"] = img_groups.get("main_images") or []
+            product_info["detail_image_urls"] = img_groups.get("detail_images") or []
+            product_info["image_urls"] = img_groups.get("all_images") or []
 
             return product_info
 

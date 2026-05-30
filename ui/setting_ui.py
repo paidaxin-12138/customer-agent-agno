@@ -764,6 +764,13 @@ class SettingUI(QFrame):
                         "已启用拼多多开放平台，请填写 Client ID 与 Client Secret。",
                     )
                     return
+                if not pinduoduo_open_config.get("access_token"):
+                    QMessageBox.warning(
+                        self,
+                        "配置提示",
+                        "已启用拼多多开放平台，但未填写 Access Token，"
+                        "买家咨询物流时将无法查询轨迹，仅可文字引导或转人工。",
+                    )
 
             # 验证 LLM 必填项
             if not llm_config.get("api_key"):

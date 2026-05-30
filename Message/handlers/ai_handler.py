@@ -46,6 +46,7 @@ def _is_transient_llm_transport_error(exc: BaseException) -> bool:
     return False
 
 from config import config
+from utils.human_transfer_intent import detect_human_transfer_intent
 
 from Message.ai_queue_load import get_ai_queue_tracker
 from Message.handlers.ai_reply_watchdog import (
@@ -254,6 +255,29 @@ class AIReplyHandler(BaseHandler):
 
             session_key = self._get_session_key(context, metadata)
             raw_buyer_text = str(context.content or "")
+
+            if bool(config.get("chat.human_transfer_semantic_enabled", True)) and (
+                detect_human_transfer_intent(raw_buyer_text)
+                or detect_human_transfer_intent(processed_content)
+            ):
+                self.logger.info("AI 兜底识别转人工意图: {!r}", raw_buyer_text)
+                try:
+                    from core.human_assist_bus import emit_human_assist
+
+                    emit_human_assist(
+                        "keyword_human",
+                        context,
+                        metadata,
+                        raw_buyer_text or processed_content,
+                    )
+                except Exception as e:
+                    self.logger.debug(f"emit_human_assist(keyword_human): {e}")
+                notice = "稍等下 这边上报一下呢亲亲"
+                ok = await self._send_reply(context, notice, metadata)
+                if ok:
+                    notify_outbound_reply(context, metadata)
+                return True
+
             try:
                 from core.ops_telemetry import set_rewrite, set_intent, start_turn
 
@@ -316,6 +340,9 @@ class AIReplyHandler(BaseHandler):
                     self.logger.debug(f"ops telemetry finish: {e}")
                 self._stats["ai_ok"] += 1
                 await self.log_message(context, "AI回复发送成功", f"回复: {reply[:120]}...")
+                await self._maybe_escalate_after_sales_pm_reply(
+                    context, metadata, processed_content, reply
+                )
             else:
                 self._stats["send_fail"] += 1
                 return await self._escalate_immediate(
@@ -333,6 +360,40 @@ class AIReplyHandler(BaseHandler):
             return await self._escalate_immediate(
                 context, metadata, q, session_key, epoch, "ai_failed"
             )
+
+    async def _maybe_escalate_after_sales_pm_reply(
+        self,
+        context: Context,
+        metadata: Dict[str, Any],
+        buyer_text: str,
+        ai_reply: str,
+    ) -> None:
+        """AI 对售后/货损问题回复「问产品经理」时，弹窗通知人工并附摘要。"""
+        if not bool(config.get("chat.ai_pm_after_sales_escalation_enabled", True)):
+            return
+        try:
+            from utils.ai_human_escalation import (
+                build_after_sales_pm_summary,
+                should_escalate_ai_pm_after_sales,
+            )
+            from core.human_assist_bus import emit_human_assist
+
+            if not should_escalate_ai_pm_after_sales(buyer_text, ai_reply):
+                return
+            summary = build_after_sales_pm_summary(buyer_text, ai_reply)
+            emit_human_assist(
+                "ai_after_sales_pm",
+                context,
+                metadata,
+                summary,
+            )
+            await self.log_message(
+                context,
+                "售后转人工弹窗",
+                summary[:120],
+            )
+        except Exception as e:
+            self.logger.debug(f"售后产品经理转人工弹窗跳过: {e}")
 
     async def _escalate_immediate(
         self,

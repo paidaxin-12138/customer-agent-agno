@@ -25,9 +25,20 @@ class _DIProxy:
         self.__dict__["_service_type"] = service_type
 
     def _get_instance(self) -> Any:
-        """从 DI 容器获取实例"""
+        """从 DI 容器获取实例；脚本/测试未启动 app 时回退到 get_db_manager。"""
         from core.di_container import container
-        return container.get(self.__dict__["_service_type"])
+
+        service_type = self.__dict__["_service_type"]
+        try:
+            if container.is_registered(service_type):
+                return container.get(service_type)
+        except Exception:
+            pass
+        if service_type.__name__ == "DatabaseManager":
+            from database.db_manager import get_db_manager
+
+            return get_db_manager()
+        return container.get(service_type)
 
     def __getattr__(self, name: str) -> Any:
         # 避免 __getattr__ 递归：先检查 __dict__

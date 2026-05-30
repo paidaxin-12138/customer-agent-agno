@@ -42,6 +42,26 @@ class KnowledgeConfig(BaseModel):
     """知识库配置模型"""
     contents_db_path: str = Field(default="", description="内容数据库路径")
     vector_db_path: str = Field(default="", description="向量数据库路径")
+    goods_sync_ocr_enabled: bool = Field(
+        default=True,
+        description="同步商品到知识库时是否 OCR 主图/详情图",
+    )
+    goods_sync_ocr_max_main_images: int = Field(default=3, description="OCR 主图张数上限")
+    goods_sync_ocr_max_detail_images: int = Field(default=6, description="OCR 详情图张数上限")
+    goods_sync_ocr_max_lines_per_image: int = Field(default=40, description="单张图 OCR 行数上限")
+    goods_sync_ocr_download_timeout_sec: int = Field(default=15, description="下载商品图超时秒")
+    goods_sync_ocr_summarize_with_llm: bool = Field(
+        default=False,
+        description="OCR 后是否用 LLM 整理参数摘要（默认关，避免改写价格）",
+    )
+    goods_sync_ocr_summarize_max_tokens: int = Field(default=800, description="OCR 摘要 LLM max_tokens")
+    goods_sync_ocr_include_raw: bool = Field(default=True, description="是否保留过滤后的 OCR 原文")
+    goods_sync_ocr_min_rec_score: float = Field(default=0.45, description="OCR 识别置信度下限")
+    goods_sync_ocr_det_limit_side_len: int = Field(default=1920, description="OCR 检测边长")
+    goods_sync_ocr_cpu_threads: int = Field(
+        default=2,
+        description="OCR/Paddle 占用 CPU 线程上限，避免界面卡死",
+    )
 
 class BusinessHoursConfig(BaseModel):
     """营业时间配置模型"""
@@ -115,7 +135,18 @@ config_base = {
     },
     "knowledge_base": {
         "contents_db_path": "",
-        "vector_db_path": ""
+        "vector_db_path": "",
+        "goods_sync_ocr_enabled": True,
+        "goods_sync_ocr_max_main_images": 3,
+        "goods_sync_ocr_max_detail_images": 6,
+        "goods_sync_ocr_max_lines_per_image": 40,
+        "goods_sync_ocr_download_timeout_sec": 15,
+        "goods_sync_ocr_summarize_with_llm": False,
+        "goods_sync_ocr_summarize_max_tokens": 800,
+        "goods_sync_ocr_include_raw": True,
+        "goods_sync_ocr_min_rec_score": 0.45,
+        "goods_sync_ocr_det_limit_side_len": 1920,
+        "goods_sync_ocr_cpu_threads": 2,
     },
     "prompt": {
         "append_natural_style": True,
@@ -143,11 +174,19 @@ config_base = {
         "llm_sync_retry_enabled": True,
         "llm_sync_retry_delay_sec": 1.5,
         "after_sales_apply_enabled": True,
+        "after_sales_apply_return_refund_days": 7,
+        "after_sales_apply_card_valid_hours": 48,
+        "after_sales_apply_send_card_valid_time": True,
+        "after_sales_apply_exchange_max_days": 90,
         "after_sales_apply_after_sales_type": 3,
         "after_sales_apply_question_type": 1,
+        "after_sales_apply_question_type_unshipped": 0,
         "after_sales_apply_refund_amount_fen": 0,
         "after_sales_apply_card_message": None,
-        "after_sales_apply_follow_text": "亲，请点击上方卡片填写退换货申请，有问题随时跟我说~",
+        "after_sales_apply_follow_text": (
+            "亲，请点击上方卡片，在弹出的页面中【手动填写退款理由】，"
+            "点击【提交】后我们才能收到申请，否则卡片会因超时而失效哦。"
+        ),
         "after_sales_apply_cooldown_sec": 300,
         "after_sales_apply_order_cache_ttl_sec": 3600,
         "session_idle_resolve_enabled": True,
@@ -157,6 +196,10 @@ config_base = {
         "after_sales_apply_no_orders_notice": (
             "亲，暂未查到您在本店的订单记录，请确认是否用下单账号咨询，"
             "或从订单页进入客服后再申请售后~"
+        ),
+        "after_sales_apply_order_not_eligible_notice": (
+            "亲，查到您的订单已完成退款或正在售后处理中，暂无法再次发送申请卡片；"
+            "如有疑问请回复「人工」为您处理~"
         ),
         "after_sales_apply_orders_query_fail_notice": (
             "亲，订单查询暂时失败，请稍后再试或回复「人工」协助处理~"
@@ -168,11 +211,48 @@ config_base = {
         "after_sales_apply_fail_notice": (
             "亲，退换货申请卡片发送未成功，请您在订单里点击「申请售后」，或回复「人工」为您处理~"
         ),
+        "after_sales_apply_quota_notice": (
+            "亲，该订单今日代申请售后次数已满，请您在订单详情页自行申请售后，"
+            "或回复「人工」为您处理~"
+        ),
+        "after_sales_apply_fail_cooldown_sec": 300,
+        "after_sales_apply_quota_cooldown_sec": 86400,
+        "after_sales_apply_card_expired_notice": (
+            "亲，刚才的快捷退款卡片已失效，请您打开订单详情点击「申请售后」自行提交，"
+            "或回复「人工」为您处理~"
+        ),
+        "after_sales_apply_merchant_window_expired_notice": (
+            "亲，该订单商家代申请退款的有效期已过或次数已满，无法再次发送快捷退款卡。"
+            "请您在订单详情点击「申请售后」，或回复「人工」为您处理~"
+        ),
+        "after_sales_apply_pending_notice": (
+            "亲，已经为您提交了退款申请，请耐心等待。"
+        ),
+        "after_sales_apply_record_expired_notice": (
+            "亲，该订单的快捷退款申请已超时。请到拼多多APP订单详情页点击「申请售后」"
+            "手动操作，或回复「人工」。"
+        ),
         "after_sales_apply_already_in_progress_notice": (
             "亲，看到您这笔订单已在售后处理中，请在订单详情查看进度；有疑问可回复「人工」。"
         ),
         "after_sales_apply_amount_unknown_notice": (
             "亲，暂未获取到订单金额，请您在订单详情页直接申请售后，或回复「人工」协助处理~"
+        ),
+        "after_sales_apply_refund_only_human_notice": (
+            "亲，仅退款需要人工为您核实处理，这边马上为您转接人工客服~"
+        ),
+        "after_sales_apply_unknown_order_time_notice": (
+            "亲，暂未查到该订单的购买时间，为您转接人工客服协助处理退换货~"
+        ),
+        "after_sales_apply_over_90_human_notice": (
+            "亲，您的订单已超过可在线申请售后的期限，为您转接人工客服进一步处理~"
+        ),
+        "after_sales_apply_unshipped_exchange_notice": (
+            "亲，您的订单尚未发货，换货需人工为您处理，这边为您转接人工客服~"
+        ),
+        "after_sales_apply_mid_window_human_notice": (
+            "亲，您的订单已超过 7 天无理由退货退款期限，退货退款需人工为您办理，"
+            "这边为您转接人工客服~"
         ),
     },
     "pinduoduo_open": {

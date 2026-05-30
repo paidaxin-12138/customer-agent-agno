@@ -44,68 +44,50 @@ from utils.dialogs import confirm_action
 
 from .knowledge.models import SimpleDocument, ImportError as KnowledgeImportError
 from .knowledge.widgets import KnowledgeCard, AddKnowledgeDialog
+from .goods_sync_subprocess import GoodsSyncSubprocessRunner
 
 logger = get_logger(__name__)
 
 
-class GoodsSyncWorker(QThread):
-    """商品同步工作线程"""
-    
-    progress = pyqtSignal(str, int, int)  # message, current, total
-    success = pyqtSignal(int)  # count
-    failed = pyqtSignal(str)  # error
-    
+class GoodsSyncCookiePreflightWorker(QThread):
+    """同步前检测商品接口登录态，必要时刷新 Cookie 写入数据库。"""
+
+    finished_ok = pyqtSignal()
+    finished_fail = pyqtSignal(str)
+
+    def __init__(self, shop_id: str, user_id: str, parent=None):
+        super().__init__(parent)
+        self.shop_id = shop_id
+        self.user_id = user_id
+
     def run(self) -> None:
-        """执行同步任务"""
         try:
-            from scripts.sync_goods_to_kb import (
-                GoodsKnowledgeSyncer,
-                validate_pinduoduo_account,
-            )
-            from config import get_config
+            from Channel.pinduoduo.utils.API.product_manager import ProductManager
+            from scripts.sync_goods_to_kb import _normalize_sync_error_message
 
-            shop_id = get_config("pinduoduo.shop_id", "")
-            user_id = get_config("pinduoduo.user_id", "")
-
-            if not shop_id or not user_id:
-                self.failed.emit("店铺配置不完整，请先在设置中配置拼多多店铺 ID 与用户 ID")
+            pm = ProductManager(shop_id=self.shop_id, user_id=self.user_id)
+            result = pm.get_product_list(page=1, size=1)
+            if result and result.get("success"):
+                self.finished_ok.emit()
                 return
 
-            login_err = validate_pinduoduo_account(shop_id, user_id)
-            if login_err:
-                self.failed.emit(login_err)
+            err = str((result or {}).get("error_msg") or (result or {}).get("errorMsg") or "")
+            expired = "会话已过期" in err or (result or {}).get("error_code") == 43001
+            if expired:
+                logger.info("商品接口会话过期，尝试刷新 Cookie…")
+                refreshed = pm.force_refresh_cookies() or pm.force_relogin()
+                if refreshed:
+                    result2 = pm.get_product_list(page=1, size=1)
+                    if result2 and result2.get("success"):
+                        self.finished_ok.emit()
+                        return
+                self.finished_fail.emit(_normalize_sync_error_message(err))
                 return
 
-            self.progress.emit(f"正在同步店铺：{shop_id}", 0, 0)
-            
-            # 创建同步器
-            syncer = GoodsKnowledgeSyncer(shop_id, user_id)
-            
-            # 重写进度回调
-            original_sync = syncer._sync_single_product
-            
-            async def sync_with_progress(product):
-                goods_id = product.get('goods_id', '未知')
-                goods_name = product.get('goods_name', '商品')
-                self.progress.emit(f"正在同步：{goods_name[:30]}...", syncer.synced_count, 0)
-                await original_sync(product)
-            
-            syncer._sync_single_product = sync_with_progress
-            
-            # 执行同步
-            result = asyncio.run(syncer.sync_all_products())
-            
-            if result.get("success") and int(result.get("synced_count") or 0) > 0:
-                self.success.emit(int(result["synced_count"]))
-            else:
-                err = result.get("error") or "未同步任何商品"
-                if result.get("empty_catalog"):
-                    err = "店铺暂无在售商品，未写入知识库"
-                self.failed.emit(str(err))
-                
+            self.finished_fail.emit(_normalize_sync_error_message(err or "商品接口不可用"))
         except Exception as e:
-            logger.error(f"商品同步失败：{e}")
-            self.failed.emit(str(e))
+            logger.error(f"同步前检查登录态失败: {e}")
+            self.finished_fail.emit(str(e))
 
 
 class ImportWorker(QThread):
@@ -510,7 +492,7 @@ class KnowledgeUI(QFrame):
         sync_btn.clicked.connect(self.sync_goods_to_knowledge)
         sync_btn.setFixedSize(self.BUTTON_WIDTH, self.BUTTON_HEIGHT)
         sync_btn.setIcon(FIF.SHOPPING_CART)
-        sync_btn.setToolTip("将店铺在售商品同步到知识库")
+        sync_btn.setToolTip("同步在售商品；默认 OCR 详情主图并整理参数写入知识库")
         buttons_layout.addWidget(sync_btn)
 
         restart_btn = PushButton("重启应用")
@@ -1017,16 +999,58 @@ class KnowledgeUI(QFrame):
             self._import_worker.start()
 
     def sync_goods_to_knowledge(self) -> None:
-        """同步商品到知识库。"""
+        """同步商品到知识库（独立子进程，避免 OCR 拖死主界面）。"""
+        preflight = getattr(self, "_sync_preflight_worker", None)
+        if preflight is not None and preflight.isRunning():
+            QMessageBox.warning(self, "请稍候", "正在检查拼多多登录态，请稍后再试。")
+            return
+
+        runner = getattr(self, "_sync_runner", None)
+        if runner is not None and runner.is_running():
+            QMessageBox.warning(
+                self,
+                "同步进行中",
+                "商品正在独立进程中同步，请等待完成或点击取消后再试。",
+            )
+            return
+
+        from scripts.sync_goods_to_kb import (
+            validate_pinduoduo_account,
+            resolve_sync_shop_credentials,
+        )
+
+        shop_id, user_id = resolve_sync_shop_credentials()
+        if not shop_id or not user_id:
+            QMessageBox.warning(
+                self,
+                "配置不完整",
+                "未找到可用的拼多多账号。\n请先在「用户管理」添加并验证账号，"
+                "或在 config.json 中设置 pinduoduo.shop_id / pinduoduo.user_id。",
+            )
+            return
+
+        login_err = validate_pinduoduo_account(shop_id, user_id)
+        if login_err:
+            QMessageBox.warning(self, "无法同步", login_err)
+            return
+
         if not confirm_action(
             self,
             "同步商品",
-            "将店铺在售商品同步到知识库，可能需要数分钟。\n是否现在开始同步？",
+            "将在独立进程中同步商品（含 OCR 时较慢，但主界面可继续操作）。\n"
+            "可在 config.json 的 knowledge_base.goods_sync_ocr_enabled 关闭 OCR。\n\n"
+            "是否现在开始同步？",
             confirm_text="开始同步",
             cancel_text="取消",
         ):
             return
-        
+
+        self._sync_shop_id = shop_id
+        self._sync_user_id = user_id
+        from config import get_config
+
+        self._sync_use_ocr = bool(get_config("knowledge_base.goods_sync_ocr_enabled", True))
+
         # 创建并显示进度对话框
         self._sync_dialog = QDialog(self)
         self._sync_dialog.setWindowTitle("同步商品")
@@ -1048,26 +1072,78 @@ class KnowledgeUI(QFrame):
         
         # 取消按钮
         cancel_btn = PushButton("取消")
-        cancel_btn.clicked.connect(self._sync_dialog.reject)
         cancel_btn.setFixedWidth(100)
         layout.addWidget(cancel_btn, 0, Qt.AlignmentFlag.AlignCenter)
-        
+
         self._sync_dialog.show()
-        
-        # 启动同步线程
-        self._sync_worker = GoodsSyncWorker()
-        self._sync_worker.progress.connect(self._on_sync_progress)
-        self._sync_worker.success.connect(self._on_sync_success)
-        self._sync_worker.failed.connect(self._on_sync_failed)
-        self._sync_worker.start()
+
+        cancel_btn.clicked.connect(self._cancel_goods_sync)
+        self._sync_cancel_btn = cancel_btn
+
+        self._sync_preflight_worker = GoodsSyncCookiePreflightWorker(
+            self._sync_shop_id, self._sync_user_id, self
+        )
+        self._sync_preflight_worker.finished_ok.connect(self._on_sync_preflight_ok)
+        self._sync_preflight_worker.finished_fail.connect(self._on_sync_preflight_fail)
+        self._sync_preflight_worker.finished.connect(self._on_sync_preflight_finished)
+        self._sync_label.setText("正在检查商品接口登录态…")
+        self._sync_preflight_worker.start()
+
+    def _on_sync_preflight_finished(self) -> None:
+        self._sync_preflight_worker = None
+
+    def _on_sync_preflight_ok(self) -> None:
+        if hasattr(self, "_sync_label"):
+            self._sync_label.setText("登录态正常，正在启动同步…")
+        self._sync_runner = GoodsSyncSubprocessRunner(self)
+        self._sync_runner.progress.connect(self._on_sync_progress)
+        self._sync_runner.success.connect(self._on_sync_success)
+        self._sync_runner.failed.connect(self._on_sync_failed)
+        self._sync_runner.finished.connect(self._on_sync_runner_finished)
+        self._sync_runner.start(
+            self._sync_shop_id,
+            self._sync_user_id,
+            use_ocr=self._sync_use_ocr,
+        )
+
+    def _on_sync_preflight_fail(self, error: str) -> None:
+        if hasattr(self, "_sync_dialog"):
+            self._sync_dialog.reject()
+        extra = ""
+        if "会话已过期" in error or "验证" in error:
+            extra = (
+                "\n\n说明：自动回复走聊天长连接，商品同步走商家后台商品接口，"
+                "登录态可能不一致，验证成功后再同步。"
+            )
+        QMessageBox.warning(self, "无法同步商品", f"{error}{extra}")
+
+    def _cancel_goods_sync(self) -> None:
+        preflight = getattr(self, "_sync_preflight_worker", None)
+        if preflight is not None and preflight.isRunning():
+            preflight.requestInterruption()
+            preflight.quit()
+            preflight.wait(2000)
+        runner = getattr(self, "_sync_runner", None)
+        if runner is not None and runner.is_running():
+            runner.cancel()
+            if hasattr(self, "_sync_label"):
+                self._sync_label.setText("正在终止同步进程…")
+        if hasattr(self, "_sync_dialog"):
+            self._sync_dialog.reject()
+
+    def _on_sync_runner_finished(self) -> None:
+        self._sync_runner = None
     
     def _on_sync_progress(self, message: str, current: int, total: int) -> None:
         """同步进度更新"""
         if hasattr(self, '_sync_label'):
             self._sync_label.setText(message)
         if hasattr(self, '_sync_progress'):
-            self._sync_progress.setRange(0, total)
-            self._sync_progress.setValue(current)
+            if total > 0:
+                self._sync_progress.setRange(0, total)
+                self._sync_progress.setValue(min(current, total))
+            else:
+                self._sync_progress.setRange(0, 0)
     
     def _on_sync_success(self, count: int) -> None:
         """同步成功回调"""
@@ -1079,9 +1155,10 @@ class KnowledgeUI(QFrame):
             "同步完成",
             f"成功同步 {count} 个商品到知识库！\n\nAI 现在可以查询和推荐这些商品了。",
         )
-        
-        # 刷新知识库列表
-        self.populate_cards()
+
+        # 子进程已写入磁盘，主进程需重新加载知识库实例
+        self.knowledge_manager = None
+        QTimer.singleShot(300, self.populate_cards)
     
     def _on_sync_failed(self, error: str) -> None:
         """同步失败回调"""

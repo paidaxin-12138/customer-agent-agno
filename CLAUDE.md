@@ -9,7 +9,7 @@
 - **桌面 UI**：PyQt6 + PyQt-Fluent-Widgets，入口 `app.py` → `ui/main_ui.py`。
 - **AI**：Agno + OpenAI 兼容 LLM；知识库可用 LanceDB / SQLite（具体实现见 `Agent/CustomerAgent/agent_knowledge.py`）。
 - **拼多多**：`Channel/pinduoduo/pdd_chnnel.py`（注意文件名拼写）维护 WebSocket；`utils/API/send_message.py` 等走 `mms.pinduoduo.com`；开放平台封装见 `utils/API/open_platform_client.py`，物流见 `utils/API/logistics.py`，售后示例见 `utils/API/after_sales.py`。
-- **消息链**：`Message/__init__.py` 中 `handler_chain()` 顺序为：**OrderLogisticsHandler**（改地址/收件人等转人工；物流意图查轨迹）→ **KeywordDetectionHandler** → **AIReplyHandler** → **CatchAllHandler**。
+- **消息链**：`handler_chain()` 顺序为：**OrderLogisticsHandler** → **ImageVideoHumanHandler** → **AfterSalesApplyHandler**（退换货意向发申请卡）→ **KeywordDetectionHandler** → **AIReplyHandler** → **CatchAllHandler**。
 - **配置**：`config.py` 线程安全读取 `config.json`；开放平台密钥放在 `pinduoduo_open`（见默认 `config_base`）。
 
 ---

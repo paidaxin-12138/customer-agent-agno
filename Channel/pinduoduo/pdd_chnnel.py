@@ -21,6 +21,24 @@ from dataclasses import dataclass
 # 延迟导入 Message 模块，避免模块级循环依赖
 from config import config
 
+
+def _context_struct_payload(context: Context) -> Dict[str, Any]:
+    """解析 Context.content；入队前 dict 会被 json.dumps 成字符串。"""
+    raw = context.content
+    if isinstance(raw, dict):
+        return raw
+    if not raw or not isinstance(raw, str):
+        return {}
+    text = raw.strip()
+    if not text.startswith("{"):
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 # ============================================================================
 # WebSocket优化组件 - 自动重连配置
 # ============================================================================
@@ -894,6 +912,7 @@ class PDDChannel(Channel):
             ContextType.WITHDRAW,         # 撤回消息
             ContextType.SYSTEM_HINT,      # 系统提示
             ContextType.MALL_CS,          # 商城客服消息
+            ContextType.MALL_SYSTEM_MSG,  # 含快捷退款卡过期(type=90)等
             ContextType.TRANSFER          # 转接消息
         }
         
@@ -958,16 +977,16 @@ class PDDChannel(Channel):
                 self.logger.info(f"系统提示: {context.content}")
                 
             elif context.type == ContextType.MALL_CS:
-                # 其他客服消息，通常不需要回复
-                self.logger.debug(f"收到客服消息: {context.content}")
+                await self._handle_mall_cs_message(
+                    context, shop_id, user_id, send_message
+                )
                 
             elif context.type == ContextType.SYSTEM_BIZ:
                 # 系统业务消息
                 self.logger.info(f"系统业务消息: {context.content}")
                 
             elif context.type == ContextType.MALL_SYSTEM_MSG:
-                # 商城系统消息
-                self.logger.info(f"商城系统消息: {context.content}")
+                await self._handle_mall_system_msg(context, shop_id, user_id, send_message)
                 
             elif context.type == ContextType.TRANSFER:
                 # 转接消息
@@ -976,7 +995,195 @@ class PDDChannel(Channel):
                 
         except Exception as e:
             self.logger.error(f"立即处理消息失败: {e}")
-    
+
+    async def _notify_refund_card_unusable(
+        self,
+        shop_id: str,
+        buyer_uid: str,
+        send_message: Any,
+        *,
+        order_sn: Optional[str] = None,
+        reason: str = "expired",
+    ) -> None:
+        from utils.session_order_cache import (
+            get_recent_order,
+            mark_refund_card_unusable,
+        )
+
+        uid = str(buyer_uid)
+        sn = (order_sn or "").strip() or get_recent_order(str(shop_id), uid)
+        if sn:
+            mark_refund_card_unusable(str(shop_id), uid, sn)
+        notice = config.get(
+            "chat.after_sales_apply_merchant_window_expired_notice"
+        ) or config.get(
+            "chat.after_sales_apply_card_expired_notice",
+            "亲，该订单商家代申请退款的时效已过或次数已满，快捷退款卡片无法使用。"
+            "请您打开订单详情点击「申请售后」自行提交，或回复「人工」为您处理~",
+        )
+        if notice:
+            await asyncio.to_thread(send_message.send_text, uid, str(notice))
+
+    async def _handle_mall_cs_message(
+        self,
+        context: Context,
+        shop_id: str,
+        user_id: str,
+        send_message: Any,
+    ) -> None:
+        """本店客服消息；解析 type=19 快捷退款卡下行（含是否已过期）。"""
+        payload = _context_struct_payload(context)
+        if payload.get("event") != "ask_refund_card_push":
+            if context.content:
+                self.logger.debug(f"收到客服消息: {context.content}")
+            return
+
+        from Channel.pinduoduo.utils.API.chat_orders import refund_card_push_expired
+
+        buyer_uid = payload.get("to_uid")
+        order_sn = payload.get("order_sn")
+        expired = refund_card_push_expired(
+            {"expire_text": payload.get("state_expire_text")},
+            {
+                "expire_text": payload.get("mstate_expire_text"),
+                "status": payload.get("mstate_status"),
+            },
+        )
+        mstate_status = payload.get("mstate_status")
+        from utils.merchant_refund_apply_record import (
+            gate_notice,
+            get_apply_counts,
+            mark_apply_expired,
+            update_apply_from_card_push,
+            RefundApplyGate,
+        )
+
+        valid_time_unix: Optional[int] = None
+        try:
+            vt_raw = payload.get("valid_time")
+            if vt_raw is not None:
+                valid_time_unix = int(float(vt_raw))
+        except (TypeError, ValueError):
+            pass
+
+        if buyer_uid and order_sn:
+            update_apply_from_card_push(
+                str(shop_id),
+                str(buyer_uid),
+                str(order_sn),
+                card_msg_id=str(payload.get("card_msg_id") or "") or None,
+                valid_time_unix=valid_time_unix,
+                card_expired=expired,
+            )
+            counts = get_apply_counts(str(shop_id), str(buyer_uid), str(order_sn))
+            self.logger.info(
+                f"代申请记录已更新 order_sn={order_sn} expired={expired} "
+                f"valid_time={valid_time_unix} 本单成功={counts.get('order_total', 0)}"
+            )
+
+        self.logger.info(
+            f"快捷退款卡下行 order_sn={order_sn} buyer={buyer_uid} "
+            f"state_expire={payload.get('state_expire_text')!r} "
+            f"mstate_status={mstate_status} mstate_expire={payload.get('mstate_expire_text')!r} "
+            f"valid_time={payload.get('valid_time')} expired={expired}"
+        )
+        if not buyer_uid:
+            return
+        if expired:
+            self.logger.warning(
+                f"商家代申请退款窗口已失效 order_sn={order_sn} buyer={buyer_uid} "
+                f"(mstate.status={payload.get('mstate_status')} 且 expire_text=已过期，"
+                f"通常为同单重复代申请或超时)"
+            )
+            from utils.session_order_cache import mark_refund_card_unusable
+
+            mark_refund_card_unusable(str(shop_id), str(buyer_uid), str(order_sn))
+            notice = gate_notice(RefundApplyGate.EXPIRED_NOTICE)
+            await asyncio.to_thread(send_message.send_text, str(buyer_uid), notice)
+            return
+        cfg_hours = int(config.get("chat.after_sales_apply_card_valid_hours", 48) or 48)
+        remain_h: Optional[float] = None
+        try:
+            vt = float(payload.get("valid_time") or 0)
+            if vt > 0:
+                remain_h = max(0.0, (vt - time.time()) / 3600.0)
+        except (TypeError, ValueError):
+            pass
+        if remain_h is not None:
+            self.logger.info(
+                f"快捷退款卡有效 order_sn={order_sn} "
+                f"(mstate.status={mstate_status} 配置截止={cfg_hours}h "
+                f"平台valid_time剩余={remain_h:.1f}h)"
+            )
+        else:
+            self.logger.info(
+                f"快捷退款卡有效 order_sn={order_sn} "
+                f"(mstate.status={mstate_status} 配置截止={cfg_hours}h)"
+            )
+        follow = config.get("chat.after_sales_apply_follow_text") or ""
+        if follow:
+            await asyncio.to_thread(
+                send_message.send_text, str(buyer_uid), str(follow)
+            )
+
+    async def _handle_mall_system_msg(
+        self,
+        context: Context,
+        shop_id: str,
+        user_id: str,
+        send_message: Any,
+    ) -> None:
+        """商城系统消息：快捷退款卡过期/确认等平台侧通知。"""
+        payload = _context_struct_payload(context)
+        event = payload.get("event")
+        if event == "refund_card_confirmed":
+            self.logger.info(
+                f"买家已确认快捷退款卡 shop={shop_id} buyer={payload.get('user_id')} "
+                f"card_msg_id={payload.get('msg_id')}"
+            )
+            return
+        if event != "refund_card_expired":
+            if payload:
+                self.logger.debug(f"商城系统消息: {payload}")
+            return
+
+        buyer_uid = payload.get("user_id")
+        card_msg_id = payload.get("msg_id")
+        self.logger.warning(
+            f"快捷退款卡已过期 shop={shop_id} buyer={buyer_uid} card_msg_id={card_msg_id}"
+        )
+        if not buyer_uid:
+            return
+        from database.db_manager import db_manager
+        from utils.merchant_refund_apply_record import (
+            gate_notice,
+            mark_apply_expired,
+            RefundApplyGate,
+        )
+
+        row = (
+            db_manager.get_refund_apply_by_card_msg_id(str(shop_id), str(card_msg_id))
+            if card_msg_id
+            else None
+        )
+        already_expired = row and (row.get("status") or "") == "expired"
+        sn = (row or {}).get("order_sn") or ""
+        if sn:
+            mark_apply_expired(
+                str(shop_id), sn, buyer_uid=str(buyer_uid), card_msg_id=card_msg_id
+            )
+        elif card_msg_id:
+            mark_apply_expired(
+                str(shop_id),
+                "",
+                buyer_uid=str(buyer_uid),
+                card_msg_id=card_msg_id,
+            )
+        if already_expired:
+            return
+        notice = gate_notice(RefundApplyGate.EXPIRED_NOTICE)
+        await asyncio.to_thread(send_message.send_text, str(buyer_uid), notice)
+
     async def _cleanup_reconnect_tasks(self, connection_key: Optional[str] = None):
         """清理重连任务；传 connection_key 时仅清理单账号。"""
         try:

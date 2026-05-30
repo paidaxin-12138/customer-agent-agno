@@ -735,16 +735,13 @@ class ChatLiveWidget(QFrame):
         info.addWidget(self.lbl_avatar, 0, Qt.AlignmentFlag.AlignTop)
         info.addLayout(name_col, 1)
 
-        self.btn_profile = PushButton("📋 资料")
-        self.btn_profile.setEnabled(False)
-        self.btn_profile.setToolTip("后续版本开放")
         self.btn_ai = PushButton("🤖 转 AI")
         self.btn_human = PushButton("👤 人工接待")
         self.btn_close = PushButton("结束会话")
         self.btn_ai.clicked.connect(self._on_toggle_ai_true)
         self.btn_human.clicked.connect(self._on_toggle_ai_false)
         self.btn_close.clicked.connect(self._on_close_session)
-        for b in (self.btn_profile, self.btn_ai, self.btn_human, self.btn_close):
+        for b in (self.btn_ai, self.btn_human, self.btn_close):
             b.setFixedHeight(40)
             b.setSizePolicy(
                 QSizePolicy.Policy.Minimum,
@@ -761,7 +758,7 @@ class ChatLiveWidget(QFrame):
         hdr_act_layout = QHBoxLayout(hdr_actions_inner)
         hdr_act_layout.setContentsMargins(0, 0, 0, 0)
         hdr_act_layout.setSpacing(8)
-        for b in (self.btn_profile, self.btn_ai, self.btn_human, self.btn_close):
+        for b in (self.btn_ai, self.btn_human, self.btn_close):
             hdr_act_layout.addWidget(b)
 
         hdr_act_scroll = ScrollArea()
@@ -925,7 +922,6 @@ class ChatLiveWidget(QFrame):
             f" background: transparent; color: {_C_MUTED}; font-size: 13px; }}"
             f"PushButton:hover {{ background-color: {_C_CARD}; color: {_C_TEXT}; }}"
         )
-        self.btn_profile.setStyleSheet(outline)
         self.btn_close.setStyleSheet(outline)
         self._update_mode_toggle_buttons()
 
@@ -1334,7 +1330,7 @@ class ChatLiveWidget(QFrame):
             buyer_uid = str(payload.get("buyer_uid", ""))
             buyer_nickname = str(payload.get("buyer_nickname", "买家"))
             account_name = str(payload.get("login_username", ""))
-            question = str(payload.get("question", ""))
+            question = str(payload.get("summary") or payload.get("question", ""))
             reason = str(payload.get("reason", "转人工"))
             shop_name = str(payload.get("shop_name", ""))
             
@@ -1357,8 +1353,13 @@ class ChatLiveWidget(QFrame):
             self.logger.info(f"弹窗已调用 show()，visible={self._current_assist_dialog.isVisible()}")
             
             # 同时显示 InfoBar 通知（作为额外提醒）
+            bar_title = "🔔 买家申请转人工"
+            if reason == "ai_after_sales_pm":
+                bar_title = "🔔 售后问题需人工处理"
+            elif reason == "after_sales_policy":
+                bar_title = "🔔 售后需人工处理"
             InfoBar.warning(
-                title="🔔 买家申请转人工",
+                title=bar_title,
                 content=f"买家：{buyer_nickname}\n问题：{question[:50]}",
                 parent=self,
                 duration=3000,

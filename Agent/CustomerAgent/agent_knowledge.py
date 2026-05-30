@@ -12,6 +12,7 @@
 
 from typing import List, Optional, Dict, Any, Tuple
 import re
+import threading
 from pathlib import Path
 import json
 import math
@@ -95,6 +96,9 @@ class DocumentLike:
 
 class NailLampKnowledgeManager:
     """美甲灯知识库管理器 - 优化检索召回率"""
+    # UI 线程与商品同步线程共用，避免 LanceDB/JSON 并发写导致卡死
+    _global_io_lock = threading.RLock()
+
     # 打分仅在正文前若干字内进行，避免超长导入拖慢检索；返回仍用全文
     _SCORE_SNIPPET_CHARS = 12000
     # 参与 embedding 的扩展查询总长上限
@@ -503,15 +507,16 @@ class NailLampKnowledgeManager:
 
     def _save_documents(self) -> None:
         """将文档数据持久化到本地 JSON。"""
-        try:
-            self._store_file.parent.mkdir(parents=True, exist_ok=True)
-            self._store_file.write_text(
-                json.dumps(self.documents, ensure_ascii=False, indent=2),
-                encoding="utf-8"
-            )
-        except Exception:
-            # 保存失败不抛出，避免影响主流程
-            pass
+        with self._global_io_lock:
+            try:
+                self._store_file.parent.mkdir(parents=True, exist_ok=True)
+                self._store_file.write_text(
+                    json.dumps(self.documents, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception:
+                # 保存失败不抛出，避免影响主流程
+                pass
 
     def ensure_embeddings_ready(self) -> int:
         """
@@ -1553,29 +1558,67 @@ class NailLampKnowledgeManager:
 
     def delete_goods_sync_documents(self, platform_shop_id: str) -> int:
         """删除某店铺此前 goods_sync 写入的文档（全量同步前清理）。"""
+        with self._global_io_lock:
+            sid = str(platform_shop_id or "").strip()
+            if not sid:
+                return 0
+            remove_ids: List[str] = []
+            kept: List[Dict[str, Any]] = []
+            for d in self.documents:
+                ps = (d.get("platform_shop_id") or "").strip()
+                src = (d.get("source") or "").strip()
+                if src == "goods_sync" and ps == sid:
+                    remove_ids.append(str(d.get("id")))
+                else:
+                    kept.append(d)
+            if not remove_ids:
+                return 0
+            self.documents = kept
+            if self._knowledge_table:
+                for doc_id in remove_ids:
+                    try:
+                        self._knowledge_table.delete(f"id = '{doc_id}'")
+                    except Exception as e:
+                        self.logger.warning(f"LanceDB 删除 goods_sync 文档失败：{e}")
+            self._save_documents()
+            return len(remove_ids)
+
+    def _build_goods_sync_row(
+        self,
+        *,
+        platform_shop_id: str,
+        goods_id: str,
+        title: str,
+        content: str,
+        compute_embedding: bool = True,
+    ) -> Optional[Dict[str, Any]]:
         sid = str(platform_shop_id or "").strip()
-        if not sid:
-            return 0
-        remove_ids: List[str] = []
-        kept: List[Dict[str, Any]] = []
-        for d in self.documents:
-            ps = (d.get("platform_shop_id") or "").strip()
-            src = (d.get("source") or "").strip()
-            if src == "goods_sync" and ps == sid:
-                remove_ids.append(str(d.get("id")))
+        gid = str(goods_id or "").strip()
+        if not sid or not gid or not title or not content:
+            return None
+        doc_id = f"goods_sync_{sid}_{gid}"
+        row: Dict[str, Any] = {
+            "id": doc_id,
+            "title": title,
+            "filename": f"{title}.md",
+            "content": content,
+            "source": "goods_sync",
+            "import_format": "markdown",
+            "platform_shop_id": sid,
+            "inherit_key": f"goods:{gid}",
+            "allow_child_override": False,
+        }
+        if compute_embedding:
+            if self._document_should_use_chunks(content):
+                row["chunks"] = self._build_chunk_entries(content)
+                row["embedding"] = (
+                    row["chunks"][0].get("embedding")
+                    if row["chunks"]
+                    else self._embed_text(content[:4000])
+                )
             else:
-                kept.append(d)
-        if not remove_ids:
-            return 0
-        self.documents = kept
-        self._save_documents()
-        if self._knowledge_table:
-            for doc_id in remove_ids:
-                try:
-                    self._knowledge_table.delete(f"id = '{doc_id}'")
-                except Exception as e:
-                    self.logger.warning(f"LanceDB 删除 goods_sync 文档失败：{e}")
-        return len(remove_ids)
+                row["embedding"] = self._embed_text(content)
+        return row
 
     def upsert_goods_sync_document(
         self,
@@ -1589,49 +1632,70 @@ class NailLampKnowledgeManager:
         写入/更新店铺商品子知识库。
         inherit_key=goods:{id} 与父库同键时，父条需 allow_child_override 才会在检索中被隐藏。
         """
-        sid = str(platform_shop_id or "").strip()
-        gid = str(goods_id or "").strip()
-        if not sid or not gid or not title or not content:
+        row = self._build_goods_sync_row(
+            platform_shop_id=platform_shop_id,
+            goods_id=goods_id,
+            title=title,
+            content=content,
+        )
+        if not row:
             return False
-        doc_id = f"goods_sync_{sid}_{gid}"
-        inherit_key = f"goods:{gid}"
-        row: Dict[str, Any] = {
-            "id": doc_id,
-            "title": title,
-            "filename": f"{title}.md",
-            "content": content,
-            "source": "goods_sync",
-            "import_format": "markdown",
-            "platform_shop_id": sid,
-            "inherit_key": inherit_key,
-            "allow_child_override": False,
-        }
-        if self._document_should_use_chunks(content):
-            row["chunks"] = self._build_chunk_entries(content)
-            row["embedding"] = (
-                row["chunks"][0].get("embedding")
-                if row["chunks"]
-                else self._embed_text(content[:4000])
-            )
-        else:
-            row["embedding"] = self._embed_text(content)
-
-        updated = False
-        for i, doc in enumerate(self.documents):
-            if str(doc.get("id")) == doc_id:
-                self.documents[i] = row
-                updated = True
-                break
-        if not updated:
-            self.documents.append(row)
-        self._save_documents()
-        if self._knowledge_table:
-            try:
-                self._knowledge_table.delete(f"id = '{doc_id}'")
-            except Exception:
-                pass
-        self._add_doc_to_lancedb(row)
+        doc_id = str(row["id"])
+        with self._global_io_lock:
+            updated = False
+            for i, doc in enumerate(self.documents):
+                if str(doc.get("id")) == doc_id:
+                    self.documents[i] = row
+                    updated = True
+                    break
+            if not updated:
+                self.documents.append(row)
+            if self._knowledge_table:
+                try:
+                    self._knowledge_table.delete(f"id = '{doc_id}'")
+                except Exception:
+                    pass
+            self._add_doc_to_lancedb(row)
+            self._save_documents()
         return True
+
+    def bulk_upsert_goods_sync_documents(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> int:
+        """
+        批量写入商品同步文档（单次落盘 + 向量索引），供后台同步使用，避免每商品写盘卡 UI。
+        """
+        if not rows:
+            return 0
+        written = 0
+        with self._global_io_lock:
+            for row in rows:
+                doc_id = str(row.get("id") or "")
+                if not doc_id:
+                    continue
+                updated = False
+                for i, doc in enumerate(self.documents):
+                    if str(doc.get("id")) == doc_id:
+                        self.documents[i] = row
+                        updated = True
+                        break
+                if not updated:
+                    self.documents.append(row)
+                written += 1
+            if self._knowledge_table:
+                for row in rows:
+                    doc_id = str(row.get("id") or "")
+                    if not doc_id:
+                        continue
+                    try:
+                        self._knowledge_table.delete(f"id = '{doc_id}'")
+                    except Exception:
+                        pass
+                for row in rows:
+                    self._add_doc_to_lancedb(row)
+            self._save_documents()
+        return written
 
     def delete_document(self, doc_id: str) -> bool:
         """向后兼容 - 删除文档。"""

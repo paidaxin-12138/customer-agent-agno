@@ -12,12 +12,12 @@ from typing import List, Dict, Any, Optional
 from collections import deque
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QAbstractTableModel, QModelIndex
 from PyQt6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QWidget,
-                            QTextEdit, QFileDialog, QMessageBox, QSplitter,
+                            QTextEdit, QMessageBox, QSplitter,
                             QTableView, QHeaderView, QApplication,
                             QStyledItemDelegate, QStyleOptionViewItem)
 from PyQt6.QtGui import QFont, QTextCursor, QColor, QTextCharFormat, QBrush, QPainter
 from qfluentwidgets import (CardWidget, SubtitleLabel, CaptionLabel, BodyLabel,
-                           PrimaryPushButton, PushButton, StrongBodyLabel,
+                           PushButton, StrongBodyLabel,
                            ComboBox, LineEdit, ScrollArea, FluentIcon as FIF,
                            InfoBar, InfoBarPosition, ToolButton, CheckBox)
 from utils.logger_loguru import get_logger, logger, UILogHandler
@@ -494,11 +494,9 @@ class LogControlWidget(CardWidget):
     """日志控制组件"""
 
     clear_logs = pyqtSignal()
-    export_logs = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.export_format = "txt"  # 默认导出格式
         self.setupUI()
         self.connectSignals()
 
@@ -512,52 +510,15 @@ class LogControlWidget(CardWidget):
         title_label = StrongBodyLabel("日志控制")
         layout.addWidget(title_label)
 
-        # 导出格式选择
-        format_layout = QHBoxLayout()
-        format_label = CaptionLabel("导出格式:")
-        format_label.setFixedWidth(60)
-
-        self.format_combo = ComboBox()
-        self.format_combo.addItems(["TXT", "JSON", "CSV"])
-        self.format_combo.setFixedSize(120, 40)
-        self.format_combo.setCurrentText("TXT")
-
-        format_layout.addWidget(format_label)
-        format_layout.addWidget(self.format_combo)
-        format_layout.addStretch()
-
-        # 按钮布局
-        buttons_layout = QHBoxLayout()
-
         # 清空按钮
         self.clear_btn = PushButton("清空")
         self.clear_btn.setIcon(FIF.DELETE)
         self.clear_btn.setFixedSize(120, 40)
-
-        # 导出按钮
-        self.export_btn = PrimaryPushButton("导出")
-        self.export_btn.setIcon(FIF.SAVE)
-        self.export_btn.setFixedSize(120, 40)
-
-        buttons_layout.addWidget(self.clear_btn)
-        buttons_layout.addWidget(self.export_btn)
-
-        layout.addLayout(format_layout)
-        layout.addLayout(buttons_layout)
+        layout.addWidget(self.clear_btn)
 
     def connectSignals(self):
         """连接信号"""
         self.clear_btn.clicked.connect(self.clear_logs.emit)
-        self.export_btn.clicked.connect(self.export_logs.emit)
-        self.format_combo.currentTextChanged.connect(self.set_export_format)
-
-    def set_export_format(self, format):
-        """设置导出格式"""
-        self.export_format = format.lower()
-
-    def get_export_format(self):
-        """获取导出格式"""
-        return self.export_format
 
 
 class LogUI(QFrame):
@@ -587,7 +548,7 @@ class LogUI(QFrame):
         title_layout.setContentsMargins(0, 0, 0, 0)
         title_layout.setSpacing(5)
         title_label = SubtitleLabel("日志管理")
-        subtitle_label = CaptionLabel("查看、筛选与导出运行日志")
+        subtitle_label = CaptionLabel("查看与筛选运行日志")
         title_layout.addWidget(title_label)
         title_layout.addWidget(subtitle_label)
         header_layout.addWidget(title_area)
@@ -653,7 +614,6 @@ class LogUI(QFrame):
         # 日志信号已在setupLogHandler中连接
         self.filter_widget.filter_changed.connect(self.apply_filter)
         self.control_widget.clear_logs.connect(self.clear_logs)
-        self.control_widget.export_logs.connect(self.export_logs)
     
     def handle_log_received(self, level: str, message: str, record):
         """处理接收到的日志"""
@@ -688,96 +648,6 @@ class LogUI(QFrame):
                 parent=self
             )
     
-    
-    def export_logs(self):
-        """导出日志"""
-        format = self.control_widget.get_export_format()
-
-        if format == "json":
-            file_filter = "JSON文件 (*.json);;所有文件 (*.*)"
-            default_name = f"logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        elif format == "csv":
-            file_filter = "CSV文件 (*.csv);;所有文件 (*.*)"
-            default_name = f"logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        else:
-            file_filter = "文本文件 (*.txt);;所有文件 (*.*)"
-            default_name = f"logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "导出日志",
-            default_name,
-            file_filter
-        )
-
-        if file_path:
-            try:
-                if format == "json":
-                    self._export_json(file_path)
-                elif format == "csv":
-                    self._export_csv(file_path)
-                else:
-                    self._export_txt(file_path)
-
-                InfoBar.success(
-                    title="导出成功",
-                    content=f"日志已导出到: {file_path}",
-                    orient=Qt.Orientation.Horizontal,
-                    isClosable=True,
-                    position=InfoBarPosition.TOP,
-                    duration=3000,
-                    parent=self
-                )
-            except Exception as e:
-                QMessageBox.critical(self, "导出失败", f"导出日志失败：{str(e)}")
-
-    def _export_txt(self, file_path: str):
-        """导出为TXT格式"""
-        with open(file_path, 'w', encoding='utf-8') as f:
-            # 从LogDisplayWidget获取过滤后的日志
-            model = self.log_display.log_table.model()
-            for log_item in model._filtered_logs:
-                # 导出完整格式的日志
-                formatted_log = f"{log_item.timestamp} | {log_item.level:8} | {log_item.file_info} - {log_item.message}"
-                f.write(formatted_log + '\n')
-
-    def _export_json(self, file_path: str):
-        """导出为JSON格式"""
-        import json
-        logs = []
-
-        # 从LogDisplayWidget获取过滤后的日志
-        model = self.log_display.log_table.model()
-        for log_item in model._filtered_logs:
-            log_data = {
-                'timestamp': log_item.timestamp,
-                'level': log_item.level,
-                'module': log_item.module,
-                'message': log_item.message,
-                'file_info': log_item.file_info
-            }
-            logs.append(log_data)
-
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(logs, f, ensure_ascii=False, indent=2)
-
-    def _export_csv(self, file_path: str):
-        """导出为CSV格式"""
-        import csv
-        with open(file_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(['时间', '级别', '模块', '文件', '消息'])
-
-            # 从LogDisplayWidget获取过滤后的日志
-            model = self.log_display.log_table.model()
-            for log_item in model._filtered_logs:
-                writer.writerow([
-                    log_item.timestamp,
-                    log_item.level,
-                    log_item.module,
-                    log_item.file_info,
-                    log_item.message
-                ])
     
     def closeEvent(self, event):
         """关闭事件"""

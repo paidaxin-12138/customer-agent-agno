@@ -7,7 +7,17 @@ from sqlalchemy.exc import SQLAlchemyError
 from typing import List, Dict, Any, Optional, Tuple, Union
 from utils.chat_time import now_for_db
 from utils.logger_loguru import get_logger
-from database.models import Base, Channel, Shop, Account, Keyword, ChatSession, ChatMessage, QuickReply
+from database.models import (
+    Base,
+    Channel,
+    Shop,
+    Account,
+    Keyword,
+    ChatSession,
+    ChatMessage,
+    QuickReply,
+    MerchantRefundApplyLog,
+)
 
 class DatabaseManager:
     """数据库管理类，提供数据库操作的封装"""
@@ -41,6 +51,7 @@ class DatabaseManager:
         # 创建表结构
         Base.metadata.create_all(self.engine)
         self._migrate_chat_session_memory_columns()
+        self._migrate_merchant_refund_apply_columns()
         self._migrate_ops_schema()
         self._migrate_utc_timestamps_to_shanghai()
         
@@ -75,6 +86,41 @@ class DatabaseManager:
                 self.logger.info(f"chat_sessions 记忆字段迁移: {len(alters)} 列")
         except Exception as e:
             self.logger.warning(f"chat_sessions 记忆字段迁移失败: {e}")
+        finally:
+            conn.close()
+
+    def _migrate_merchant_refund_apply_columns(self) -> None:
+        """merchant_refund_apply_logs 补齐 status / valid_time_unix。"""
+        import sqlite3
+
+        path = self.engine.url.database
+        if not path:
+            return
+        conn = sqlite3.connect(path)
+        try:
+            cur = conn.execute("PRAGMA table_info(merchant_refund_apply_logs)")
+            cols = {row[1] for row in cur.fetchall()}
+            if not cols:
+                return
+            alters = []
+            if "status" not in cols:
+                alters.append(
+                    "ALTER TABLE merchant_refund_apply_logs ADD COLUMN status TEXT"
+                )
+            if "valid_time_unix" not in cols:
+                alters.append(
+                    "ALTER TABLE merchant_refund_apply_logs "
+                    "ADD COLUMN valid_time_unix INTEGER"
+                )
+            for sql in alters:
+                conn.execute(sql)
+            if alters:
+                conn.commit()
+                self.logger.info(
+                    f"merchant_refund_apply_logs 迁移: {len(alters)} 列"
+                )
+        except Exception as e:
+            self.logger.warning(f"merchant_refund_apply_logs 迁移失败: {e}")
         finally:
             conn.close()
 
@@ -1595,6 +1641,258 @@ class DatabaseManager:
                 session.commit()
         except SQLAlchemyError:
             session.rollback()
+        finally:
+            session.close()
+
+    def _today_date_str(self) -> str:
+        from utils.chat_time import shanghai_naive_now
+
+        return shanghai_naive_now().strftime("%Y-%m-%d")
+
+    def _row_to_refund_apply_dict(self, row: MerchantRefundApplyLog) -> Dict[str, Any]:
+        return {
+            "id": int(row.id),
+            "shop_id": row.shop_id,
+            "buyer_uid": row.buyer_uid,
+            "order_sn": row.order_sn,
+            "card_msg_id": row.card_msg_id,
+            "api_success": bool(row.api_success),
+            "card_expired": row.card_expired,
+            "status": row.status,
+            "valid_time_unix": row.valid_time_unix,
+            "created_at": row.created_at,
+        }
+
+    def get_refund_apply_by_card_msg_id(
+        self, shop_id: str, card_msg_id: str
+    ) -> Optional[Dict[str, Any]]:
+        session = self.get_session()
+        try:
+            row = (
+                session.query(MerchantRefundApplyLog)
+                .filter(
+                    MerchantRefundApplyLog.shop_id == str(shop_id),
+                    MerchantRefundApplyLog.card_msg_id == str(card_msg_id),
+                )
+                .order_by(desc(MerchantRefundApplyLog.id))
+                .first()
+            )
+            return self._row_to_refund_apply_dict(row) if row else None
+        except SQLAlchemyError as e:
+            self.logger.error(f"get_refund_apply_by_card_msg_id 失败: {e}")
+            return None
+        finally:
+            session.close()
+
+    def get_latest_refund_apply_for_order(
+        self, shop_id: str, order_sn: str
+    ) -> Optional[Dict[str, Any]]:
+        """按订单号取最近一条代申请记录。"""
+        session = self.get_session()
+        try:
+            row = (
+                session.query(MerchantRefundApplyLog)
+                .filter(
+                    MerchantRefundApplyLog.shop_id == str(shop_id),
+                    MerchantRefundApplyLog.order_sn == str(order_sn).strip(),
+                )
+                .order_by(desc(MerchantRefundApplyLog.id))
+                .first()
+            )
+            return self._row_to_refund_apply_dict(row) if row else None
+        except SQLAlchemyError as e:
+            self.logger.error(f"get_latest_refund_apply_for_order 失败: {e}")
+            return None
+        finally:
+            session.close()
+
+    def record_merchant_refund_apply(
+        self,
+        shop_id: str,
+        buyer_uid: str,
+        order_sn: str,
+        *,
+        api_success: bool,
+        status: Optional[str] = None,
+        valid_time_unix: Optional[int] = None,
+        card_msg_id: Optional[str] = None,
+        after_sales_type: Optional[int] = None,
+        refund_amount_fen: Optional[int] = None,
+        error_msg: Optional[str] = None,
+    ) -> int:
+        """写入代申请记录，返回 id。"""
+        session = self.get_session()
+        try:
+            if api_success and status is None:
+                status = "pending"
+            if not api_success and status is None:
+                status = "failed"
+            row = MerchantRefundApplyLog(
+                shop_id=str(shop_id),
+                buyer_uid=str(buyer_uid),
+                order_sn=str(order_sn).strip(),
+                card_msg_id=str(card_msg_id) if card_msg_id else None,
+                api_success=bool(api_success),
+                status=status,
+                valid_time_unix=int(valid_time_unix) if valid_time_unix else None,
+                after_sales_type=after_sales_type,
+                refund_amount_fen=refund_amount_fen,
+                error_msg=(str(error_msg)[:512] if error_msg else None),
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return int(row.id)
+        except SQLAlchemyError as e:
+            session.rollback()
+            self.logger.error(f"record_merchant_refund_apply 失败: {e}")
+            return 0
+        finally:
+            session.close()
+
+    def update_refund_apply_from_card_push(
+        self,
+        shop_id: str,
+        buyer_uid: str,
+        order_sn: str,
+        *,
+        card_msg_id: Optional[str],
+        valid_time_unix: Optional[int],
+        card_expired: bool,
+    ) -> bool:
+        """type=19 下行：补全 card_msg_id / valid_time；过期则 status=expired。"""
+        session = self.get_session()
+        try:
+            row = (
+                session.query(MerchantRefundApplyLog)
+                .filter(
+                    MerchantRefundApplyLog.shop_id == str(shop_id),
+                    MerchantRefundApplyLog.order_sn == str(order_sn).strip(),
+                    MerchantRefundApplyLog.api_success.is_(True),
+                )
+                .order_by(desc(MerchantRefundApplyLog.id))
+                .first()
+            )
+            if not row:
+                row = MerchantRefundApplyLog(
+                    shop_id=str(shop_id),
+                    buyer_uid=str(buyer_uid),
+                    order_sn=str(order_sn).strip(),
+                    api_success=True,
+                    status="expired" if card_expired else "pending",
+                )
+                session.add(row)
+            if card_msg_id:
+                row.card_msg_id = str(card_msg_id)
+            if valid_time_unix:
+                row.valid_time_unix = int(valid_time_unix)
+            row.card_expired = bool(card_expired)
+            row.status = "expired" if card_expired else "pending"
+            row.outcome_at = now_for_db()
+            session.commit()
+            return True
+        except SQLAlchemyError as e:
+            session.rollback()
+            self.logger.error(f"update_refund_apply_from_card_push 失败: {e}")
+            return False
+        finally:
+            session.close()
+
+    def mark_refund_apply_expired(
+        self,
+        shop_id: str,
+        order_sn: str,
+        *,
+        buyer_uid: Optional[str] = None,
+        card_msg_id: Optional[str] = None,
+    ) -> bool:
+        """type=19/90：将订单代申请记录标为 expired。"""
+        session = self.get_session()
+        try:
+            q = session.query(MerchantRefundApplyLog).filter(
+                MerchantRefundApplyLog.shop_id == str(shop_id),
+            )
+            if card_msg_id:
+                q = q.filter(MerchantRefundApplyLog.card_msg_id == str(card_msg_id))
+            elif order_sn and str(order_sn).strip():
+                q = q.filter(MerchantRefundApplyLog.order_sn == str(order_sn).strip())
+            else:
+                return False
+            if buyer_uid:
+                q = q.filter(MerchantRefundApplyLog.buyer_uid == str(buyer_uid))
+            row = q.order_by(desc(MerchantRefundApplyLog.id)).first()
+            if not row:
+                return False
+            row.status = "expired"
+            row.card_expired = True
+            row.outcome_at = now_for_db()
+            session.commit()
+            return True
+        except SQLAlchemyError as e:
+            session.rollback()
+            self.logger.error(f"mark_refund_apply_expired 失败: {e}")
+            return False
+        finally:
+            session.close()
+
+    def update_merchant_refund_apply_outcome(
+        self,
+        shop_id: str,
+        buyer_uid: str,
+        order_sn: str,
+        *,
+        card_expired: bool,
+        card_msg_id: Optional[str] = None,
+        valid_time_unix: Optional[int] = None,
+    ) -> bool:
+        """兼容旧调用：转 update_refund_apply_from_card_push。"""
+        return self.update_refund_apply_from_card_push(
+            shop_id,
+            buyer_uid,
+            order_sn,
+            card_msg_id=card_msg_id,
+            valid_time_unix=valid_time_unix,
+            card_expired=card_expired,
+        )
+
+    def merchant_refund_apply_counts(
+        self,
+        shop_id: str,
+        buyer_uid: str,
+        order_sn: str,
+        *,
+        success_only: bool = True,
+    ) -> Dict[str, int]:
+        """统计代申请次数：本单累计、今日该买家、今日全店。"""
+        session = self.get_session()
+        try:
+            day = self._today_date_str()
+            base = session.query(MerchantRefundApplyLog).filter(
+                MerchantRefundApplyLog.shop_id == str(shop_id),
+            )
+            if success_only:
+                base = base.filter(MerchantRefundApplyLog.api_success.is_(True))
+
+            def _day_filter(q):
+                return q.filter(
+                    func.strftime("%Y-%m-%d", MerchantRefundApplyLog.created_at) == day
+                )
+
+            order_cnt = base.filter(
+                MerchantRefundApplyLog.order_sn == str(order_sn).strip()
+            ).count()
+            buyer_today = _day_filter(
+                base.filter(MerchantRefundApplyLog.buyer_uid == str(buyer_uid))
+            ).count()
+            shop_today = _day_filter(base).count()
+            return {
+                "order_total": int(order_cnt),
+                "buyer_today": int(buyer_today),
+                "shop_today": int(shop_today),
+            }
+        except SQLAlchemyError as e:
+            self.logger.error(f"merchant_refund_apply_counts 失败: {e}")
+            return {"order_total": 0, "buyer_today": 0, "shop_today": 0}
         finally:
             session.close()
 

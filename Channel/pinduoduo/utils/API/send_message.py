@@ -1,5 +1,9 @@
+import time
+
 from ..base_request import BaseRequest
 from typing import Any, Dict, Optional
+
+from config import config
 
 from .chat_orders import _chat_mms_headers
 
@@ -150,17 +154,25 @@ class SendMessage(BaseRequest):
             "after_sales_type": int(after_sales_type),
             "question_type": int(question_type),
             "refund_amount": int(refund_amount),
-            "message": message,
+            "message": message if message is not None else "",
             "user_ship_status": int(user_ship_status),
             "reposeInfo": repose_info,
         }
+        if config.get("chat.after_sales_apply_send_card_valid_time", True):
+            hours = int(config.get("chat.after_sales_apply_card_valid_hours", 48) or 48)
+            if hours > 0:
+                data["valid_time"] = int(time.time()) + hours * 3600
         headers = _chat_mms_headers(self.cookies)
         headers["priority"] = "u=1, i"
 
         result = self.post(url, json_data=data, headers=headers)
         if result and result.get("success"):
+            vt = data.get("valid_time")
             self.logger.info(
-                f"申请退换货卡片已发送: order_sn={order_sn}, type={after_sales_type}"
+                f"申请退换货卡片已发送: order_sn={order_sn} type={after_sales_type} "
+                f"question_type={question_type} amount_fen={refund_amount} "
+                f"ship={user_ship_status}"
+                + (f" valid_time={vt}" if vt else "")
             )
         else:
             err = None

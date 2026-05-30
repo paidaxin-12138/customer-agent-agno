@@ -158,5 +158,34 @@ class Keyword(Base):
         return f"<Keyword(keyword='{self.keyword}')>"
 
 
+class MerchantRefundApplyLog(Base):
+    """商家代消费者申请快捷退款（ask_refund_apply/send）记录。"""
+    __tablename__ = 'merchant_refund_apply_logs'
+    __table_args__ = (
+        Index('idx_mral_shop_order', 'shop_id', 'order_sn'),
+        Index('idx_mral_shop_buyer', 'shop_id', 'buyer_uid'),
+        Index('idx_mral_created', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    shop_id = Column(String(100), nullable=False, comment='店铺ID')
+    buyer_uid = Column(String(100), nullable=False, comment='买家UID')
+    order_sn = Column(String(64), nullable=False, comment='订单号')
+    card_msg_id = Column(String(64), nullable=True, comment='type=19 卡片 msg_id')
+    api_success = Column(Boolean, default=False, comment='MMS send 是否返回 success')
+    card_expired = Column(Boolean, nullable=True, comment='下行卡片是否已过期，None=未收到下行')
+    status = Column(
+        String(16),
+        nullable=True,
+        comment='pending|expired|failed',
+    )
+    valid_time_unix = Column(Integer, nullable=True, comment='平台 mstate.valid_time（Unix 秒）')
+    after_sales_type = Column(Integer, nullable=True)
+    refund_amount_fen = Column(Integer, nullable=True)
+    error_msg = Column(String(512), nullable=True)
+    created_at = Column(DateTime, default=_db_now)
+    outcome_at = Column(DateTime, nullable=True, comment='收到 type=19/90 结果时间')
+
+
 
 

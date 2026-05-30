@@ -104,7 +104,13 @@ def get_shop_products(run_context: RunContext) -> str:
             return "获取商品列表失败：缺少必要的shop_id或user_id参数"
 
         product_manager = ProductManager(shop_id=shop_id, user_id=user_id)
-        result = product_manager.get_product_list(page=1, size=10)
+        buyer_uid = (
+            run_context.dependencies.get("from_uid")
+            or run_context.dependencies.get("buyer_uid")
+        )
+        result = product_manager.get_product_list(
+            page=1, size=10, buyer_uid=str(buyer_uid).strip() if buyer_uid else None
+        )
 
         if not result.get("success"):
             error_msg = result.get("error_msg", "未知错误")

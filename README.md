@@ -144,7 +144,8 @@ uv run python -m pytest test/ \
 ```
 
 - 内部 HTTP / 开放平台 / WebSocket 索引见 **[API.md](API.md)**  
-- 常见启动、登录、配置错误见 **[ERRORS.md](ERRORS.md)**
+- 常见启动、登录、配置错误见 **[ERRORS.md](ERRORS.md)**  
+- **代码与架构说明**（模块职责、消息流、处理器链、扩展方式）见 **[docs/代码架构说明.md](docs/代码架构说明.md)**
 
 （集成与手工验证仍建议保留。）
 
