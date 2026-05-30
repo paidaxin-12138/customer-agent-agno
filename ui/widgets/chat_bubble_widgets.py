@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QScrollArea,
     QSizePolicy,
     QStackedLayout,
     QTextBrowser,
@@ -144,10 +145,16 @@ def _schedule_list_reflow(widget: QWidget) -> None:
     if bubble is None:
         return
     lst: QWidget | None = bubble.parentWidget()
-    while lst is not None and not isinstance(lst, QListWidget):
+    while lst is not None:
+        if lst.objectName() == "LiveChatMsgList":
+            layout = lst.layout()
+            if isinstance(layout, QVBoxLayout):
+                QTimer.singleShot(0, lambda w=lst, ly=layout: reflow_message_widgets(w, ly))
+            return
+        if isinstance(lst, QListWidget):
+            QTimer.singleShot(0, lambda: reflow_message_list_items(lst))
+            return
         lst = lst.parentWidget()
-    if isinstance(lst, QListWidget):
-        QTimer.singleShot(0, lambda: reflow_message_list_items(lst))
 
 
 class _ChatImageLoaderThread(QThread):
@@ -479,7 +486,9 @@ class ChatMessageBubbleWidget(QWidget):
     ):
         super().__init__(parent)
         self.setObjectName("ChatMessageBubbleWidget")
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAutoFillBackground(False)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._bubble_frames: list[_BubbleFrame] = []
 
         ts = _format_timestamp(timestamp)
@@ -676,7 +685,7 @@ class ChatMessageBubbleWidget(QWidget):
 def _sync_list_item_widget(
     msg_list: QListWidget, item: QListWidgetItem, widget: ChatMessageBubbleWidget, list_w: int, h: int
 ) -> None:
-    """QListWidget item 与 setItemWidget 几何必须一致，否则会被裁切。"""
+    """QListWidget 兼容路径（已弃用，请用 reflow_message_widgets）。"""
     item.setSizeHint(QSize(list_w, h))
     msg_list.setItemWidget(item, widget)
     widget.setFixedSize(list_w, h)
@@ -684,8 +693,36 @@ def _sync_list_item_widget(
     widget.update()
 
 
+def reflow_message_widgets(
+    container: QWidget, layout: QVBoxLayout, list_w: int = 0
+) -> None:
+    """重排滚动区内所有消息 widget（避免 QListWidget 叠加渲染）。"""
+    if list_w <= 0:
+        parent = container.parentWidget()
+        while parent is not None:
+            if isinstance(parent, QScrollArea):
+                list_w = max(parent.viewport().width(), 320)
+                break
+            parent = parent.parentWidget()
+        if list_w <= 0:
+            list_w = max(container.width(), 320)
+    for i in range(layout.count()):
+        lay_item = layout.itemAt(i)
+        if lay_item is None:
+            continue
+        widget = lay_item.widget()
+        if not isinstance(widget, ChatMessageBubbleWidget):
+            continue
+        h = widget.reflow(list_w)
+        widget.setFixedWidth(list_w)
+        widget.setFixedHeight(h)
+        widget.updateGeometry()
+    container.adjustSize()
+    container.update()
+
+
 def reflow_message_list_items(msg_list: QListWidget) -> None:
-    """重排消息列表中所有 item 的高度（聊天区 resize / 字体变化后调用）。"""
+    """QListWidget 兼容重排（遗留）。"""
     list_w = max(msg_list.viewport().width(), 320)
     model = msg_list.model()
     for i in range(msg_list.count()):
@@ -707,6 +744,32 @@ def reflow_message_list_items(msg_list: QListWidget) -> None:
     msg_list.update()
 
 
+def make_chat_message_widget(
+    *,
+    sender_type: str,
+    content: str,
+    timestamp: Any,
+    buyer_letter: str = "买",
+    content_type: Optional[str] = None,
+    image_url: Optional[str] = None,
+    is_read: bool = True,
+    list_width: int = 0,
+) -> ChatMessageBubbleWidget:
+    widget = ChatMessageBubbleWidget(
+        sender_type=sender_type,
+        content=content,
+        timestamp=timestamp,
+        buyer_letter=buyer_letter,
+        content_type=content_type,
+        image_url=image_url,
+        is_read=is_read,
+    )
+    w = max(list_width, 320)
+    h = widget.reflow(w)
+    widget.setFixedSize(w, h)
+    return widget
+
+
 def make_chat_message_item(
     *,
     sender_type: str,
@@ -718,7 +781,7 @@ def make_chat_message_item(
     is_read: bool = True,
     list_width: int = 0,
 ) -> tuple[QListWidgetItem, ChatMessageBubbleWidget]:
-    widget = ChatMessageBubbleWidget(
+    widget = make_chat_message_widget(
         sender_type=sender_type,
         content=content,
         timestamp=timestamp,
@@ -726,11 +789,10 @@ def make_chat_message_item(
         content_type=content_type,
         image_url=image_url,
         is_read=is_read,
+        list_width=list_width,
     )
     item = QListWidgetItem()
     item.setFlags(Qt.ItemFlag.NoItemFlags)
     w = max(list_width, 320)
-    h = widget.reflow(w)
-    item.setSizeHint(QSize(w, h))
-    widget.setFixedSize(w, h)
+    item.setSizeHint(QSize(w, widget.height()))
     return item, widget

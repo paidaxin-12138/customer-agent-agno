@@ -12,7 +12,8 @@ from ui.widgets.chat_bubble_widgets import (
     _BubbleFrame,
     _build_body,
     make_chat_message_item,
-    reflow_message_list_items,
+    make_chat_message_widget,
+    reflow_message_widgets,
 )
 
 
@@ -117,21 +118,24 @@ def test_bubble_reflow(qapp):
     assert h_wide >= 48
 
 
-def test_reflow_message_list_items(qapp):
-    from PyQt6.QtWidgets import QListWidget
+def test_reflow_message_widgets(qapp):
+    from PyQt6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
 
-    lst = QListWidget()
-    lst.resize(500, 600)
-    item, widget = make_chat_message_item(
+    scroll = QScrollArea()
+    scroll.resize(500, 600)
+    container = QWidget()
+    container.setObjectName("LiveChatMsgList")
+    layout = QVBoxLayout(container)
+    widget = make_chat_message_widget(
         sender_type="customer",
         content="测试",
         timestamp="12:35",
         list_width=500,
     )
-    lst.addItem(item)
-    lst.setItemWidget(item, widget)
-    reflow_message_list_items(lst)
-    assert item.sizeHint().height() >= 48
+    layout.addWidget(widget)
+    scroll.setWidget(container)
+    reflow_message_widgets(container, layout, 500)
+    assert widget.height() >= 48
 
 
 def test_bubble_frame_plain_text_color(qapp):

@@ -14,7 +14,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
     QMessageBox,
     QSizePolicy,
     QSplitter,
@@ -50,9 +49,8 @@ from database.chat_persist import set_active_chat_session
 from ui.conversation_hub import get_conversation_hub, make_account_key
 from ui.widgets.account_group_list import AccountGroupList
 from ui.widgets.chat_bubble_widgets import (
-    make_chat_message_item,
-    reflow_message_list_items,
-    _sync_list_item_widget,
+    make_chat_message_widget,
+    reflow_message_widgets,
 )
 from ui import apple_ui_tokens as UI
 from utils.logger_loguru import get_logger
@@ -449,6 +447,25 @@ class ChatLiveWidget(QFrame):
 
         QTimer.singleShot(300, self._initial_load)
 
+        self._reflow_timer = QTimer(self)
+        self._reflow_timer.setSingleShot(True)
+        self._reflow_timer.timeout.connect(self._reflow_message_list)
+
+    def _message_area_width(self) -> int:
+        if getattr(self, "msg_scroll", None):
+            return max(self.msg_scroll.viewport().width(), 320)
+        return 320
+
+    def _message_widget_count(self) -> int:
+        if not getattr(self, "msg_layout", None):
+            return 0
+        n = 0
+        for i in range(self.msg_layout.count()):
+            w = self.msg_layout.itemAt(i).widget()
+            if w is not None:
+                n += 1
+        return n
+
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._schedule_message_list_reflow()
@@ -459,13 +476,15 @@ class ChatLiveWidget(QFrame):
             self._schedule_message_list_reflow()
 
     def _schedule_message_list_reflow(self) -> None:
-        if getattr(self, "msg_list", None) and self.msg_list.count() > 0:
-            QTimer.singleShot(0, self._reflow_message_list)
+        if self._message_widget_count() > 0:
+            self._reflow_timer.start(16)
 
     def _reflow_message_list(self) -> None:
-        if not getattr(self, "msg_list", None) or self.msg_list.count() == 0:
+        if not getattr(self, "msg_layout", None) or self._message_widget_count() == 0:
             return
-        reflow_message_list_items(self.msg_list)
+        reflow_message_widgets(self.msg_container, self.msg_layout, self._message_area_width())
+        self.msg_scroll.viewport().update()
+        QTimer.singleShot(0, self._scroll_messages_to_bottom)
 
     def eventFilter(self, obj, event):
         # 监控输入框的所有活动（按键、鼠标点击、焦点变化、文本变化等）
@@ -614,14 +633,12 @@ class ChatLiveWidget(QFrame):
                 outline: none;
                 padding: 8px 0;
             }}
-            QListWidget#LiveChatMsgList::item {{
-                background: transparent;
+            ScrollArea#LiveChatMsgScroll {{
+                background-color: {_C_CHAT_BG};
                 border: none;
-                padding: 0;
-                margin: 0;
             }}
-            QListWidget#LiveChatMsgList::item:selected {{
-                background: transparent;
+            QWidget#LiveChatMsgList {{
+                background-color: {_C_CHAT_BG};
             }}
             #LiveChatInputArea {{
                 background-color: {_C_CHAT_BG};
@@ -837,21 +854,25 @@ class ChatLiveWidget(QFrame):
         tb.addLayout(actions_row, 0)
         rv.addWidget(top_bar)
 
-        self.msg_list = QListWidget()
-        self.msg_list.setObjectName("LiveChatMsgList")
-        self.msg_list.setSpacing(4)
-        self.msg_list.setUniformItemSizes(False)
-        self.msg_list.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.msg_list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
-        self.msg_list.setResizeMode(QListWidget.ResizeMode.Fixed)
-        self.msg_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
-        self.msg_list.setMinimumHeight(120)
-        self.msg_list.setSizePolicy(
+        self.msg_scroll = ScrollArea()
+        self.msg_scroll.setObjectName("LiveChatMsgScroll")
+        self.msg_scroll.setWidgetResizable(True)
+        self.msg_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.msg_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.msg_scroll.setMinimumHeight(120)
+        self.msg_scroll.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding,
         )
+
+        self.msg_container = QWidget()
+        self.msg_container.setObjectName("LiveChatMsgList")
+        self.msg_container.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.msg_container.setAutoFillBackground(False)
+        self.msg_layout = QVBoxLayout(self.msg_container)
+        self.msg_layout.setContentsMargins(0, 8, 0, 8)
+        self.msg_layout.setSpacing(6)
+        self.msg_scroll.setWidget(self.msg_container)
 
         input_area = QFrame()
         input_area.setObjectName("LiveChatInputArea")
@@ -937,7 +958,7 @@ class ChatLiveWidget(QFrame):
         ia.addWidget(qr_scroll)
         ia.addWidget(tools_wrap)
         ia.addLayout(inp_send_row)
-        rv.addWidget(self.msg_list, 1)
+        rv.addWidget(self.msg_scroll, 1)
         rv.addWidget(input_area)
 
         split.addWidget(self.account_list)
@@ -1704,10 +1725,18 @@ class ChatLiveWidget(QFrame):
             self.logger.debug("total_unread_changed emit (session click): {}", e)
 
     def _clear_messages(self) -> None:
-        self.msg_list.clear()
+        if not getattr(self, "msg_layout", None):
+            return
+        while self.msg_layout.count():
+            item = self.msg_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
 
     def _scroll_messages_to_bottom(self) -> None:
-        bar = self.msg_list.verticalScrollBar()
+        if not getattr(self, "msg_scroll", None):
+            return
+        bar = self.msg_scroll.verticalScrollBar()
         bar.setValue(bar.maximum())
 
     def _render_messages_from_db(self) -> None:
@@ -1718,7 +1747,7 @@ class ChatLiveWidget(QFrame):
         nick = self._current.get("buyer_nickname") or "买家"
         buyer_letter = _avatar_letter(nick)
         self._clear_messages()
-        list_w = max(self.msg_list.viewport().width(), 320)
+        list_w = self._message_area_width()
         for m in rows:
             self._append_message_row(
                 m["sender_type"],
@@ -1731,8 +1760,7 @@ class ChatLiveWidget(QFrame):
                 list_width=list_w,
             )
         self._scroll_messages_to_bottom()
-        QTimer.singleShot(0, self._reflow_message_list)
-        QTimer.singleShot(120, self._reflow_message_list)
+        self._schedule_message_list_reflow()
 
     def _append_message_row(
         self,
@@ -1746,8 +1774,8 @@ class ChatLiveWidget(QFrame):
         *,
         list_width: int = 0,
     ):
-        list_w = list_width or max(self.msg_list.viewport().width(), 320)
-        item, widget = make_chat_message_item(
+        list_w = list_width or self._message_area_width()
+        widget = make_chat_message_widget(
             sender_type=sender_type,
             content=content,
             timestamp=t,
@@ -1757,13 +1785,12 @@ class ChatLiveWidget(QFrame):
             is_read=is_read,
             list_width=list_w,
         )
-        self.msg_list.addItem(item)
-        _sync_list_item_widget(self.msg_list, item, widget, list_w, item.sizeHint().height())
+        self.msg_layout.addWidget(widget)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
-        if getattr(self, "msg_list", None) and self.msg_list.count() > 0:
-            QTimer.singleShot(0, self._reflow_message_list)
+        if self._message_widget_count() > 0:
+            self._schedule_message_list_reflow()
 
     def _rebuild_quick_replies(self, account_id: Optional[int] = None):
         while self.quick_layout.count():
