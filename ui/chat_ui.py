@@ -4,21 +4,20 @@
 """
 from __future__ import annotations
 
-import html
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from PyQt6.QtCore import QEvent, Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import QEvent, Qt, QThread, pyqtSignal, QTimer, QSize
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMessageBox,
     QSizePolicy,
     QSplitter,
-    QTextBrowser,
     QTextEdit,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -50,8 +49,8 @@ from database.db_manager import db_manager
 from database.chat_persist import set_active_chat_session
 from ui.conversation_hub import get_conversation_hub, make_account_key
 from ui.widgets.account_group_list import AccountGroupList
+from ui.widgets.chat_bubble_widgets import make_chat_message_item
 from ui import apple_ui_tokens as UI
-from utils.chat_message_html import format_chat_bubble_html
 from utils.logger_loguru import get_logger
 
 # 人工协助会话打开时一次性载入历史条数上限
@@ -59,6 +58,7 @@ _CHAT_HISTORY_LIMIT = 100_000
 
 # 与 apple_ui_tokens / Apple 深色规范一致（聊天区 HTML 与顶栏）
 _C_BG = UI.BG_PRIMARY
+_C_CHAT_BG = _C_BG  # 实时聊天区与主窗口背景一致 #1C1C1E
 _C_PANEL = UI.BG_SECONDARY
 _C_CARD = UI.BG_SECONDARY
 _C_BORDER = UI.BORDER
@@ -549,31 +549,12 @@ class ChatLiveWidget(QFrame):
                 border-image: none;
             }}
             
-            /* 消息气泡样式 */
-            QWidget#ChatPlainCol {{
-                background-color: {_C_CARD};
-                border: 1px solid {_C_BORDER};
-                border-radius: {_B_BUBBLE_RADIUS};
-                border-bottom-left-radius: {_B_BUBBLE_TAIL_RADIUS};
-            }}
-            QWidget#ChatPlainColSystem {{
-                background-color: {_C_SYSTEM_BG};
-                border: 1px solid {_C_BORDER};
-                border-radius: {_B_SYSTEM_RADIUS};
-            }}
-            QWidget#ChatPlainColSelf {{
-                background-color: {_C_ACCENT};
-                border: 1px solid {_C_BUBBLE_FRAME_SELF};
-                border-radius: {_B_BUBBLE_RADIUS};
-                border-bottom-right-radius: {_B_BUBBLE_TAIL_RADIUS};
-            }}
-            
             #LiveChatRightPanel {{
-                background-color: {_C_BG};
+                background-color: {_C_CHAT_BG};
                 border: none;
             }}
             #LiveChatTopBar {{
-                background-color: {_C_BG};
+                background-color: {_C_CHAT_BG};
                 border-bottom: 1px solid {_C_BORDER};
             }}
             #LiveChatAvatar {{
@@ -595,15 +576,23 @@ class ChatLiveWidget(QFrame):
             #LiveChatSubLabel {{
                 font-size: 12px;
             }}
-            #LiveChatMsgBrowser {{
-                background-color: {_C_BG};
-                color: {_C_MSG_BODY};
+            QListWidget#LiveChatMsgList {{
+                background-color: {_C_CHAT_BG};
                 border: none;
-                padding: 12px 16px;
-                font-size: 14px;
+                outline: none;
+                padding: 8px 0;
+            }}
+            QListWidget#LiveChatMsgList::item {{
+                background: transparent;
+                border: none;
+                padding: 0;
+                margin: 0;
+            }}
+            QListWidget#LiveChatMsgList::item:selected {{
+                background: transparent;
             }}
             #LiveChatInputArea {{
-                background-color: {_C_BG};
+                background-color: {_C_CHAT_BG};
                 border: none;
             }}
             #LiveChatInput {{
@@ -816,11 +805,18 @@ class ChatLiveWidget(QFrame):
         tb.addLayout(actions_row, 0)
         rv.addWidget(top_bar)
 
-        self.browser = QTextBrowser()
-        self.browser.setObjectName("LiveChatMsgBrowser")
-        self.browser.setOpenExternalLinks(False)
-        self.browser.setMinimumHeight(120)
-        self.browser.setSizePolicy(
+        self.msg_list = QListWidget()
+        self.msg_list.setObjectName("LiveChatMsgList")
+        self.msg_list.setSpacing(4)
+        self.msg_list.setUniformItemSizes(False)
+        self.msg_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.msg_list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        self.msg_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.msg_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.msg_list.setMinimumHeight(120)
+        self.msg_list.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding,
         )
@@ -909,7 +905,7 @@ class ChatLiveWidget(QFrame):
         ia.addWidget(qr_scroll)
         ia.addWidget(tools_wrap)
         ia.addLayout(inp_send_row)
-        rv.addWidget(self.browser, 1)
+        rv.addWidget(self.msg_list, 1)
         rv.addWidget(input_area)
 
         split.addWidget(self.account_list)
@@ -1559,7 +1555,7 @@ class ChatLiveWidget(QFrame):
         if cur and int(cur["account"]["id"]) == aid and str(cur.get("buyer_uid")) == buid:
             self._current = None
             set_active_chat_session(None, None)
-            self.browser.clear()
+            self._clear_messages()
             self._set_chat_enabled(False)
             self._update_header_visuals()
         self._refresh_session_trees()
@@ -1675,6 +1671,13 @@ class ChatLiveWidget(QFrame):
         except Exception as e:
             self.logger.debug("total_unread_changed emit (session click): {}", e)
 
+    def _clear_messages(self) -> None:
+        self.msg_list.clear()
+
+    def _scroll_messages_to_bottom(self) -> None:
+        bar = self.msg_list.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
     def _render_messages_from_db(self) -> None:
         if not self._current:
             return
@@ -1682,10 +1685,8 @@ class ChatLiveWidget(QFrame):
         rows = db_manager.get_chat_messages(sid, limit=_CHAT_HISTORY_LIMIT)
         nick = self._current.get("buyer_nickname") or "买家"
         buyer_letter = _avatar_letter(nick)
-        self.browser.clear()
-        self.browser.document().setDefaultStyleSheet(
-            f"body {{ margin: 0; background: {_C_BG}; color: {_C_MSG_BODY}; }}"
-        )
+        self._clear_messages()
+        list_w = max(self.msg_list.viewport().width(), 320)
         for m in rows:
             self._append_message_row(
                 m["sender_type"],
@@ -1694,7 +1695,10 @@ class ChatLiveWidget(QFrame):
                 buyer_letter,
                 m.get("content_type"),
                 m.get("image_url"),
+                bool(m.get("is_read", True)),
+                list_width=list_w,
             )
+        self._scroll_messages_to_bottom()
 
     def _append_message_row(
         self,
@@ -1704,81 +1708,25 @@ class ChatLiveWidget(QFrame):
         buyer_letter: str,
         content_type: Optional[str] = None,
         image_url: Optional[str] = None,
+        is_read: bool = True,
+        *,
+        list_width: int = 0,
     ):
-        if t is None:
-            ts = ""
-        elif isinstance(t, datetime):
-            ts = t.strftime("%H:%M")
-        else:
-            ts = str(t)[:8]
-        ct = (content_type or "text").strip().lower()
-        url = (image_url or "").strip()
-        if ct == "image" and url:
-            body_html = format_chat_bubble_html(url) or html.escape(content or "[图片]")
-        elif ct == "video" and url:
-            cap = html.escape((content or "[视频]").strip())
-            link_part = format_chat_bubble_html(url) or html.escape(url)
-            body_html = f'<div style="margin-bottom:6px;">{cap}</div>{link_part}'
-        else:
-            body_html = html.escape(content or "")
-        if sender_type == "customer":
-            block = (
-                f"<table width='100%' cellpadding='0' cellspacing='0' style='margin:10px 0;'><tr>"
-                f"<td align='left'>"
-                f"<table cellpadding='0' cellspacing='0' style='max-width:70%;'><tr>"
-                f"<td valign='top' style='padding-right:10px;'>"
-                f"<span style='display:inline-block;width:36px;height:36px;line-height:36px;"
-                f"text-align:center;border-radius:18px;font-weight:bold;font-size:14px;color:#fff;"
-                f"background-color:#FF6B6B;'>"
-                f"{html.escape(buyer_letter)}</span></td>"
-                f"<td valign='top'>"
-                f"<div style='background:{_C_CARD};color:{_C_TEXT};padding:10px 14px;border-radius:12px;"
-                f"border-bottom-left-radius:4px;font-size:14px;line-height:1.5;'>{body_html}</div>"
-                f"<div style='font-size:11px;color:{_C_DIM};margin-top:4px;'>{ts}</div>"
-                f"</td></tr></table></td></tr></table>"
-            )
-        elif sender_type == "ai":
-            block = (
-                f"<table width='100%' cellpadding='0' cellspacing='0' style='margin:10px 0;'><tr>"
-                f"<td align='left'>"
-                f"<table cellpadding='0' cellspacing='0' style='max-width:70%;'><tr>"
-                f"<td valign='top' style='padding-right:10px;'>"
-                f"<span style='display:inline-block;width:36px;height:36px;line-height:36px;"
-                f"text-align:center;border-radius:18px;font-weight:bold;font-size:12px;color:#fff;"
-                f"background-color:#4C87EB;'>"
-                f"AI</span></td>"
-                f"<td valign='top'>"
-                f"<div style='background:{_C_AI_BUBBLE};color:{_C_TEXT};padding:10px 14px;border-radius:12px;"
-                f"border-bottom-left-radius:4px;font-size:14px;line-height:1.5;'>{body_html}</div>"
-                f"<div style='font-size:11px;color:{_C_DIM};margin-top:4px;'>{ts}</div>"
-                f"</td></tr></table></td></tr></table>"
-            )
-        elif sender_type == "system":
-            block = (
-                f"<div style='text-align:center;margin:10px 0;'>"
-                f"<span style='display:inline-block;background:{_C_BORDER};color:{_C_MUTED};"
-                f"font-size:12px;padding:6px 14px;border-radius:8px;max-width:88%;'>{body_html}</span>"
-                f"<div style='font-size:11px;color:{_C_DIM};margin-top:4px;'>{ts}</div></div>"
-            )
-        else:
-            block = (
-                f"<table width='100%' cellpadding='0' cellspacing='0' style='margin:10px 0;'><tr>"
-                f"<td align='right'>"
-                f"<table cellpadding='0' cellspacing='0' align='right' style='max-width:70%;'><tr>"
-                f"<td valign='top' style='padding-right:10px;'>"
-                f"<div style='background:{_C_ACCENT};color:{_C_TEXT};padding:10px 14px;border-radius:12px;"
-                f"border-bottom-right-radius:4px;font-size:14px;line-height:1.5;text-align:left;'>{body_html}</div>"
-                f"<div style='font-size:11px;color:{_C_DIM};margin-top:4px;text-align:right;'>{ts}  客服</div>"
-                f"</td>"
-                f"<td valign='top'>"
-                f"<span style='display:inline-block;width:36px;height:36px;line-height:36px;"
-                f"text-align:center;border-radius:18px;font-weight:bold;font-size:14px;color:#fff;"
-                f"background-color:#22C55E;'>"
-                f"我</span></td>"
-                f"</tr></table></td></tr></table>"
-            )
-        self.browser.append(block)
-        self.browser.verticalScrollBar().setValue(self.browser.verticalScrollBar().maximum())
+        item, widget = make_chat_message_item(
+            sender_type=sender_type,
+            content=content,
+            timestamp=t,
+            buyer_letter=buyer_letter,
+            content_type=content_type,
+            image_url=image_url,
+            is_read=is_read,
+        )
+        self.msg_list.addItem(item)
+        self.msg_list.setItemWidget(item, widget)
+        widget.setMinimumWidth(list_width or self.msg_list.viewport().width())
+        widget.adjustSize()
+        h = widget.layout().sizeHint().height() if widget.layout() else widget.sizeHint().height()
+        item.setSizeHint(QSize(list_width or self.msg_list.viewport().width(), max(h, 48)))
 
     def _rebuild_quick_replies(self, account_id: Optional[int] = None):
         while self.quick_layout.count():
@@ -1849,7 +1797,7 @@ class ChatLiveWidget(QFrame):
         self._restore_ai_for_current_if_manual()
         self._current = None
         set_active_chat_session(None, None)
-        self.browser.clear()
+        self._clear_messages()
         self._set_chat_enabled(False)
         self._update_header_visuals()
         self._refresh_session_trees()

@@ -45,6 +45,19 @@ def test_dialog_auto_close_timer_started(qapp):
     dialog.close()
 
 
+def test_recent_message_box_expands(qapp):
+    from PyQt6.QtWidgets import QFrame, QTextEdit
+
+    dialog = HumanAssistDialog(PAYLOAD)
+    box = dialog.findChild(QFrame, "recentMessageBox")
+    assert box is not None
+    editor = box.findChild(QTextEdit)
+    assert editor is not None
+    assert editor.minimumHeight() >= 40
+    assert "转人工" in editor.toPlainText()
+    dialog.close()
+
+
 def _run_interactive_preview() -> None:
     app = QApplication(sys.argv)
     dialog = HumanAssistDialog(PAYLOAD)

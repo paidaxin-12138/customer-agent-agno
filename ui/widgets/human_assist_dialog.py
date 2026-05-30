@@ -5,7 +5,7 @@
 from typing import Dict, Any, Optional
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -13,6 +13,9 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QWidget,
+    QFrame,
+    QTextEdit,
+    QSizePolicy,
     QGraphicsDropShadowEffect,
     QMessageBox,
 )
@@ -47,9 +50,11 @@ class HumanAssistDialog(QDialog):
         self.setWindowTitle(self._dialog_title)
         self.setModal(False)  # 非模态，不阻塞主窗口
         if self._is_address_change:
-            self.setFixedSize(480, 460)
+            self.setMinimumSize(480, 420)
+            self.resize(480, 500)
         else:
-            self.setFixedSize(450, 300)
+            self.setMinimumSize(450, 280)
+            self.resize(450, 340)
         
         logger.info(f"人工协助弹窗初始化：buyer={payload.get('buyer_nickname', '未知')}")
 
@@ -58,7 +63,6 @@ class HumanAssistDialog(QDialog):
         self.setWindowFlags(
             Qt.WindowType.Dialog
             | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.MSWindowsFixedSizeDialogHint  # 在 macOS 上也有助于保持窗口大小
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         # 不使用 WA_ShowWithoutActivating，确保窗口获得焦点
@@ -117,9 +121,9 @@ class HumanAssistDialog(QDialog):
         """)
         container_layout.addWidget(title_label)
 
-        # 信息区域
+        # 信息区域（占据中间弹性空间）
         info_widget = self._create_info_widget()
-        container_layout.addWidget(info_widget)
+        container_layout.addWidget(info_widget, 1)
 
         if self._is_address_change:
             shipped_hint = self._create_shipped_hint_widget()
@@ -135,6 +139,7 @@ class HumanAssistDialog(QDialog):
         container_layout.addLayout(button_layout)
 
         layout.addWidget(container)
+        QTimer.singleShot(0, self._fit_dialog_to_content)
 
     def _build_default_buttons(self, button_layout: QHBoxLayout) -> None:
         ignore_btn = QPushButton("稍后再说")
@@ -326,6 +331,7 @@ class HumanAssistDialog(QDialog):
     def _create_info_widget(self) -> QWidget:
         """创建信息展示区域"""
         widget = QWidget()
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
@@ -435,22 +441,64 @@ class HumanAssistDialog(QDialog):
         if len(question) > 220:
             question = question[:220] + "..."
 
-        message_content = QLabel(question or "无消息内容")
-        message_content.setWordWrap(True)
-        message_content.setFont(QFont("SF Pro Text", 13))
-        message_content.setStyleSheet("""
-            QLabel {
-                color: #E5E5EA;
-                background-color: #2C2C2E;
-                border-radius: 8px;
-                padding: 12px;
-                line-height: 1.5;
-            }
-        """)
-        message_content.setMinimumHeight(72)
-        layout.addWidget(message_content)
+        message_content = self._create_message_box(question or "无消息内容")
+        layout.addWidget(message_content, 1)
 
         return widget
+
+    @staticmethod
+    def _create_message_box(text: str) -> QFrame:
+        """最近消息弹性容器：高度随内容增长，过长时可滚动。"""
+        frame = QFrame()
+        frame.setObjectName("recentMessageBox")
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
+        frame.setStyleSheet("""
+            QFrame#recentMessageBox {
+                background-color: #2C2C2E;
+                border-radius: 8px;
+                border: none;
+            }
+        """)
+        box_layout = QVBoxLayout(frame)
+        box_layout.setContentsMargins(12, 10, 12, 10)
+        box_layout.setSpacing(0)
+
+        editor = QTextEdit()
+        editor.setReadOnly(True)
+        editor.setPlainText(text)
+        editor.setFrameShape(QFrame.Shape.NoFrame)
+        editor.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
+        editor.setStyleSheet("""
+            QTextEdit {
+                color: #E5E5EA;
+                background: transparent;
+                font-size: 13px;
+                line-height: 150%;
+                border: none;
+                padding: 0;
+            }
+        """)
+        box_layout.addWidget(editor)
+
+        # 按文档高度自适应（上限 160px，超出滚动）
+        doc = editor.document()
+        doc.setTextWidth(max(frame.width() - 24, 360))
+        content_h = int(doc.size().height()) + 8
+        editor.setMinimumHeight(max(40, min(content_h, 160)))
+        editor.setMaximumHeight(160)
+        return frame
+
+    def _fit_dialog_to_content(self) -> None:
+        """根据内容微调弹窗高度，避免消息区与按钮重叠。"""
+        self.adjustSize()
+        hint = self.sizeHint()
+        min_h = 420 if self._is_address_change else 280
+        max_h = 560 if self._is_address_change else 480
+        w = max(self.minimumWidth(), hint.width())
+        h = max(min_h, min(hint.height() + 12, max_h))
+        self.resize(w, h)
 
     def _create_info_row(self, label_text: str, value_text: str) -> QWidget:
         """创建单行信息"""
@@ -480,9 +528,8 @@ class HumanAssistDialog(QDialog):
             }
         """)
         value.setWordWrap(True)
-        layout.addWidget(value)
-
-        layout.addStretch()
+        value.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        layout.addWidget(value, 1)
         return widget
 
     def _get_avatar_letter(self) -> str:
@@ -515,6 +562,7 @@ class HumanAssistDialog(QDialog):
         
         # 窗口居中显示
         self._center_on_parent()
+        self._fit_dialog_to_content()
         
         # 再次激活，确保在最前面
         QTimer.singleShot(100, self._bring_to_front)
