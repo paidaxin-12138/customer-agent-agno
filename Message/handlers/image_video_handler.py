@@ -4,8 +4,7 @@
 
 from __future__ import annotations
 
-import asyncio
-from typing import Dict
+from typing import Dict, Any
 
 from bridge.context import Context, ContextType
 from config import config
@@ -60,19 +59,16 @@ class ImageVideoHumanHandler(BaseHandler):
         except Exception as e:
             self.logger.debug(f"emit_human_assist(media_human) 跳过: {e}")
 
-        try:
-            from Channel.pinduoduo.utils.API.send_message import SendMessage
-
-            sender = SendMessage(str(shop_id), str(user_id))
-            result = await asyncio.to_thread(
-                sender.send_text, str(from_uid), self._buyer_notice()
-            )
-            if isinstance(result, dict) and result.get("success"):
-                from Message.handlers.ai_reply_watchdog import notify_outbound_reply
-
-                notify_outbound_reply(context, metadata)
-        except Exception as e:
-            self.logger.error(f"图片/视频转人工后发送买家提示失败: {e}")
+        ok = await self.send_text_to_buyer(
+            shop_id,
+            user_id,
+            from_uid,
+            self._buyer_notice(),
+            context=context,
+            metadata=metadata,
+        )
+        if not ok:
+            self.logger.error("图片/视频转人工后发送买家提示失败")
 
         await self.log_message(context, "图片/视频已转人工", q[:120])
         return True

@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import hashlib
 import time
 from typing import Optional, Dict, Set
 from utils.logger_loguru import get_logger
@@ -107,7 +108,14 @@ class SimpleMessageQueue:
         if not self._deduplication_cache:
             return False
 
-        content_hash = hash(wrapper.context.content)
+        raw = wrapper.context.content
+        if isinstance(raw, (dict, list)):
+            import json
+
+            norm = json.dumps(raw, sort_keys=True, ensure_ascii=False)
+        else:
+            norm = str(raw or "")
+        content_hash = hashlib.sha256(norm.encode("utf-8")).hexdigest()[:32]
         if content_hash in self._deduplication_cache:
             return True
 

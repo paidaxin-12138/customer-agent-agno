@@ -85,9 +85,88 @@ class PromptConfig(BaseModel):
     additional_context: str = Field(default="", description="额外提示词")
 
 
+class PinduoduoOpenConfig(BaseModel):
+    """拼多多开放平台配置"""
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = Field(default=True, description="是否启用开放平台")
+    client_id: str = Field(default="", description="应用 client_id")
+    client_secret: str = Field(default="", description="应用 client_secret")
+    access_token: str = Field(default="", description="店铺 access_token")
+
+
+class ChatConfig(BaseModel):
+    """
+    chat 段配置：数值/开关字段强类型校验；文案类键允许 extra（兼容长提示语）。
+    """
+    model_config = ConfigDict(extra="allow")
+    manual_mode_send_notice: bool = False
+    buyer_burst_merge_gap_sec: float = 45
+    buyer_burst_merge_max_parts: int = 40
+    message_consumer_max_concurrent: int = 28
+    ws_message_max_concurrent: int = 16
+    ai_watchdog_enabled: bool = True
+    ai_watchdog_escalate_sec: int = 150
+    queue_degrade_enabled: bool = True
+    queue_degrade_threshold_sec: float = 120
+    queue_degrade_emit_assist: bool = True
+    queue_p95_cap_sec: float = 30
+    queue_stats_window_size: int = 100
+    queue_stats_recent_size: int = 20
+    queue_prior_duration_sec: float = 8
+    queue_stats_min_samples: int = 10
+    llm_sync_retry_enabled: bool = True
+    llm_sync_retry_delay_sec: float = 1.5
+    after_sales_apply_enabled: bool = True
+    session_idle_resolve_enabled: bool = True
+    session_idle_resolve_minutes: int = 5
+    session_idle_resolve_check_interval_sec: int = 60
+    address_change_enabled: bool = True
+    human_transfer_semantic_enabled: bool = True
+    unhandled_fallback_enabled: bool = True
+    unhandled_fallback_notice: str = (
+        "亲，消息已收到，客服稍后会回复您；如需人工请回复「人工」。"
+    )
+    catchall_comfort_enabled: bool = True
+    catchall_comfort_notice: str = (
+        "亲，消息已收到，客服稍后会回复您；如需人工请回复「人工」。"
+    )
+    ai_mode_check_retries: int = 3
+    ai_mode_check_retry_delay_sec: float = 0.12
+    ai_mode_check_fail_open: bool = False
+    ws_auto_reconnect_enabled: bool = True
+    ws_reconnect_delay_sec: float = 5.0
+    ws_reconnect_max_attempts: int = 0
+
+
+class RetentionConfig(BaseModel):
+    """数据保留与清理"""
+    chat_history_days: int = 30
+    audit_log_days: int = 90
+    temp_files_days: int = 7
+    vacuum_interval_days: int = 30
+    temp_dir: str = "temp"
+    lifecycle_hour: int = 3
+    lifecycle_minute: int = 0
+    vector_days: int = 0
+
+
+class ProductionConfig(BaseModel):
+    """生产运维：健康检查、备份"""
+    health_enabled: bool = True
+    health_host: str = "127.0.0.1"
+    health_port: int = 8080
+    backup_enabled: bool = True
+    backup_hour: int = 2
+    backup_minute: int = 0
+    backup_retention_days: int = 7
+    backup_dir: str = "backup"
+    db_path: str = ""
+    log_level: str = "INFO"
+
+
 class ConfigModel(BaseModel):
     """配置模型"""
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
     business_hours: BusinessHoursConfig = Field(
         default_factory=BusinessHoursConfig,
         description="营业时间配置"
@@ -108,7 +187,44 @@ class ConfigModel(BaseModel):
         default_factory=PromptConfig,
         description="提示词配置"
     )
+    chat: ChatConfig = Field(
+        default_factory=ChatConfig,
+        description="会话/处理器/chat 业务配置",
+    )
+    pinduoduo_open: PinduoduoOpenConfig = Field(
+        default_factory=PinduoduoOpenConfig,
+        description="拼多多开放平台",
+    )
     db_path: str = Field(default="", description="数据库路径")
+    retention: RetentionConfig = Field(
+        default_factory=RetentionConfig,
+        description="数据保留策略",
+    )
+    production: ProductionConfig = Field(
+        default_factory=ProductionConfig,
+        description="生产运维",
+    )
+
+
+def warn_unknown_config_keys(
+    config_data: Dict[str, Any],
+    defaults: Optional[Dict[str, Any]] = None,
+) -> None:
+    """对 chat / pinduoduo_open 中未知键打 warning，帮助发现拼写错误。"""
+    base = defaults if defaults is not None else config_base
+    log = get_logger("config")
+    for section in ("chat", "pinduoduo_open"):
+        block = config_data.get(section)
+        if not isinstance(block, dict):
+            continue
+        known = set((base.get(section) or {}).keys())
+        unknown = set(block.keys()) - known
+        if unknown:
+            log.warning(
+                "config.json 的 [{}] 含未知键（可能是拼写错误）: {}",
+                section,
+                sorted(unknown),
+            )
 
 
 
@@ -157,6 +273,7 @@ config_base = {
         "buyer_burst_merge_max_parts": 40,
         # LLM 压测约 30 并发无限流；应用侧留 2 路余量
         "message_consumer_max_concurrent": 28,
+        "ws_message_max_concurrent": 16,
         "ai_watchdog_enabled": True,
         "ai_watchdog_escalate_sec": 150,
         "ai_watchdog_escalate_notice": "不好意思亲亲，让你久等了",
@@ -254,12 +371,82 @@ config_base = {
             "亲，您的订单已超过 7 天无理由退货退款期限，退货退款需人工为您办理，"
             "这边为您转接人工客服~"
         ),
+        "address_change_enabled": True,
+        "address_change_mms_url": "",
+        "address_change_shipped_first_text": (
+            "亲，您的订单已发货，平台可能不允许修改地址。若您确认仍要修改，请点击【确认改址】按钮（操作后无法撤销），并告知新的收货地址。"
+        ),
+        "address_change_ask_full_address_text": (
+            "亲，请提供完整的收货地址（省市区街道门牌号+收件人+电话），我会帮您尝试修改。"
+        ),
+        "address_change_multi_order_text": (
+            "亲，您在我店有多个订单，请告知需要修改哪个订单的地址？提供订单号或商品名称即可。"
+        ),
+        "address_change_ask_complete_text": (
+            "亲，您提供的地址好像不完整（缺少省/市/区），请重新提供完整地址，以免发错哦。"
+        ),
+        "address_change_success_text": (
+            "亲，已为您提交地址修改申请，请留意物流更新。如有问题可随时联系我们。"
+        ),
+        "address_change_fail_text": (
+            "亲，很抱歉，平台当前不允许修改该订单的地址。建议您联系快递公司或收货人主动沟通，也可回复「人工」由客服协助。"
+        ),
+        "address_change_shipped_confirm_hint": (
+            "该订单已发货，平台可能不允许改址。操作后无法撤销，是否仍尝试修改？"
+        ),
+        "address_change_no_orders_text": (
+            "亲，暂未查到与您账号关联的本店订单，请确认是否用下单账号咨询，或提供订单号~"
+        ),
+        "address_change_order_not_found_text": (
+            "亲，未找到您提供的订单号，请核对后重新发送~"
+        ),
+        "address_change_order_not_eligible_text": (
+            "亲，该订单当前状态暂不支持在线改地址，请回复「人工」为您处理~"
+        ),
+        "human_transfer_semantic_enabled": True,
+        "unhandled_fallback_enabled": True,
+        "unhandled_fallback_notice": (
+            "亲，消息已收到，客服稍后会回复您；如需人工请回复「人工」。"
+        ),
+        "catchall_comfort_enabled": True,
+        "catchall_comfort_notice": (
+            "亲，消息已收到，客服稍后会回复您；如需人工请回复「人工」。"
+        ),
+        "ai_mode_check_retries": 3,
+        "ai_mode_check_retry_delay_sec": 0.12,
+        "ai_mode_check_fail_open": False,
+        "ws_auto_reconnect_enabled": True,
+        "ws_reconnect_delay_sec": 5.0,
+        "ws_reconnect_max_attempts": 0,
     },
     "pinduoduo_open": {
         "enabled": True,
         "client_id": "",
         "client_secret": "",
         "access_token": ""
+    },
+    "db_path": "data/customer_agent.db",
+    "retention": {
+        "chat_history_days": 30,
+        "audit_log_days": 90,
+        "temp_files_days": 7,
+        "vacuum_interval_days": 30,
+        "temp_dir": "temp",
+        "lifecycle_hour": 3,
+        "lifecycle_minute": 0,
+        "vector_days": 0,
+    },
+    "production": {
+        "health_enabled": True,
+        "health_host": "127.0.0.1",
+        "health_port": 8080,
+        "backup_enabled": True,
+        "backup_hour": 2,
+        "backup_minute": 0,
+        "backup_retention_days": 7,
+        "backup_dir": "backup",
+        "db_path": "",
+        "log_level": "INFO",
     },
 }
 
@@ -377,8 +564,9 @@ class Config:
                     print(f"写入补充配置失败（仍使用内存合并结果）: {werr}")
 
             config_data = merged
+            warn_unknown_config_keys(config_data, config_base)
 
-            # 验证配置格式
+            # 验证配置格式（chat / pinduoduo_open 强类型 + 顶层结构）
             validated_config = ConfigModel(**config_data)
             self._validated_config = validated_config
 
@@ -415,12 +603,20 @@ class Config:
                     return self._config
                 else:
                     raise
+            except (ConfigParseError, ConfigValidationError) as e:
+                if self._config is not None:
+                    get_logger("config").error(
+                        f"配置重载失败，继续使用上次有效配置: {e}"
+                    )
+                    return self._config
+                raise ConfigError(f"配置文件无效且无可用的缓存配置: {e}") from e
             except Exception as e:
-                print(f"加载配置文件失败: {e}")
-                # 使用默认配置
-                self._config = config_base.copy()
-                self._validated_config = ConfigModel(**config_base)
-                return self._config
+                if self._config is not None:
+                    get_logger("config").error(
+                        f"配置重载异常，继续使用上次有效配置: {e}"
+                    )
+                    return self._config
+                raise ConfigError(f"加载配置失败: {e}") from e
 
     def get(self, key: str, default: Any = None) -> Any:
         """
@@ -585,14 +781,27 @@ config = Config()
 # 便捷函数
 # ==============================
 
+_CONFIG_ENV_ALIASES = {
+    "llm.api_key": "LLM_API_KEY",
+    "llm.api_base": "LLM_API_BASE",
+    "llm.model_name": "LLM_MODEL_NAME",
+    "embedder.api_key": "EMBEDDER_API_KEY",
+    "embedder.api_base": "EMBEDDER_API_BASE",
+    "pinduoduo_open.client_id": "PDD_OPEN_CLIENT_ID",
+    "pinduoduo_open.client_secret": "PDD_OPEN_CLIENT_SECRET",
+    "pinduoduo_open.access_token": "PDD_OPEN_ACCESS_TOKEN",
+}
+
+
 def get_config(key: str, default: Any = None) -> Any:
     """全局便捷函数：获取配置项（优先从环境变量读取）"""
-    # 优先从环境变量获取
-    env_value = os.getenv(key)
+    env_name = _CONFIG_ENV_ALIASES.get(key, key.replace(".", "_").upper())
+    env_value = os.getenv(env_name)
+    if env_value is None and env_name != key:
+        env_value = os.getenv(key)
     if env_value is not None:
         return env_value
-    
-    # 从配置文件获取
+
     return config.get(key, default)
 
 

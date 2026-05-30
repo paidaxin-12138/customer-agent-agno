@@ -83,6 +83,7 @@ def build_escalation_payload(
     context: Any,
     metadata: Dict[str, Any],
     question: str,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """组装弹窗与实时聊天所需字段；无法解析账号时返回 None。"""
     from database.db_manager import db_manager
@@ -112,7 +113,7 @@ def build_escalation_payload(
         q = (question or "").strip()
         if len(q) > 4000:
             q = q[:4000] + "…"
-        return {
+        payload = {
             "reason": reason,
             "account_id": int(acc["id"]),
             "channel_name": row["channel_name"],
@@ -126,6 +127,9 @@ def build_escalation_payload(
             "summary": q,
             "context_type": str(getattr(context.type, "value", context.type)),
         }
+        if extra and isinstance(extra, dict):
+            payload.update(extra)
+        return payload
     except Exception as e:
         _bus_log.debug("build_escalation_payload 失败: {}", e)
         return None
@@ -136,8 +140,9 @@ def emit_human_assist(
     context: Any,
     metadata: Dict[str, Any],
     question: str,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> None:
-    payload = build_escalation_payload(reason, context, metadata, question)
+    payload = build_escalation_payload(reason, context, metadata, question, extra=extra)
     if not payload:
         _bus_log.warning(
             "emit_human_assist 跳过：无法解析账号/买家 (reason={})",
@@ -153,6 +158,7 @@ def emit_human_assist(
         "queue_degrade": "排队繁忙已自动安抚（可关注是否需人工）",
         "after_sales_policy": "售后策略需人工处理",
         "ai_after_sales_pm": "AI 无法处理的售后问题（已安抚买家）",
+        "order_address_change": "买家申请改地址（需确认）",
     }
     note = f"[系统] {labels.get(reason, reason)}"
     meta_copy = dict(metadata) if metadata else {}

@@ -38,7 +38,7 @@
     "instructions": [],
     "append_natural_style": true
   },
-  "db_path": "",
+  "db_path": "data/customer_agent.db",
   "chat": {
     "manual_mode_send_notice": false,
     "ai_watchdog_enabled": true,
@@ -87,6 +87,27 @@
     "after_sales_apply_quota_notice": "亲，该订单今日代申请售后次数已满，请您在订单详情页自行申请售后，或回复「人工」为您处理~",
     "after_sales_apply_fail_cooldown_sec": 300,
     "after_sales_apply_quota_cooldown_sec": 86400,
+    "address_change_enabled": true,
+    "address_change_mms_url": "",
+    "address_change_shipped_first_text": "亲，您的订单已发货，平台可能不允许修改地址。若您确认仍要修改，请点击【确认改址】按钮（操作后无法撤销），并告知新的收货地址。",
+    "address_change_ask_full_address_text": "亲，请提供完整的收货地址（省市区街道门牌号+收件人+电话），我会帮您尝试修改。",
+    "address_change_multi_order_text": "亲，您在我店有多个订单，请告知需要修改哪个订单的地址？提供订单号或商品名称即可。",
+    "address_change_ask_complete_text": "亲，您提供的地址好像不完整（缺少省/市/区），请重新提供完整地址，以免发错哦。",
+    "address_change_success_text": "亲，已为您提交地址修改申请，请留意物流更新。如有问题可随时联系我们。",
+    "address_change_fail_text": "亲，很抱歉，平台当前不允许修改该订单的地址。建议您联系快递公司或收货人主动沟通，也可回复「人工」由客服协助。",
+    "address_change_shipped_confirm_hint": "该订单已发货，平台可能不允许改址。操作后无法撤销，是否仍尝试修改？",
+    "address_change_no_orders_text": "亲，暂未查到与您账号关联的本店订单，请确认是否用下单账号咨询，或提供订单号~",
+    "address_change_order_not_found_text": "亲，未找到您提供的订单号，请核对后重新发送~",
+    "address_change_order_not_eligible_text": "亲，该订单当前状态暂不支持在线改地址，请回复「人工」为您处理~",
+    "ws_reconnect_delay_sec": 5,
+    "ws_reconnect_max_attempts": 0,
+    "ws_auto_reconnect_enabled": true,
+    "ws_message_max_concurrent": 16,
+    "ai_mode_check_fail_open": false,
+    "ai_mode_check_retries": 3,
+    "ai_mode_check_retry_delay_sec": 0.12,
+    "unhandled_fallback_enabled": true,
+    "unhandled_fallback_notice": "亲，消息已收到，客服稍后会回复您；如需人工请回复「人工」。",
     "message_consumer_max_concurrent": 28,
     "memory": {
       "enabled": true,
@@ -96,6 +117,27 @@
       "max_messages_load": 80,
       "summarize_with_llm": false
     }
+  },
+  "retention": {
+    "chat_history_days": 30,
+    "audit_log_days": 90,
+    "temp_files_days": 7,
+    "vacuum_interval_days": 30,
+    "temp_dir": "temp",
+    "lifecycle_hour": 3,
+    "lifecycle_minute": 0,
+    "vector_days": 0
+  },
+  "production": {
+    "health_enabled": true,
+    "health_host": "127.0.0.1",
+    "health_port": 8080,
+    "backup_enabled": true,
+    "backup_hour": 2,
+    "backup_minute": 0,
+    "backup_retention_days": 7,
+    "backup_dir": "backup",
+    "log_level": "INFO"
   },
   "pinduoduo_open": {
     "enabled": false,

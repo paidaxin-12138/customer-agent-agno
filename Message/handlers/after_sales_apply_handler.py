@@ -489,9 +489,9 @@ class AfterSalesApplyHandler(BaseHandler):
                 f"（待 type=19 补全 valid_time）"
             )
             _set_cooldown(str(shop_id), str(from_uid), cooldown_sec)
-            from Message.handlers.ai_reply_watchdog import notify_outbound_reply
+            from Message.handlers.channel_send import notify_outbound_from_metadata
 
-            notify_outbound_reply(metadata=metadata)
+            notify_outbound_from_metadata(context=context, metadata=metadata)
             # 跟发文案改在 type=19 下行确认卡片未过期后再发，避免「先教操作、卡却已过期」
         else:
             err_msg = None
@@ -560,17 +560,9 @@ class AfterSalesApplyHandler(BaseHandler):
             await self._send_text(shop_id, user_id, from_uid, notice, metadata)
 
         try:
-            from Channel.pinduoduo.utils.API.send_message import SendMessage
+            from Message.handlers.channel_send import transfer_to_available_cs_async
 
-            sender = SendMessage(str(shop_id), str(user_id))
-            cs_list = await asyncio.to_thread(sender.getAssignCsList)
-            my_cs_uid = f"cs_{shop_id}_{user_id}"
-            if cs_list and isinstance(cs_list, dict):
-                available = [uid for uid in cs_list.keys() if uid != my_cs_uid]
-                if available:
-                    await asyncio.to_thread(
-                        sender.move_conversation, str(from_uid), available[0]
-                    )
+            await transfer_to_available_cs_async(shop_id, user_id, from_uid)
         except Exception as e:
             self.logger.debug(f"转接会话: {e}")
 
@@ -584,20 +576,8 @@ class AfterSalesApplyHandler(BaseHandler):
     ) -> None:
         if not reply:
             return
-        meta = metadata or {
-            "shop_id": str(shop_id),
-            "user_id": str(user_id),
-            "from_uid": str(from_uid),
-            "channel_name": "pinduoduo",
-        }
-        try:
-            from Channel.pinduoduo.utils.API.send_message import SendMessage
-
-            sender = SendMessage(str(shop_id), str(user_id))
-            result = await asyncio.to_thread(sender.send_text, str(from_uid), reply)
-            if isinstance(result, dict) and result.get("success"):
-                from Message.handlers.ai_reply_watchdog import notify_outbound_reply
-
-                notify_outbound_reply(metadata=meta)
-        except Exception as e:
-            self.logger.error(f"发送失败: {e}")
+        ok = await self.send_text_to_buyer(
+            shop_id, user_id, from_uid, reply, metadata=metadata
+        )
+        if not ok:
+            self.logger.error("售后话术发送失败")

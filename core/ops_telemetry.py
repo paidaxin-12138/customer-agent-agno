@@ -303,6 +303,146 @@ def record_human_transfer(session_key: str, user_label: str, reason: str = "") -
         logger.debug(f"record_human_transfer: {e}")
 
 
+def record_ai_mode_check_failure(
+    reason: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    meta = metadata or {}
+    user_label = str(
+        meta.get("username") or meta.get("from_uid") or meta.get("user_key") or ""
+    )
+    try:
+        from database.ops_repository import get_ops_repository
+
+        get_ops_repository().insert_security_audit(
+            {
+                "event_type": "ai_mode_check_fail",
+                "detail": str(reason)[:500],
+                "user_label": user_label,
+                "severity": "warn",
+                "payload_json": json.dumps(
+                    {"session_key": meta.get("user_key")},
+                    ensure_ascii=False,
+                ),
+            }
+        )
+    except Exception as e:
+        logger.debug(f"record_ai_mode_check_failure: {e}")
+
+
+def record_handler_error(
+    handler_name: str,
+    error: BaseException,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """处理器链中单步异常（供运营看板安全审计表查询）。"""
+    meta = metadata or {}
+    user_label = str(
+        meta.get("username") or meta.get("from_uid") or meta.get("user_key") or ""
+    )
+    session_key = str(meta.get("user_key") or "")
+    detail = f"{handler_name}: {type(error).__name__}: {str(error)[:400]}"
+    try:
+        from database.ops_repository import get_ops_repository
+
+        get_ops_repository().insert_security_audit(
+            {
+                "event_type": "handler_error",
+                "detail": detail,
+                "user_label": user_label,
+                "severity": "error",
+                "payload_json": json.dumps(
+                    {
+                        "handler": handler_name,
+                        "session_key": session_key,
+                        "message_id": meta.get("message_id"),
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        )
+    except Exception as e:
+        logger.debug(f"record_handler_error: {e}")
+
+
+def record_message_failed(
+    *,
+    queue_name: str = "",
+    handler_name: str = "",
+    error: Any = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """消息处理失败计数（/metrics）+ 可选审计明细。"""
+    try:
+        from core.app_metrics import record_message_failed as _inc_metric
+
+        _inc_metric()
+    except Exception as e:
+        logger.debug(f"record_message_failed metric: {e}")
+
+    meta = metadata or {}
+    user_label = str(
+        meta.get("username") or meta.get("from_uid") or meta.get("user_key") or ""
+    )
+    err_text = ""
+    if error is not None:
+        if isinstance(error, BaseException):
+            err_text = f"{type(error).__name__}: {str(error)[:300]}"
+        else:
+            err_text = str(error)[:300]
+    detail_parts = [p for p in (queue_name, handler_name, err_text) if p]
+    detail = " | ".join(detail_parts) or "message_process_failed"
+    try:
+        from database.ops_repository import get_ops_repository
+
+        get_ops_repository().insert_security_audit(
+            {
+                "event_type": "message_process_failed",
+                "detail": detail[:500],
+                "user_label": user_label,
+                "severity": "warn",
+                "payload_json": json.dumps(
+                    {
+                        "queue_name": queue_name,
+                        "handler_name": handler_name,
+                        "session_key": meta.get("user_key"),
+                        "message_id": meta.get("message_id"),
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        )
+    except Exception as e:
+        logger.debug(f"record_message_failed audit: {e}")
+
+
+def record_unhandled_message(
+    metadata: Optional[Dict[str, Any]] = None,
+    *,
+    context_type: str = "",
+) -> None:
+    """整条处理器链均未成功回复买家（含 fallback 失败）。"""
+    meta = metadata or {}
+    user_label = str(meta.get("username") or meta.get("from_uid") or "")
+    try:
+        from database.ops_repository import get_ops_repository
+
+        get_ops_repository().insert_security_audit(
+            {
+                "event_type": "message_unhandled",
+                "detail": f"未处理消息 type={context_type}",
+                "user_label": user_label,
+                "severity": "warn",
+                "payload_json": json.dumps(
+                    {"session_key": meta.get("user_key"), "message_id": meta.get("message_id")},
+                    ensure_ascii=False,
+                ),
+            }
+        )
+    except Exception as e:
+        logger.debug(f"record_unhandled_message: {e}")
+
+
 def record_tool_call(tool_name: str, detail: str, user_label: str = "") -> None:
     try:
         from database.ops_repository import get_ops_repository

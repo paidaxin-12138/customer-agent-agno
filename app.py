@@ -31,6 +31,11 @@ from PyQt6.QtGui import QIcon
 # ============================================================================
 # 全局单例预初始化（确保正确的初始化顺序）
 # ============================================================================
+# 0. 生产日志（轮转 / PM2 out+error）
+from utils.logging_setup import setup_production_logging
+
+setup_production_logging()
+
 # 1. 配置必须最先加载
 from config import config as _app_config
 
@@ -44,6 +49,13 @@ from utils.logger_loguru import get_logger as _get_logger
 from core.di_container import configure_standard_services
 configure_standard_services(_app_config)
 
+try:
+    from utils.config_startup import log_startup_config_issues
+
+    log_startup_config_issues()
+except Exception as _cfg_err:
+    _get_logger("App").warning(f"启动配置检查跳过: {_cfg_err}")
+
 # ============================================================================
 
 from ui.refined_design import apply_refined_design
@@ -52,7 +64,7 @@ from utils.runtime_path import get_app_icon_path
 
 def _setup_boot_log():
     """Write startup diagnostics for packaged app crash investigation."""
-    log_dir = Path.home() / "Library" / "Logs" / "AgentCustomer"
+    log_dir = get_project_root() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "boot.log"
 
@@ -166,6 +178,14 @@ def main():
     logger = _get_logger("App")
     logger.info("应用程序启动...")
     boot_logger.info(f"App logger initialized. boot_log={boot_log_path}")
+
+    try:
+        from core.production_services import start_production_background_services
+
+        start_production_background_services()
+        logger.info("生产后台服务已启动（健康检查 / 备份 / 生命周期清理）")
+    except Exception as prod_err:
+        logger.warning(f"生产后台服务启动跳过: {prod_err}")
     # 默认不强制拦截，避免在部分桌面会话中误判导致“闪退”。
     # 如需在无头环境提前退出，可设置: REQUIRE_DISPLAY_CHECK=1
     if os.getenv("REQUIRE_DISPLAY_CHECK", "0") == "1":

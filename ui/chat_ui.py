@@ -166,6 +166,41 @@ class SendGoodsCardThread(QThread):
             self.finished_with_result.emit(False, str(e))
 
 
+class AddressChangeExecuteThread(QThread):
+    finished_with_result = pyqtSignal(bool, str, str)
+
+    def __init__(self, payload: dict):
+        super().__init__()
+        self.payload = payload
+
+    def run(self):
+        try:
+            from utils.merchant_address_change_record import execute_address_change
+            from Channel.pinduoduo.utils.API.send_message import SendMessage
+
+            result = execute_address_change(self.payload)
+            ok = bool(result.get("success"))
+            msg = str(result.get("message") or "")
+            shop_id = str(
+                self.payload.get("platform_shop_id")
+                or self.payload.get("shop_id")
+                or ""
+            )
+            user_id = str(self.payload.get("seller_user_id") or "")
+            buyer_uid = str(self.payload.get("buyer_uid") or "")
+            if msg and shop_id and user_id and buyer_uid:
+                sender = SendMessage(shop_id, user_id)
+                send_result = sender.send_text(buyer_uid, msg)
+                if isinstance(send_result, dict) and not send_result.get("success"):
+                    err = str(send_result.get("error_msg") or "话术发送失败")
+                    self.finished_with_result.emit(False, msg, err)
+                    return
+            api_err = str(result.get("api_error") or "")
+            self.finished_with_result.emit(ok, msg, api_err)
+        except Exception as e:
+            self.finished_with_result.emit(False, "", str(e))
+
+
 def _avatar_letter(name: str, fallback: str = "?") -> str:
     s = (name or "").strip()
     if not s:
@@ -1347,6 +1382,9 @@ class ChatLiveWidget(QFrame):
             self.logger.info("开始创建 HumanAssistDialog")
             self._current_assist_dialog = HumanAssistDialog(payload, self)
             self._current_assist_dialog.go_to_chat_requested.connect(self._on_go_to_chat_requested)
+            self._current_assist_dialog.confirm_address_change_requested.connect(
+                self._on_confirm_address_change_requested
+            )
             
             self.logger.info(f"弹窗已创建，准备显示。父窗口：{self}")
             self._current_assist_dialog.show()
@@ -1358,6 +1396,8 @@ class ChatLiveWidget(QFrame):
                 bar_title = "🔔 售后问题需人工处理"
             elif reason == "after_sales_policy":
                 bar_title = "🔔 售后需人工处理"
+            elif reason == "order_address_change":
+                bar_title = "🔔 买家申请改地址"
             InfoBar.warning(
                 title=bar_title,
                 content=f"买家：{buyer_nickname}\n问题：{question[:50]}",
@@ -1408,6 +1448,51 @@ class ChatLiveWidget(QFrame):
 
         except Exception as e:
             self.logger.error(f"跳转对话窗口失败：{e}", exc_info=True)
+
+    def _on_confirm_address_change_requested(self, payload: dict) -> None:
+        """店主确认改址：后台调 MMS + 自动回复买家。"""
+        order_sn = str(payload.get("order_sn") or "")
+        buyer_uid = str(payload.get("buyer_uid") or "")
+        self.logger.info(f"确认改址：order={order_sn}, buyer={buyer_uid}")
+
+        thread = AddressChangeExecuteThread(payload)
+        thread.finished_with_result.connect(
+            lambda ok, msg, err: self._on_address_change_execute_finished(
+                ok, msg, err, payload
+            )
+        )
+        thread.start()
+
+    def _on_address_change_execute_finished(
+        self,
+        ok: bool,
+        msg: str,
+        err: str,
+        payload: dict,
+    ) -> None:
+        buyer_nickname = str(payload.get("buyer_nickname") or "买家")
+        order_sn = str(payload.get("order_sn") or "")
+        if ok:
+            InfoBar.success(
+                title="改址已提交",
+                content=f"订单 {order_sn} 地址修改成功",
+                parent=self,
+                duration=4000,
+                position=InfoBarPosition.TOP,
+            )
+            return
+
+        detail = err or "改址失败"
+        InfoBar.error(
+            title="改址失败",
+            content=f"买家 {buyer_nickname}：{detail[:80]}",
+            parent=self,
+            duration=5000,
+            position=InfoBarPosition.TOP,
+        )
+        out = dict(payload)
+        out["focus_topic"] = "address_change"
+        self._on_go_to_chat_requested(out)
     
     def _find_and_select_session_with_focus(self, account_id: int, buyer_uid: str, buyer_nickname: str) -> None:
         """查找并选中会话，同时确保窗口获得焦点"""

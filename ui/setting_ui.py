@@ -65,7 +65,8 @@ class LLMConfigCard(CardWidget):
         # 说明文本
         description_label = CaptionLabel(
             "配置LLM模型的连接参数。\n"
-            "支持OpenAI兼容的API接口，包括豆包、通义千问等模型。"
+            "支持OpenAI兼容的API接口，包括豆包、通义千问等模型。\n"
+            "也可用环境变量 LLM_API_KEY / LLM_API_BASE；生产环境建议设置 AGENT_CREDENTIAL_KEY。"
         )
         description_label.setStyleSheet("color: #9EA6B8; padding: 8px 0;")
         layout.addWidget(description_label)
@@ -790,6 +791,14 @@ class SettingUI(QFrame):
 
             # 使用config模块保存配置
             config.update(new_config, save=True)
+
+            try:
+                from utils.audit_log import audit_config_change
+
+                changed = ",".join(sorted(new_config.keys())[:20])
+                audit_config_change("config.json", changed, operator="setting_ui")
+            except Exception:
+                pass
 
             self.logger.info("配置保存成功")
 

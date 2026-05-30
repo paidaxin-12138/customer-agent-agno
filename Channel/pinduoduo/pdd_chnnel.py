@@ -45,12 +45,13 @@ def _context_struct_payload(context: Context) -> Dict[str, Any]:
 
 @dataclass
 class ReconnectConfig:
-    """重连配置"""
-    max_attempts: int = 5          # 最大重试次数
-    initial_delay: float = 2.0     # 初始延迟(秒)
-    max_delay: float = 60.0        # 最大延迟(秒)
-    backoff_factor: float = 2.0    # 退避因子
-    enable_auto_reconnect: bool = True  # 是否启用自动重连
+    """重连配置（max_attempts=0 表示无限重试）"""
+    max_attempts: int = 0
+    reconnect_delay_sec: float = 5.0
+    initial_delay: float = 5.0
+    max_delay: float = 60.0
+    backoff_factor: float = 1.0
+    enable_auto_reconnect: bool = True
 
 @dataclass
 class HeartbeatConfig:
@@ -73,7 +74,11 @@ class PDDChannel(Channel):
     # API 版本号
     API_VERSION = "202506091557"
 
-    def __init__(self, max_concurrent_messages: int = 50, status_manager: ConnectionStatusManager = None):
+    def __init__(
+        self,
+        max_concurrent_messages: Optional[int] = None,
+        status_manager: ConnectionStatusManager = None,
+    ):
         super().__init__()
         self.channel_name = "pinduoduo"
         self.logger = get_logger("PDDChannel")
@@ -89,21 +94,48 @@ class PDDChannel(Channel):
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self._stop_events: Dict[str, asyncio.Event] = {}
         self._ws_connections: Dict[str, websockets.WebSocketClientProtocol] = {}
-        self.businessHours = config.get("businessHours")
+        self.businessHours = config.get("business_hours") or config.get("businessHours")
 
         # WebSocket优化功能
-        self.reconnect_config = ReconnectConfig()
+        self.reconnect_config = self._load_reconnect_config()
         self.heartbeat_config = HeartbeatConfig()
         self._reconnect_tasks: Dict[str, asyncio.Task] = {}
         self._heartbeat_tasks: Dict[str, asyncio.Task] = {}
 
-        # 性能优化：并发控制和任务管理
+        # 性能优化：并发控制和任务管理（默认读 chat.ws_message_max_concurrent）
+        if max_concurrent_messages is None:
+            try:
+                from config import get_config
+
+                max_concurrent_messages = int(
+                    get_config("chat.ws_message_max_concurrent", 16) or 16
+                )
+            except (TypeError, ValueError):
+                max_concurrent_messages = 16
+            max_concurrent_messages = max(4, min(max_concurrent_messages, 32))
         self.max_concurrent_messages = max_concurrent_messages
         self.message_semaphore = asyncio.Semaphore(max_concurrent_messages)
         self.processing_tasks: Set[asyncio.Task[Any]] = set()
 
         # 资源管理
         self.resource_manager = WebSocketResourceManager()
+
+    def _load_reconnect_config(self) -> ReconnectConfig:
+        cfg = ReconnectConfig()
+        try:
+            from config import get_config
+
+            delay = float(get_config("chat.ws_reconnect_delay_sec", 5) or 5)
+            cfg.reconnect_delay_sec = max(3.0, min(delay, 120.0))
+            cfg.initial_delay = cfg.reconnect_delay_sec
+            max_att = int(get_config("chat.ws_reconnect_max_attempts", 0) or 0)
+            cfg.max_attempts = max(0, max_att)
+            cfg.enable_auto_reconnect = bool(
+                get_config("chat.ws_auto_reconnect_enabled", True)
+            )
+        except (TypeError, ValueError):
+            pass
+        return cfg
 
     async def _set_online_status(self, shop_id: str, user_id: str) -> bool:
         """
@@ -374,7 +406,11 @@ class PDDChannel(Channel):
 
                     # 只在需要时清理资源
                     if should_cleanup:
-                        await self._cleanup_resources(f"pdd_{shop_id}", connection_key=connection_key)
+                        await self._cleanup_resources(
+                            f"pdd_{shop_id}",
+                            connection_key=connection_key,
+                            keep_consumer=True,
+                        )
 
                 except asyncio.CancelledError:
                     self.logger.debug(f"WebSocket任务被取消: {shop_id}-{username}")
@@ -390,7 +426,11 @@ class PDDChannel(Channel):
                             await asyncio.wait_for(heartbeat_task, timeout=3.0)
                         except (asyncio.CancelledError, asyncio.TimeoutError, asyncio.InvalidStateError):
                             pass
-                    await self._cleanup_resources(f"pdd_{shop_id}", connection_key=connection_key)
+                    await self._cleanup_resources(
+                        f"pdd_{shop_id}",
+                        connection_key=connection_key,
+                        keep_consumer=True,
+                    )
 
         except ws_exceptions.ConnectionClosed as e:
             self.status_manager.update_status(shop_id, user_id, username, ConnectionState.ERROR, str(e))
@@ -401,70 +441,97 @@ class PDDChannel(Channel):
             self.logger.error(f"WebSocket连接错误: {shop_id}-{username}, 错误: {str(e)}")
             on_failure(f"WebSocket连接错误: {e}")
             # 异常时也需要清理资源
-            await self._cleanup_resources(f"pdd_{shop_id}", connection_key=connection_key)
+            await self._cleanup_resources(
+                f"pdd_{shop_id}",
+                connection_key=connection_key,
+                keep_consumer=True,
+            )
 
     # ============================================================================
     # WebSocket优化功能 - 自动重连和单次连接方法
     # ============================================================================
 
-    async def _connect_with_retry(self, shop_id: str, user_id: str, username: str, on_success: callable, on_failure: callable):
-        """
-        带重连机制的WebSocket连接
-        """
+    async def _interruptible_sleep(self, delay: float, connection_key: str, shop_id: str, user_id: str, username: str) -> bool:
+        """可中断等待；返回 False 表示应停止重连。"""
+        stop_ev = self._stop_events.get(connection_key)
+        steps = max(1, int(delay * 10))
+        for _ in range(steps):
+            if stop_ev and stop_ev.is_set():
+                self.logger.info(f"重连等待被停止信号中断: {shop_id}-{username}")
+                self.status_manager.update_status(
+                    shop_id, user_id, username, ConnectionState.DISCONNECTED
+                )
+                return False
+            await asyncio.sleep(0.1)
+        return True
+
+    async def _connect_with_retry(
+        self,
+        shop_id: str,
+        user_id: str,
+        username: str,
+        on_success: callable,
+        on_failure: callable,
+    ):
+        """无限重连（max_attempts=0）或有限重试；固定间隔 ws_reconnect_delay_sec。"""
         connection_key = f"{shop_id}_{user_id}"
-        for attempt in range(self.reconnect_config.max_attempts):
-            # 检查是否收到停止信号
-            if self._stop_events.get(connection_key) and self._stop_events[connection_key].is_set():
+        attempt = 0
+        max_attempts = self.reconnect_config.max_attempts
+
+        while True:
+            stop_ev = self._stop_events.get(connection_key)
+            if stop_ev and stop_ev.is_set():
                 self.logger.info(f"收到停止信号，取消重连: {shop_id}-{username}")
-                self.status_manager.update_status(shop_id, user_id, username, ConnectionState.DISCONNECTED)
+                self.status_manager.update_status(
+                    shop_id, user_id, username, ConnectionState.DISCONNECTED
+                )
                 return
 
             try:
-                # 每次重试都更新状态
                 if attempt > 0:
-                    self.status_manager.update_status(shop_id, user_id, username, ConnectionState.RECONNECTING)
-                    self.logger.info(f"尝试重连 ({attempt + 1}/{self.reconnect_config.max_attempts}): {shop_id}-{username}")
-
-                # 尝试单次连接
-                await self._connect_single_attempt(shop_id, user_id, username, on_success, on_failure)
-                return  # 连接成功，退出重试循环
-
+                    self.status_manager.update_status(
+                        shop_id, user_id, username, ConnectionState.RECONNECTING
+                    )
+                    label = "∞" if max_attempts == 0 else str(max_attempts)
+                    self.logger.info(
+                        f"WebSocket 重连 ({attempt + 1}/{label}): {shop_id}-{username}"
+                    )
+                await self._connect_single_attempt(
+                    shop_id, user_id, username, on_success, on_failure
+                )
+                if stop_ev and stop_ev.is_set():
+                    return
             except Exception as e:
-                # 检查是否是因为停止事件导致的异常
-                if self._stop_events.get(connection_key) and self._stop_events[connection_key].is_set():
-                    self.logger.info(f"连接被停止信号中断: {shop_id}-{username}")
-                    self.status_manager.update_status(shop_id, user_id, username, ConnectionState.DISCONNECTED)
+                if stop_ev and stop_ev.is_set():
+                    self.status_manager.update_status(
+                        shop_id, user_id, username, ConnectionState.DISCONNECTED
+                    )
                     return
-
-                if attempt == self.reconnect_config.max_attempts - 1:
-                    # 最后一次重试失败
-                    self.status_manager.update_status(shop_id, user_id, username, ConnectionState.ERROR, str(e))
-                    self.logger.error(f"连接失败，已达到最大重试次数 ({self.reconnect_config.max_attempts}): {shop_id}-{username}, 错误: {str(e)}")
-                    on_failure(f"连接失败，已达到最大重试次数: {e}")
-                    return
-
-                # 计算重连延迟（指数退避）
-                delay = min(
-                    self.reconnect_config.initial_delay * (self.reconnect_config.backoff_factor ** attempt),
-                    self.reconnect_config.max_delay
+                self.status_manager.update_status(
+                    shop_id, user_id, username, ConnectionState.ERROR, str(e)
+                )
+                self.logger.warning(
+                    f"WebSocket 连接异常: {shop_id}-{username}, {e}"
                 )
 
-                self.logger.warning(f"连接失败，{delay:.1f}秒后重试 ({attempt + 1}/{self.reconnect_config.max_attempts}): {shop_id}-{username}, 错误: {str(e)}")
+            if not self.reconnect_config.enable_auto_reconnect:
+                on_failure("自动重连已禁用")
+                return
 
-                # 可中断的延迟等待
-                try:
-                    # 检查停止事件，避免事件循环关闭时的异步调用问题
-                    for _ in range(int(delay * 10)):  # 每0.1秒检查一次
-                        if self._stop_events.get(connection_key) and self._stop_events[connection_key].is_set():
-                            self.logger.info(f"重连延迟被停止信号中断: {shop_id}-{username}")
-                            self.status_manager.update_status(shop_id, user_id, username, ConnectionState.DISCONNECTED)
-                            return
-                        await asyncio.sleep(0.1)  # 短暂睡眠，可以快速响应
-                except (asyncio.CancelledError, RuntimeError):
-                    # 处理事件循环关闭的情况
-                    self.logger.info(f"重连延迟被中断或事件循环关闭: {shop_id}-{username}")
-                    self.status_manager.update_status(shop_id, user_id, username, ConnectionState.DISCONNECTED)
-                    return
+            attempt += 1
+            if max_attempts > 0 and attempt >= max_attempts:
+                self.logger.error(
+                    f"连接失败，已达最大重试 {max_attempts}: {shop_id}-{username}"
+                )
+                on_failure(f"连接失败，已达到最大重试次数")
+                return
+
+            delay = self.reconnect_config.reconnect_delay_sec
+            self.logger.info(f"{delay:.0f}s 后重连: {shop_id}-{username}")
+            if not await self._interruptible_sleep(
+                delay, connection_key, shop_id, user_id, username
+            ):
+                return
 
     async def _connect_single_attempt(self, shop_id: str, user_id: str, username: str, on_success: callable, on_failure: callable):
         """
@@ -773,13 +840,15 @@ class PDDChannel(Channel):
         try:
             # 检查消费者是否已存在
             existing_consumer = message_consumer_manager.get_consumer(queue_name)
+            if existing_consumer and existing_consumer.is_running():
+                self.logger.debug(f"消费者 {queue_name} 已在运行，保持存活（重连不重启）")
+                return
             if existing_consumer:
-                self.logger.info(f"消费者 {queue_name} 已存在，先停止并重新创建以绑定当前事件循环")
+                self.logger.info(f"消费者 {queue_name} 未运行，重新创建")
                 try:
                     await message_consumer_manager.stop_consumer(queue_name)
                 except Exception as e:
                     self.logger.warning(f"停止旧消费者失败: {queue_name}, {e}")
-                # 重新创建队列，避免事件循环绑定错误
                 try:
                     queue_manager.recreate_queue(queue_name)
                 except Exception as e:
@@ -825,7 +894,8 @@ class PDDChannel(Channel):
                 return
 
             message_data = json.loads(message)
-            self.logger.debug(f"收到消息: {json.dumps(message_data, indent=2, ensure_ascii=False)}")
+            msg_type = message_data.get("type") if isinstance(message_data, dict) else None
+            self.logger.debug(f"收到 WS 消息 type={msg_type}")
 
             # 转换为PDD消息对象
             try:
@@ -961,7 +1031,13 @@ class PDDChannel(Channel):
                     if result == 'ok':
                         self.logger.info(f"{username}认证成功")
                     else:
-                        self.logger.warning(f"{username}认证失败")
+                        self.logger.warning(
+                            f"{username} auth result: fail，关闭连接触发重连"
+                        )
+                        connection_key = f"{shop_id}_{user_id}"
+                        ws = self._ws_connections.get(connection_key)
+                        if ws:
+                            await self._safe_close_websocket(ws)
                         
             elif context.type == ContextType.WITHDRAW:
                 # 撤回消息处理
@@ -1144,7 +1220,11 @@ class PDDChannel(Channel):
             return
         if event != "refund_card_expired":
             if payload:
-                self.logger.debug(f"商城系统消息: {payload}")
+                from utils.log_redact import redact_log_payload
+
+                self.logger.debug(
+                    f"商城系统消息: {redact_log_payload(payload)}"
+                )
             return
 
         buyer_uid = payload.get("user_id")
@@ -1230,7 +1310,13 @@ class PDDChannel(Channel):
         except Exception as e:
             self.logger.error(f"清理心跳任务列表失败: {e}")
 
-    async def _cleanup_resources(self, queue_name: str, connection_key: Optional[str] = None):
+    async def _cleanup_resources(
+        self,
+        queue_name: str,
+        connection_key: Optional[str] = None,
+        *,
+        keep_consumer: bool = False,
+    ):
         """
         清理资源 - 优化版本支持完整资源管理
         """
@@ -1259,10 +1345,10 @@ class PDDChannel(Channel):
                 self._ws_connections.clear()
                 self._stop_events.clear()
 
-            # 停止消息消费者
+            # 停止消息消费者（重连期间默认保持消费者存活）
             try:
-                should_stop_consumer = True
-                if connection_key:
+                should_stop_consumer = not keep_consumer
+                if connection_key and not keep_consumer:
                     # 同店铺仍有其他账号连接时不停止共享消费者
                     shop_prefix = f"{queue_name.replace('pdd_', '')}_"
                     should_stop_consumer = not any(

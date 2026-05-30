@@ -28,6 +28,8 @@ class BaseRequest:
     会自动调用 pdd_login.py 重新登录并更新cookies，然后重试原请求。
     """
 
+    _session_notify_at: Dict[str, float] = {}
+
     # 会话过期错误码
     SESSION_EXPIRED_ERROR_CODE = 43001
     # 重试抖动范围（随机因子乘数）
@@ -125,6 +127,52 @@ class BaseRequest:
             return True
             
         return False
+
+    def _emit_session_expired_alert(self, *, relogin_failed: bool = False) -> None:
+        """会话过期：审计 + 桌面通知（按账号节流，避免刷屏）。"""
+        key = f"{self.channel_name}:{self.shop_id}:{self.user_id}"
+        throttle = 60.0 if relogin_failed else 300.0
+        now = time.time()
+        last = BaseRequest._session_notify_at.get(key, 0.0)
+        if now - last < throttle:
+            return
+        BaseRequest._session_notify_at[key] = now
+
+        target = self.account_name or key
+        if relogin_failed:
+            detail = (
+                f"账号 {target} 会话已过期，自动重新登录失败，"
+                "请在「账号管理」中重新登录并检查店铺在线状态。"
+            )
+            severity = "error"
+        else:
+            detail = f"账号 {target} 会话已过期，正在尝试刷新 Cookie…"
+            severity = "warn"
+
+        try:
+            from utils.audit_log import audit_log
+
+            audit_log(
+                "session_expired",
+                target,
+                detail,
+                operator="system",
+                severity=severity,
+                extra={
+                    "shop_id": self.shop_id,
+                    "user_id": self.user_id,
+                    "relogin_failed": relogin_failed,
+                },
+            )
+        except Exception as e:
+            self.logger.debug(f"session_expired 审计写入失败: {e}")
+
+        try:
+            from utils.notify import send_desktop_notification
+
+            send_desktop_notification("拼多多客服 - Cookie 过期", detail)
+        except Exception as e:
+            self.logger.debug(f"session_expired 桌面通知失败: {e}")
     
     def _run_async_login_func(self, func: callable, *args) -> Any:
         """
@@ -309,6 +357,7 @@ class BaseRequest:
                         and not relogin_attempted and self.shop_id and self.user_id):
                         
                         self.logger.info(f"检测到会话过期，尝试重新登录...")
+                        self._emit_session_expired_alert(relogin_failed=False)
                         relogin_attempted = True
                         
                         if self._relogin_and_update_cookies():
@@ -317,6 +366,7 @@ class BaseRequest:
                             continue
                         else:
                             self.logger.error(f"重新登录失败，请求终止")
+                            self._emit_session_expired_alert(relogin_failed=True)
                             return response_data
                     
                     return response_data
@@ -386,14 +436,22 @@ class BaseRequest:
         try:
             # 检查HTTP状态码
             if response.status_code != 200:
-                self.logger.error(f"请求失败，状态码: {response.status_code}, 响应: {response.text}")
+                from utils.log_redact import redact_string_value
+
+                body = redact_string_value((response.text or "")[:500])
+                self.logger.error(
+                    f"请求失败，状态码: {response.status_code}, 响应(脱敏): {body}"
+                )
                 return None
             
             if expect_json:
                 try:
                     return response.json()
                 except json.JSONDecodeError:
-                    self.logger.error(f"解析JSON响应失败: {response.text}")
+                    from utils.log_redact import redact_string_value
+
+                    body = redact_string_value((response.text or "")[:500])
+                    self.logger.error(f"解析JSON响应失败，响应(脱敏): {body}")
                     return None
             else:
                 return {"text": response.text, "status_code": response.status_code}
@@ -402,11 +460,18 @@ class BaseRequest:
             self.logger.error(f"处理响应时发生错误: {str(e)}")
             return None
     
+    @staticmethod
+    def _redact_log_payload(payload: Any) -> Any:
+        from utils.log_redact import redact_log_payload
+
+        return redact_log_payload(payload)
+
     def _log_request(self, method: str, url: str, **kwargs):
         """记录请求日志"""
         self.logger.debug(f"发起{method}请求: {url}")
-        if 'data' in kwargs or 'json' in kwargs:
-            self.logger.debug(f"请求参数: {kwargs.get('data') or kwargs.get('json')}")
+        if "data" in kwargs or "json" in kwargs:
+            raw = kwargs.get("data") or kwargs.get("json")
+            self.logger.debug(f"请求参数(脱敏): {self._redact_log_payload(raw)}")
     
     def get(self, url: str, params: Optional[Dict] = None, headers: Optional[Dict[str, str]] = None, 
             timeout: int = 30, expect_json: bool = True, **kwargs) -> Optional[Dict[str, Any]]:

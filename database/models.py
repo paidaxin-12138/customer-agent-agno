@@ -187,5 +187,31 @@ class MerchantRefundApplyLog(Base):
     outcome_at = Column(DateTime, nullable=True, comment='收到 type=19/90 结果时间')
 
 
+class MerchantAddressChangeLog(Base):
+    """商家代买家改收货地址审计。"""
+    __tablename__ = 'merchant_address_change_logs'
+    __table_args__ = (
+        Index('idx_macl_shop_order', 'shop_id', 'order_sn'),
+        Index('idx_macl_shop_buyer', 'shop_id', 'buyer_uid'),
+        Index('idx_macl_created', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    shop_id = Column(String(100), nullable=False)
+    seller_user_id = Column(String(100), nullable=False)
+    operator_username = Column(String(128), nullable=True)
+    buyer_uid = Column(String(100), nullable=False)
+    order_sn = Column(String(64), nullable=False)
+    shipping_status = Column(Integer, default=0)
+    address_before_summary = Column(String(512), nullable=True)
+    address_after_summary = Column(String(512), nullable=True)
+    parsed_from_message = Column(Text, nullable=True)
+    action = Column(String(32), nullable=False, comment='confirm|cancel|auto_fail_to_manual')
+    api_success = Column(Boolean, nullable=True)
+    api_error_msg = Column(String(512), nullable=True)
+    shipped_override = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=_db_now)
+
+
 
 

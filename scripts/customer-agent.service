@@ -1,0 +1,35 @@
+# Customer-Agent systemd 单元示例（无 Node.js / PM2 时的备选）
+#
+# 安装步骤（Linux）：
+#   1. 修改下方 User、WorkingDirectory、EnvironmentFile 为实际值
+#   2. sudo cp scripts/customer-agent.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now customer-agent
+#
+# 注意：PyQt6 需要图形会话；无头服务器请配合 xvfb-run 或已登录桌面。
+
+[Unit]
+Description=Customer-Agent 拼多多 AI 客服
+After=network.target graphical.target
+Wants=graphical.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/path/to/Customer-Agent-main
+EnvironmentFile=-/path/to/Customer-Agent-main/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=DISPLAY=:0
+# 无桌面时使用 xvfb（取消下行注释并注释 ExecStart 中的直接 python）：
+# ExecStart=/usr/bin/xvfb-run -a /path/to/Customer-Agent-main/.venv/bin/python app.py
+ExecStart=/path/to/Customer-Agent-main/.venv/bin/python app.py
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+StandardOutput=append:/path/to/Customer-Agent-main/logs/service-out.log
+StandardError=append:/path/to/Customer-Agent-main/logs/service-error.log
+
+[Install]
+WantedBy=multi-user.target

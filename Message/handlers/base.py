@@ -35,3 +35,24 @@ class BaseHandler(MessageHandler):
         except Exception as e:
             self.logger.debug("_get_user_info: {}", e)
             return "用户:unknown"
+
+    async def send_text_to_buyer(
+        self,
+        shop_id: Any,
+        user_id: Any,
+        from_uid: Any,
+        text: str,
+        *,
+        context: Optional[Context] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        from .channel_send import send_text_to_buyer
+
+        return await send_text_to_buyer(
+            shop_id,
+            user_id,
+            from_uid,
+            text,
+            context=context,
+            metadata=metadata,
+        )

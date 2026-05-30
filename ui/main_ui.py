@@ -5,7 +5,17 @@ macOS 风格设计
 
 import sys
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget, QSplitter
+from PyQt6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QSystemTrayIcon,
+    QVBoxLayout,
+    QWidget,
+    QSplitter,
+)
 from PyQt6.QtGui import QFont, QIcon
 from qfluentwidgets import FluentWindow, NavigationItemPosition
 from qfluentwidgets import FluentIcon as FIF
@@ -99,7 +109,99 @@ class MainWindow(FluentWindow):
             self, interval_ms=max(30_000, _interval_ms)
         )
         self._session_idle_closer.start()
-    
+        QTimer.singleShot(800, self._show_startup_config_hints)
+        self._init_system_tray()
+
+    def _init_system_tray(self) -> None:
+        """系统托盘：关闭窗口时最小化到托盘。"""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            logger.warning("系统托盘不可用，跳过托盘初始化")
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.setQuitOnLastWindowClosed(False)
+
+        self._tray_icon = QSystemTrayIcon(self)
+        _icon = get_app_icon_path()
+        if _icon.exists():
+            self._tray_icon.setIcon(QIcon(str(_icon)))
+        else:
+            self._tray_icon.setIcon(self.windowIcon())
+        self._tray_icon.setToolTip("拼多多 AI 客服助手")
+
+        menu = QMenu()
+        show_action = menu.addAction("显示主窗口")
+        show_action.triggered.connect(self._show_from_tray)
+        quit_action = menu.addAction("退出")
+        quit_action.triggered.connect(self._quit_from_tray)
+        self._tray_icon.setContextMenu(menu)
+        self._tray_icon.activated.connect(self._on_tray_activated)
+        self._tray_icon.show()
+        self._tray_enabled = True
+
+    def _show_from_tray(self) -> None:
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_from_tray(self) -> None:
+        if getattr(self, "_tray_icon", None):
+            self._tray_icon.hide()
+        QApplication.instance().quit()
+
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._show_from_tray()
+
+    def notify_user(
+        self,
+        title: str,
+        message: str,
+        *,
+        tray_only: bool = False,
+    ) -> None:
+        """不可恢复错误或关键运维事件：托盘气泡 + 可选系统通知。"""
+        if getattr(self, "_tray_icon", None) and self._tray_icon.isVisible():
+            self._tray_icon.showMessage(
+                title,
+                message,
+                QSystemTrayIcon.MessageIcon.Warning,
+                8000,
+            )
+        if not tray_only:
+            try:
+                from utils.notify import send_desktop_notification
+
+                send_desktop_notification(title, message)
+            except Exception as e:
+                logger.debug(f"系统通知跳过: {e}")
+
+    def _show_startup_config_hints(self) -> None:
+        """启动后提示关键配置缺失（不阻断已打开的窗口）。"""
+        try:
+            from utils.config_startup import validate_startup_config
+
+            issues = validate_startup_config()
+            if not issues:
+                return
+            from qfluentwidgets import InfoBar, InfoBarPosition
+
+            InfoBar.warning(
+                title="配置提示",
+                content=issues[0],
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=8000,
+                parent=self,
+            )
+            for msg in issues[1:3]:
+                logger.warning(f"启动配置: {msg}")
+            if len(issues) >= 2:
+                self.notify_user("配置提示", issues[0], tray_only=True)
+        except Exception as e:
+            logger.debug(f"启动配置提示跳过: {e}")
+
     def initNavigation(self):
         """初始化导航栏 - macOS 风格"""
         # 添加导航项
@@ -162,6 +264,7 @@ class MainWindow(FluentWindow):
             self._lazy_load_views_impl()
         except Exception as e:
             logger.exception(f"延迟加载视图失败: {e}")
+            self.notify_user("界面加载失败", "部分功能不可用，请查看日志或重启应用。")
             if self.monitor_view is None:
                 self.monitor_view = Widget("界面加载失败，请重启应用", self)
             if self.live_chat_view is None:
@@ -322,3 +425,17 @@ class MainWindow(FluentWindow):
             logger.debug("设置 macOS 外观失败：{}", e)
 
         # 应用 macOS 设计 (已在 __init__ 中应用)
+
+    def closeEvent(self, event) -> None:
+        if getattr(self, "_tray_enabled", False) and getattr(self, "_tray_icon", None):
+            if self._tray_icon.isVisible():
+                event.ignore()
+                self.hide()
+                self._tray_icon.showMessage(
+                    "客服助手仍在运行",
+                    "程序已最小化到托盘，右键图标可退出。",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    4000,
+                )
+                return
+        super().closeEvent(event)

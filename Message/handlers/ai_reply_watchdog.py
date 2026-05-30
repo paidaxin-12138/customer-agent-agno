@@ -205,15 +205,11 @@ async def _send_buyer_text(
             pass
     if not all([shop_id, user_id, from_uid]):
         return False
-    try:
-        from Channel.pinduoduo.utils.API.send_message import SendMessage
+    from Message.handlers.channel_send import send_text_to_buyer
 
-        sender = SendMessage(str(shop_id), str(user_id))
-        result = await asyncio.to_thread(sender.send_text, str(from_uid), text)
-        return isinstance(result, dict) and bool(result.get("success"))
-    except Exception as e:
-        logger.error(f"watchdog 发送买家话术失败: {e}")
-        return False
+    return await send_text_to_buyer(
+        shop_id, user_id, from_uid, text, context=context, metadata=metadata
+    )
 
 
 async def escalate_to_human(

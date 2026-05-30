@@ -7,6 +7,7 @@ from __future__ import annotations
 from .core.handlers import CatchAllHandler
 
 _cached_keyword_handler = None
+_cached_address_change_handler = None
 _cached_order_logistics_handler = None
 _cached_image_video_handler = None
 _cached_after_sales_apply_handler = None
@@ -24,6 +25,23 @@ def _get_image_video_handler():
 
             get_logger("handler_chain").warning(f"ImageVideoHumanHandler 导入失败: {e}")
     return _cached_image_video_handler
+
+
+def _get_address_change_handler():
+    """买家改收货地址（MMS 查单 + 弹窗确认改址）。"""
+    global _cached_address_change_handler
+    if _cached_address_change_handler is None:
+        try:
+            from .handlers.address_change_handler import AddressChangeHandler
+
+            _cached_address_change_handler = AddressChangeHandler()
+        except ImportError as e:
+            from utils.logger_loguru import get_logger
+
+            get_logger("handler_chain").warning(
+                f"AddressChangeHandler 导入失败: {e}"
+            )
+    return _cached_address_change_handler
 
 
 def _get_order_logistics_handler():
@@ -73,6 +91,11 @@ def _get_keyword_handler():
     return _cached_keyword_handler
 
 
+def get_keyword_handler_instance():
+    """供 UI 热加载关键词时获取已缓存的处理器实例。"""
+    return _cached_keyword_handler
+
+
 def _create_ai_handler(bot=None):
     from .handlers.ai_handler import AIReplyHandler
 
@@ -82,6 +105,10 @@ def _create_ai_handler(bot=None):
 def handler_chain(use_ai=True, businessHours=None, bot=None):
     """简化版处理器链创建函数 - 包含关键词检测"""
     handlers = []
+
+    ac_handler = _get_address_change_handler()
+    if ac_handler is not None:
+        handlers.append(ac_handler)
 
     ol_handler = _get_order_logistics_handler()
     if ol_handler is not None:

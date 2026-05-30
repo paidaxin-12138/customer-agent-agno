@@ -15,6 +15,23 @@ from pathlib import Path
 
 from loguru import logger
 
+# 生产日志（TimedRotating + PM2 out/error）在首次 get_logger 时初始化
+_LOG_SETUP_DONE = False
+
+
+def _ensure_log_setup() -> None:
+    global _LOG_SETUP_DONE
+    if _LOG_SETUP_DONE:
+        return
+    try:
+        from utils.logging_setup import setup_production_logging
+
+        setup_production_logging()
+    except Exception:
+        pass
+    _LOG_SETUP_DONE = True
+
+
 # 可选的PyQt6依赖
 try:
     from PyQt6.QtCore import QObject, pyqtSignal
@@ -35,53 +52,7 @@ except ImportError:
                 pass
         return DummySignal()
 
-# 默认配置
 DEFAULT_LOG_LEVEL = "info"
-MAX_LOG_SIZE = "10 MB"
-BACKUP_COUNT = 5
-
-# 配置loguru
-log_level = os.environ.get("LOG_LEVEL", DEFAULT_LOG_LEVEL).lower()
-
-# 移除默认处理器
-logger.remove()
-
-# 检查是否在打包环境中
-import sys
-is_frozen = getattr(sys, 'frozen', False)
-
-if is_frozen:
-    log_dir = Path.home() / "Library" / "Application Support" / "AgentCustomer" / "logs"
-    DEFAULT_LOG_FILE = str(log_dir / "app.log")
-else:
-    DEFAULT_LOG_FILE = "logs/app.log"
-
-# 确保日志目录存在（打包环境与开发环境都适配）
-os.makedirs(os.path.dirname(DEFAULT_LOG_FILE), exist_ok=True)
-
-# 添加控制台处理器（仅在开发环境）
-if not is_frozen:
-    logger.add(
-        sys.stdout,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-        level=log_level.upper(),
-        colorize=True,
-        backtrace=True,
-        diagnose=True
-    )
-
-# 添加文件处理器（自动轮转和压缩）
-logger.add(
-    DEFAULT_LOG_FILE,
-    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
-    level=log_level.upper(),
-    rotation=MAX_LOG_SIZE,
-    retention=BACKUP_COUNT,
-    compression="zip",
-    encoding="utf-8",
-    backtrace=True,
-    diagnose=True
-)
 
 # 全局logger对象（保持向后兼容）
 app_logger = logger
@@ -96,6 +67,7 @@ def get_logger(name=None):
     Returns:
         loguru logger实例
     """
+    _ensure_log_setup()
     if name is None:
         # 获取调用者的模块名
         import inspect

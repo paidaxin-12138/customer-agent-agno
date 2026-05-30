@@ -1,6 +1,3 @@
-import asyncio
-import errno
-
 from agno import tools
 from Agent.bot import Bot
 from agno.agent import Agent, RunOutput
@@ -40,37 +37,6 @@ _NATURAL_STYLE_CONTEXT = (
     "真实场景要像熟人接力聊天：后续消息默认零寒暄，直奔答案。"
     "篇幅硬约束：单条输出宁可短一半也不要写长；买家连发多条时更要一句点破，不要铺陈。"
 )
-
-def _is_transient_llm_transport_error(exc: BaseException) -> bool:
-    """
-    判定是否为可重试的瞬时网络/传输错误（如 EPIPE、连接被重置、httpx 读超时等）。
-    日志中常见：[Errno 32] Broken pipe。
-    """
-    seen: set[int] = set()
-    cur: Optional[BaseException] = exc
-    while cur is not None and id(cur) not in seen:
-        seen.add(id(cur))
-        if isinstance(cur, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, asyncio.TimeoutError)):
-            return True
-        if isinstance(cur, OSError):
-            en = getattr(cur, "errno", None)
-            if en in (errno.EPIPE, errno.ECONNRESET, errno.ETIMEDOUT, errno.ECONNABORTED):
-                return True
-        name = type(cur).__name__
-        if name in (
-            "ReadError",
-            "WriteError",
-            "RemoteProtocolError",
-            "LocalProtocolError",
-            "ConnectError",
-            "ReadTimeout",
-            "WriteTimeout",
-            "ConnectTimeout",
-        ):
-            return True
-        cur = cur.__cause__ or cur.__context__
-    return False
-
 
 _KNOWLEDGE_GROUNDING: List[str] = [
     "本店主营以知识库检索到的「美甲灯/光疗灯」及其中明确写明的配件为准；不得编造未在检索结果中出现的在售 SKU、库存、价格或规格。",

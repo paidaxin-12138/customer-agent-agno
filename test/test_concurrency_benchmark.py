@@ -26,10 +26,19 @@ from Channel.pinduoduo.pdd_chnnel import PDDChannel
 
 # ---------- 配置快照（与线上一致） ----------
 
+def _configured_ws_concurrency() -> int:
+    try:
+        from config import get_config
+
+        return max(4, min(int(get_config("chat.ws_message_max_concurrent", 16) or 16), 32))
+    except (TypeError, ValueError):
+        return 16
+
+
 CONFIGURED_LIMITS = {
-    "message_consumer_max_concurrent": 28,  # chat.message_consumer_max_concurrent / pdd_chnnel
-    "pdd_websocket_max_concurrent_messages": 50,  # PDDChannel.__init__ 默认
-    "queue_max_size": QueueConfig().max_size,  # 1000
+    "message_consumer_max_concurrent": 28,
+    "pdd_websocket_max_concurrent_messages": _configured_ws_concurrency(),
+    "queue_max_size": QueueConfig().max_size,
 }
 
 
@@ -40,6 +49,7 @@ class _SleepHandler(MessageHandler):
         self.delay_sec = delay_sec
         self.peak_in_flight = 0
         self._in_flight = 0
+        self.processed_count = 0
 
     def can_handle(self, context: Context) -> bool:
         return True
@@ -49,6 +59,7 @@ class _SleepHandler(MessageHandler):
         self.peak_in_flight = max(self.peak_in_flight, self._in_flight)
         try:
             await asyncio.sleep(self.delay_sec)
+            self.processed_count += 1
             return True
         finally:
             self._in_flight -= 1
@@ -111,7 +122,11 @@ async def _run_consumer_bench(
     await consumer.start()
     t0 = time.perf_counter()
     deadline = t0 + 30.0
-    while queue.size() > 0 or handler._in_flight > 0:
+    while (
+        handler.processed_count < message_count
+        or queue.size() > 0
+        or handler._in_flight > 0
+    ):
         if time.perf_counter() > deadline:
             break
         await asyncio.sleep(0.02)
@@ -155,7 +170,7 @@ async def _probe_semaphore_parallelism(limit: int, workers: int) -> int:
 @pytest.mark.asyncio
 async def test_configured_limits_snapshot():
     assert CONFIGURED_LIMITS["message_consumer_max_concurrent"] == 28
-    assert CONFIGURED_LIMITS["pdd_websocket_max_concurrent_messages"] == 50
+    assert CONFIGURED_LIMITS["pdd_websocket_max_concurrent_messages"] == _configured_ws_concurrency()
     assert CONFIGURED_LIMITS["queue_max_size"] == 1000
 
 
@@ -189,13 +204,18 @@ async def test_same_buyer_serializes_per_lock():
 
 @pytest.mark.asyncio
 async def test_pdd_channel_default_websocket_concurrency():
-    """PDDChannel 默认 50；探针不依赖 DI 容器实例化。"""
+    """PDDChannel 默认并发来自 chat.ws_message_max_concurrent。"""
     import inspect
 
+    expected = _configured_ws_concurrency()
     sig = inspect.signature(PDDChannel.__init__)
-    assert sig.parameters["max_concurrent_messages"].default == 50
-    peak = await _probe_semaphore_parallelism(50, workers=80)
-    assert peak == 50
+    assert sig.parameters["max_concurrent_messages"].default is None
+    from core.connection_status import ConnectionStatusManager
+
+    ch = PDDChannel(status_manager=ConnectionStatusManager())
+    assert ch.max_concurrent_messages == expected
+    peak = await _probe_semaphore_parallelism(expected, workers=expected + 30)
+    assert peak == expected
 
 
 def _print_report(results: List[BenchResult], sem_peaks: dict) -> None:
@@ -220,7 +240,7 @@ def _print_report(results: List[BenchResult], sem_peaks: dict) -> None:
 
     print("\n========== 结论摘要 ==========")
     print(
-        "  · 拼多多 WebSocket 入站：最多同时处理 50 条（PDDChannel.message_semaphore）"
+        f"  · 拼多多 WebSocket 入站：最多同时处理 {CONFIGURED_LIMITS['pdd_websocket_max_concurrent_messages']} 条（PDDChannel.message_semaphore）"
     )
     print(
         "  · 消息队列消费者：最多同时处理 28 条（不同买家；chat.message_consumer_max_concurrent）"

@@ -89,27 +89,62 @@ class ChannelBasedHandler(MessageHandler):
 
 
 class CatchAllHandler(MessageHandler):
-    """兜底处理器 - 处理所有未被其他处理器处理的消息"""
+    """链末兜底：记日志 + 可选向买家发送安抚（与 consumer fallback 二选一生效）。"""
+
+    _DEFAULT_COMFORT = (
+        "亲，消息已收到，客服稍后会回复您；如需人工请回复「人工」。"
+    )
 
     def __init__(self):
         super().__init__()
 
     def can_handle(self, context: Context) -> bool:
-        """总是返回True，确保能处理所有消息"""
         return True
 
     async def handle(self, context: Context, metadata: Dict[str, Any]) -> bool:
-        """记录所有消息，用于调试和统计"""
-        user_id = metadata.get('user_id', 'unknown')
-        message_id = metadata.get('message_id', 'unknown')
+        from config import config
+        from utils.log_redact import redact_log_payload
 
-        self.logger.info(f"=== 消息处理记录 ===")
-        self.logger.info(f"用户ID: {user_id}")
-        self.logger.info(f"消息ID: {message_id}")
-        self.logger.info(f"消息类型: {context.type}")
-        self.logger.info(f"渠道类型: {context.channel_type}")
-        self.logger.info(f"消息内容: {context.content}")
-        self.logger.info(f"消息已被CatchAllHandler处理")
-        self.logger.info(f"===================")
+        user_id = metadata.get("user_id", "unknown")
+        message_id = metadata.get("message_id", "unknown")
+        safe_content = redact_log_payload(
+            context.content if isinstance(context.content, (str, dict)) else str(context.content)
+        )
 
-        return True  # 总是返回True，避免"没有合适的处理器"警告
+        self.logger.info("=== CatchAll 消息记录 ===")
+        self.logger.info(f"用户ID: {user_id} 消息ID: {message_id}")
+        self.logger.info(f"类型: {context.type} 渠道: {context.channel_type}")
+        self.logger.info(f"内容(脱敏): {safe_content}")
+
+        if not bool(config.get("chat.catchall_comfort_enabled", True)):
+            return False
+
+        notice = str(
+            config.get("chat.catchall_comfort_notice") or self._DEFAULT_COMFORT
+        ).strip()
+        if not notice:
+            return False
+
+        shop_id = metadata.get("shop_id")
+        seller_id = metadata.get("user_id")
+        from_uid = metadata.get("from_uid")
+        if not all([shop_id, seller_id, from_uid]):
+            return False
+
+        try:
+            from Message.handlers.channel_send import send_text_to_buyer
+
+            ok = await send_text_to_buyer(
+                shop_id,
+                seller_id,
+                from_uid,
+                notice,
+                context=context,
+                metadata=metadata,
+            )
+            if ok:
+                self.logger.info("CatchAll 已发送链末安抚")
+            return ok
+        except Exception as e:
+            self.logger.warning(f"CatchAll 安抚发送失败: {e}")
+            return False

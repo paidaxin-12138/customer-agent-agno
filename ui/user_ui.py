@@ -434,6 +434,9 @@ class UserManagerWidget(QFrame):
                     accounts = db_manager.get_accounts_by_shop(channel_name, shop_id)
                     
                     for account in accounts:
+                        secrets = db_manager.get_account(
+                            channel_name, shop_id, account["user_id"], include_secrets=True
+                        ) or {}
                         account_data = {
                             "channel_name": channel_name,
                             "shop_id": shop_id,
@@ -441,9 +444,9 @@ class UserManagerWidget(QFrame):
                             "shop_logo": shop.get("shop_logo"),
                             "user_id": account["user_id"],
                             "username": account["username"],
-                            "password": account["password"],
+                            "password": secrets.get("password") or "",
                             "status": account["status"],
-                            "cookies": account.get("cookies")
+                            "cookies": secrets.get("cookies"),
                         }
                         self.accounts_data.append(account_data)
             
@@ -539,12 +542,30 @@ class UserManagerWidget(QFrame):
                 )
                 
                 if cookies_updated and status_updated:
-                    # 更新卡片状态显示
                     account_card.updateStatus(1)
+                    try:
+                        from utils.audit_log import audit_login
+
+                        audit_login(
+                            account_data.get("username", ""),
+                            True,
+                            shop_id=str(account_data.get("shop_id", "")),
+                        )
+                    except Exception:
+                        pass
                     QMessageBox.information(self, "验证成功", f"账号 '{account_data['username']}")
                
             else:  # 登录失败，result为False
-                # 登录失败，更新数据库状态为离线
+                try:
+                    from utils.audit_log import audit_login
+
+                    audit_login(
+                        account_data.get("username", ""),
+                        False,
+                        shop_id=str(account_data.get("shop_id", "")),
+                    )
+                except Exception:
+                    pass
                 db_manager.update_account_status(
                     account_data["channel_name"],
                     account_data["shop_id"],

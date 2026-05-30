@@ -88,14 +88,20 @@ def smoke_mms(shop: str, user: str) -> dict:
 
     import sqlite3
 
+    from scripts.backup_db import resolve_db_path
+
     buyer = None
-    conn = sqlite3.connect(ROOT / "temp" / "customer.db")
-    row = conn.execute(
-        "SELECT buyer_uid FROM chat_sessions ORDER BY last_message_time DESC LIMIT 1"
-    ).fetchone()
-    conn.close()
-    if row:
-        buyer = str(row[0])
+    db_path = resolve_db_path()
+    if db_path.exists():
+        conn = sqlite3.connect(db_path)
+        try:
+            row = conn.execute(
+                "SELECT buyer_uid FROM chat_sessions ORDER BY last_message_time DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        if row:
+            buyer = str(row[0])
 
     pm = ProductManager(shop, user)
     pm.update_cookies(acc["cookies"])
@@ -154,13 +160,15 @@ def smoke_mms(shop: str, user: str) -> dict:
 def smoke_config_db() -> dict:
     _section("3. 配置与数据库")
     from config import config
+    from scripts.backup_db import resolve_db_path
 
     results = {}
     results["config_llm"] = bool(config.get("llm.api_key"))
-    results["config_db"] = (ROOT / "temp" / "customer.db").exists()
+    db_path = resolve_db_path()
+    results["config_db"] = db_path.exists()
     results["knowledge_json"] = (ROOT / "temp" / "knowledge_docs.json").exists()
     print(f"  LLM 配置: {'OK' if results['config_llm'] else '未配置'}")
-    print(f"  SQLite: {'OK' if results['config_db'] else '缺失'}")
+    print(f"  SQLite ({db_path}): {'OK' if results['config_db'] else '缺失'}")
     print(f"  知识库文件: {'OK' if results['knowledge_json'] else '缺失'}")
     return results
 

@@ -17,6 +17,7 @@ from database.models import (
     ChatMessage,
     QuickReply,
     MerchantRefundApplyLog,
+    MerchantAddressChangeLog,
 )
 
 class DatabaseManager:
@@ -42,151 +43,27 @@ class DatabaseManager:
         # 确保数据库目录存在
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         
-        # 创建数据库引擎
-        self.engine = create_engine(f'sqlite:///{db_path}')
+        # 创建数据库引擎（WAL + 多线程 asyncio.to_thread 安全）
+        self.engine = create_engine(
+            f"sqlite:///{db_path}",
+            connect_args={"check_same_thread": False, "timeout": 10.0},
+        )
+        with self.engine.connect() as conn:
+            conn.exec_driver_sql("PRAGMA journal_mode=WAL")
+            conn.exec_driver_sql("PRAGMA synchronous=NORMAL")
         self.Session = sessionmaker(bind=self.engine)
         
         self.logger = get_logger()
 
-        # 创建表结构
+        # 创建表结构 + 遗留增量补丁（与 alembic revision 0001 共用）
         Base.metadata.create_all(self.engine)
-        self._migrate_chat_session_memory_columns()
-        self._migrate_merchant_refund_apply_columns()
-        self._migrate_ops_schema()
-        self._migrate_utc_timestamps_to_shanghai()
-        
-        self._initialized = True    
+        from database.schema_migrations import apply_legacy_migrations
+
+        apply_legacy_migrations(self.engine, self.logger)
+
+        self._initialized = True
         # 初始化数据库
         self.init_db()
-
-    def _migrate_chat_session_memory_columns(self) -> None:
-        """为已有 SQLite 库补齐三层记忆字段。"""
-        import sqlite3
-
-        path = self.engine.url.database
-        if not path:
-            return
-        conn = sqlite3.connect(path)
-        try:
-            cur = conn.execute("PRAGMA table_info(chat_sessions)")
-            cols = {row[1] for row in cur.fetchall()}
-            alters = []
-            if "task_state_json" not in cols:
-                alters.append("ALTER TABLE chat_sessions ADD COLUMN task_state_json TEXT")
-            if "long_term_summary" not in cols:
-                alters.append("ALTER TABLE chat_sessions ADD COLUMN long_term_summary TEXT")
-            if "memory_summary_through_id" not in cols:
-                alters.append(
-                    "ALTER TABLE chat_sessions ADD COLUMN memory_summary_through_id INTEGER DEFAULT 0"
-                )
-            for sql in alters:
-                conn.execute(sql)
-            if alters:
-                conn.commit()
-                self.logger.info(f"chat_sessions 记忆字段迁移: {len(alters)} 列")
-        except Exception as e:
-            self.logger.warning(f"chat_sessions 记忆字段迁移失败: {e}")
-        finally:
-            conn.close()
-
-    def _migrate_merchant_refund_apply_columns(self) -> None:
-        """merchant_refund_apply_logs 补齐 status / valid_time_unix。"""
-        import sqlite3
-
-        path = self.engine.url.database
-        if not path:
-            return
-        conn = sqlite3.connect(path)
-        try:
-            cur = conn.execute("PRAGMA table_info(merchant_refund_apply_logs)")
-            cols = {row[1] for row in cur.fetchall()}
-            if not cols:
-                return
-            alters = []
-            if "status" not in cols:
-                alters.append(
-                    "ALTER TABLE merchant_refund_apply_logs ADD COLUMN status TEXT"
-                )
-            if "valid_time_unix" not in cols:
-                alters.append(
-                    "ALTER TABLE merchant_refund_apply_logs "
-                    "ADD COLUMN valid_time_unix INTEGER"
-                )
-            for sql in alters:
-                conn.execute(sql)
-            if alters:
-                conn.commit()
-                self.logger.info(
-                    f"merchant_refund_apply_logs 迁移: {len(alters)} 列"
-                )
-        except Exception as e:
-            self.logger.warning(f"merchant_refund_apply_logs 迁移失败: {e}")
-        finally:
-            conn.close()
-
-    def _migrate_ops_schema(self) -> None:
-        """运营看板表列补齐（旧库可能缺 session_key 等）。"""
-        try:
-            from database.ops_migrate import migrate_ops_schema
-
-            path = self.engine.url.database
-            if path:
-                migrate_ops_schema(path)
-        except Exception as e:
-            if hasattr(self, "logger"):
-                self.logger.warning(f"ops 表迁移跳过: {e}")
-
-    def _migrate_utc_timestamps_to_shanghai(self) -> None:
-        """历史库 naive UTC 时间 +8h 转为上海墙钟（仅执行一次）。"""
-        import sqlite3
-
-        path = self.engine.url.database
-        if not path:
-            return
-        conn = sqlite3.connect(path)
-        try:
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)"
-            )
-            row = conn.execute(
-                "SELECT value FROM app_meta WHERE key='timestamps_shanghai_v1'"
-            ).fetchone()
-            if row and str(row[0]) == "1":
-                return
-            patches = [
-                ("chat_sessions", ("updated_at", "created_at")),
-                ("chat_messages", ("created_at", "read_at")),
-                ("ops_sessions", ("updated_at",)),
-                ("ops_traces", ("created_at",)),
-                ("ops_knowledge_revisions", ("created_at",)),
-                ("ops_low_confidence", ("updated_at",)),
-                ("ops_tickets", ("created_at", "updated_at")),
-                ("ops_eval_runs", ("created_at",)),
-                ("ops_cost_logs", ("created_at",)),
-                ("ops_security_audits", ("created_at",)),
-            ]
-            n = 0
-            for table, cols in patches:
-                for col in cols:
-                    try:
-                        cur = conn.execute(
-                            f"UPDATE {table} SET {col} = datetime({col}, '+8 hours') "
-                            f"WHERE {col} IS NOT NULL"
-                        )
-                        n += cur.rowcount
-                    except sqlite3.OperationalError:
-                        pass
-            conn.execute(
-                "INSERT OR REPLACE INTO app_meta (key, value) VALUES "
-                "('timestamps_shanghai_v1', '1')"
-            )
-            conn.commit()
-            if n > 0:
-                self.logger.info(f"时间字段 UTC→上海迁移: 约 {n} 行")
-        except Exception as e:
-            self.logger.warning(f"时间迁移失败: {e}")
-        finally:
-            conn.close()
 
     def init_db(self):
         """初始化渠道信息"""
@@ -578,13 +455,15 @@ class DatabaseManager:
                 self.logger.warning(f"账号 {username} 已存在于店铺 {shop_id}")
                 return False
             
+            from utils.credential_crypto import maybe_encrypt_for_storage
+
             # 创建新账号
             account = Account(
                 shop_id=shop.id,
                 user_id=user_id,
                 username=username,
-                password=password,
-                cookies=cookies,
+                password=maybe_encrypt_for_storage(password),
+                cookies=maybe_encrypt_for_storage(cookies) if cookies else cookies,
                 status=None
             )
             
@@ -599,13 +478,21 @@ class DatabaseManager:
         finally:
             session.close()
     
-    def get_account(self, channel_name: str, shop_id: str,user_id: str) -> Optional[Dict[str, Any]]:
+    def get_account(
+        self,
+        channel_name: str,
+        shop_id: str,
+        user_id: str,
+        *,
+        include_secrets: bool = True,
+    ) -> Optional[Dict[str, Any]]:
         """获取账号信息
         
         Args:
             channel_name: 渠道名称
             shop_id: 店铺ID
             user_id: 用户ID
+            include_secrets: 是否解密并返回 password/cookies（登录与 HTTP 需要 True）
         Returns:
             Optional[Dict]: 账号信息或None
         """
@@ -633,14 +520,40 @@ class DatabaseManager:
             if not account:
                 self.logger.warning(f"未找到账户: {user_id} (店铺 ID: {shop_id})")
                 return None
-                
+
+            from utils.credential_crypto import (
+                is_encrypted,
+                maybe_decrypt_from_storage,
+                maybe_encrypt_for_storage,
+            )
+
+            pwd = account.password
+            ck = account.cookies
+            if include_secrets:
+                plain_pwd = maybe_decrypt_from_storage(pwd)
+                plain_ck = maybe_decrypt_from_storage(ck)
+                migrated = False
+                if plain_pwd and not is_encrypted(pwd):
+                    account.password = maybe_encrypt_for_storage(plain_pwd)
+                    migrated = True
+                if plain_ck and not is_encrypted(ck):
+                    account.cookies = maybe_encrypt_for_storage(plain_ck)
+                    migrated = True
+                if migrated:
+                    session.commit()
+                pwd = plain_pwd
+                ck = plain_ck
+            else:
+                pwd = None
+                ck = None
+
             return {
                 'id': account.id,
                 'shop_id': account.shop_id,
                 'user_id': account.user_id,
                 'username': account.username,
-                'password': account.password,
-                'cookies': account.cookies,
+                'password': pwd,
+                'cookies': ck,
                 'status': account.status
             }
         except SQLAlchemyError as e:
@@ -688,13 +601,15 @@ class DatabaseManager:
                 self.logger.error(f"更新账号失败: 账号 {user_id} 不存在于店铺 {shop_id}")
                 return False
                 
+            from utils.credential_crypto import maybe_encrypt_for_storage
+
             # 更新账号信息
             if username is not None:
                 account.username = username
             if password is not None:
-                account.password = password
+                account.password = maybe_encrypt_for_storage(password)
             if cookies is not None:
-                account.cookies = cookies
+                account.cookies = maybe_encrypt_for_storage(cookies)
             if status is not None:
                 account.status = status
 
@@ -740,9 +655,11 @@ class DatabaseManager:
                     'shop_id': account.shop_id,
                     'user_id': account.user_id,
                     'username': account.username,
-                    'password': account.password,
-                    'cookies': account.cookies,
-                    'status': account.status
+                    'password': None,
+                    'cookies': None,
+                    'status': account.status,
+                    'has_password': bool(account.password),
+                    'has_cookies': bool(account.cookies),
                 }
                 for account in accounts
             ]
@@ -906,6 +823,12 @@ class DatabaseManager:
             session.add(keyword_obj)
             session.commit()
             self.logger.info(f"成功添加关键词: {keyword}")
+            try:
+                from utils.audit_log import audit_keyword_change
+
+                audit_keyword_change("keyword_add", keyword)
+            except Exception:
+                pass
             return True
         except SQLAlchemyError as e:
             session.rollback()
@@ -990,6 +913,16 @@ class DatabaseManager:
             keyword_obj.keyword = new_keyword
             session.commit()
             self.logger.info(f"成功更新关键词: {old_keyword} -> {new_keyword}")
+            try:
+                from utils.audit_log import audit_keyword_change
+
+                audit_keyword_change(
+                    "keyword_update",
+                    new_keyword,
+                    operator="ui",
+                )
+            except Exception:
+                pass
             return True
         except SQLAlchemyError as e:
             session.rollback()
@@ -1017,6 +950,12 @@ class DatabaseManager:
             session.delete(keyword_obj)
             session.commit()
             self.logger.info(f"成功删除关键词: {keyword}")
+            try:
+                from utils.audit_log import audit_keyword_change
+
+                audit_keyword_change("keyword_delete", keyword)
+            except Exception:
+                pass
             return True
         except SQLAlchemyError as e:
             session.rollback()
@@ -1742,6 +1681,18 @@ class DatabaseManager:
             session.add(row)
             session.commit()
             session.refresh(row)
+            try:
+                from utils.audit_log import audit_refund_card
+
+                audit_refund_card(
+                    str(order_sn).strip(),
+                    shop_id=str(shop_id),
+                    buyer_uid=str(buyer_uid),
+                    success=bool(api_success),
+                    detail=error_msg or ("pending" if api_success else "failed"),
+                )
+            except Exception:
+                pass
             return int(row.id)
         except SQLAlchemyError as e:
             session.rollback()
@@ -1896,6 +1847,50 @@ class DatabaseManager:
         finally:
             session.close()
 
+    def record_merchant_address_change(
+        self,
+        shop_id: str,
+        seller_user_id: str,
+        operator_username: str,
+        buyer_uid: str,
+        order_sn: str,
+        shipping_status: int,
+        action: str,
+        address_before_summary: str = "",
+        address_after_summary: str = "",
+        parsed_from_message: str = "",
+        api_success: Optional[bool] = None,
+        api_error_msg: Optional[str] = None,
+        shipped_override: bool = False,
+    ) -> int:
+        session = self.get_session()
+        try:
+            row = MerchantAddressChangeLog(
+                shop_id=str(shop_id),
+                seller_user_id=str(seller_user_id),
+                operator_username=str(operator_username or "")[:128],
+                buyer_uid=str(buyer_uid),
+                order_sn=str(order_sn).strip(),
+                shipping_status=int(shipping_status),
+                address_before_summary=(address_before_summary or "")[:512],
+                address_after_summary=(address_after_summary or "")[:512],
+                parsed_from_message=(parsed_from_message or "")[:4000],
+                action=str(action),
+                api_success=api_success,
+                api_error_msg=(str(api_error_msg)[:512] if api_error_msg else None),
+                shipped_override=bool(shipped_override),
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return int(row.id)
+        except SQLAlchemyError as e:
+            session.rollback()
+            self.logger.error(f"record_merchant_address_change 失败: {e}")
+            return 0
+        finally:
+            session.close()
+
 _db_instance = None
 
 def get_db_manager() -> "DatabaseManager":
@@ -1911,7 +1906,20 @@ def get_db_manager() -> "DatabaseManager":
     return _db_instance
 
 class _LazyDBProxy:
+    """与 database.__init__ 的 DI 代理一致，优先使用容器内 DatabaseManager。"""
+
+    def _get_instance(self) -> "DatabaseManager":
+        try:
+            from core.di_container import container
+
+            if container.is_registered(DatabaseManager):
+                return container.get(DatabaseManager)
+        except Exception:
+            pass
+        return get_db_manager()
+
     def __getattr__(self, name):
-        return getattr(get_db_manager(), name)
+        return getattr(self._get_instance(), name)
+
 
 db_manager = _LazyDBProxy()

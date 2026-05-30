@@ -194,7 +194,6 @@ class AutoReplyThread(QThread):
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
             
-            # 创建 PDDChannel 实例
             self.channel = PDDChannel()
             
             # 定义成功和失败的回调函数

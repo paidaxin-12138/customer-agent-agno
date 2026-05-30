@@ -28,10 +28,15 @@ dependencies = [
     "aiohttp>=3.13.2",
     "python-dotenv>=1.0.0",
     "passlib>=1.7.4",
+    "cryptography>=43.0.0",
     "xlrd>=2.0.2",
+    "alembic>=1.14.0",
 ]
 
 [project.optional-dependencies]
+security = [
+    "keyring>=25.0.0",
+]
 build = [
     "pyinstaller>=6.0.0",
 ]

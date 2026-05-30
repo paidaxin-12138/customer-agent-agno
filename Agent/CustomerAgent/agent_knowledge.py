@@ -13,6 +13,7 @@
 from typing import List, Optional, Dict, Any, Tuple
 import re
 import threading
+from datetime import datetime
 from pathlib import Path
 import json
 import math
@@ -505,10 +506,25 @@ class NailLampKnowledgeManager:
             # 持久化恢复失败不应阻断应用启动
             self.documents = self.documents or []
 
+    @staticmethod
+    def _ensure_doc_created_at(doc: Dict[str, Any]) -> None:
+        """为文档打上 created_at，供生命周期向量清理使用。"""
+        if not isinstance(doc, dict):
+            return
+        if doc.get("created_at"):
+            return
+        meta = doc.get("metadata")
+        if isinstance(meta, dict) and meta.get("created_at"):
+            doc["created_at"] = meta["created_at"]
+            return
+        doc["created_at"] = datetime.now().isoformat(timespec="seconds")
+
     def _save_documents(self) -> None:
         """将文档数据持久化到本地 JSON。"""
         with self._global_io_lock:
             try:
+                for d in self.documents:
+                    self._ensure_doc_created_at(d)
                 self._store_file.parent.mkdir(parents=True, exist_ok=True)
                 self._store_file.write_text(
                     json.dumps(self.documents, ensure_ascii=False, indent=2),

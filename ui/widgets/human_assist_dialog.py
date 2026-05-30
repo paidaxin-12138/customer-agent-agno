@@ -14,9 +14,10 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QWidget,
     QGraphicsDropShadowEffect,
+    QMessageBox,
 )
 
-from qfluentwidgets import FluentIcon as FIF
+from config import config
 from utils.logger_loguru import get_logger
 
 logger = get_logger("HumanAssistDialog")
@@ -27,20 +28,28 @@ class HumanAssistDialog(QDialog):
 
     # 点击去处理时发出的信号，携带跳转所需数据
     go_to_chat_requested = pyqtSignal(dict)
+    confirm_address_change_requested = pyqtSignal(dict)
 
     def __init__(self, payload: Dict[str, Any], parent=None):
         super().__init__(parent)
         self.payload = payload
         reason = str(payload.get("reason") or "")
+        self._is_address_change = reason == "order_address_change"
+        self._shipped_override = False
         if reason == "ai_after_sales_pm":
             self._dialog_title = "🔔 售后问题需人工处理"
         elif reason == "after_sales_policy":
             self._dialog_title = "🔔 售后需人工处理"
+        elif self._is_address_change:
+            self._dialog_title = "🔔 买家申请改地址"
         else:
             self._dialog_title = "🔔 买家申请转人工"
         self.setWindowTitle(self._dialog_title)
         self.setModal(False)  # 非模态，不阻塞主窗口
-        self.setFixedSize(450, 300)
+        if self._is_address_change:
+            self.setFixedSize(480, 460)
+        else:
+            self.setFixedSize(450, 300)
         
         logger.info(f"人工协助弹窗初始化：buyer={payload.get('buyer_nickname', '未知')}")
 
@@ -112,16 +121,71 @@ class HumanAssistDialog(QDialog):
         info_widget = self._create_info_widget()
         container_layout.addWidget(info_widget)
 
-        # 按钮区域
+        if self._is_address_change:
+            shipped_hint = self._create_shipped_hint_widget()
+            if shipped_hint is not None:
+                container_layout.addWidget(shipped_hint)
+
         button_layout = QHBoxLayout()
         button_layout.setSpacing(12)
+        if self._is_address_change:
+            self._build_address_change_buttons(button_layout)
+        else:
+            self._build_default_buttons(button_layout)
+        container_layout.addLayout(button_layout)
 
-        # 忽略按钮
+        layout.addWidget(container)
+
+    def _build_default_buttons(self, button_layout: QHBoxLayout) -> None:
         ignore_btn = QPushButton("稍后再说")
         ignore_btn.setObjectName("ignoreButton")
         ignore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        ignore_btn.setStyleSheet("""
-            QPushButton#ignoreButton {
+        ignore_btn.setStyleSheet(self._ignore_button_style())
+        ignore_btn.clicked.connect(self.close)
+
+        handle_btn = QPushButton("去处理")
+        handle_btn.setObjectName("handleButton")
+        handle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        handle_btn.setStyleSheet(self._primary_button_style())
+        handle_btn.clicked.connect(self._on_handle_clicked)
+
+        button_layout.addStretch()
+        button_layout.addWidget(ignore_btn)
+        button_layout.addWidget(handle_btn)
+
+    def _build_address_change_buttons(self, button_layout: QHBoxLayout) -> None:
+        ignore_btn = QPushButton("稍后再说")
+        ignore_btn.setObjectName("ignoreButton")
+        ignore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        ignore_btn.setStyleSheet(self._ignore_button_style())
+        ignore_btn.clicked.connect(self.close)
+
+        cancel_btn = QPushButton("取消")
+        cancel_btn.setObjectName("cancelButton")
+        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel_btn.setStyleSheet(self._ignore_button_style())
+        cancel_btn.clicked.connect(self._on_address_change_cancel)
+
+        self._confirm_btn = QPushButton("确认改址")
+        self._confirm_btn.setObjectName("confirmAddressButton")
+        self._confirm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        eligible = str(self.payload.get("address_change_eligible") or "ok")
+        if eligible == "shipped" and not self._shipped_override:
+            self._confirm_btn.setEnabled(False)
+            self._confirm_btn.setStyleSheet(self._disabled_button_style())
+        else:
+            self._confirm_btn.setStyleSheet(self._primary_button_style())
+        self._confirm_btn.clicked.connect(self._on_confirm_address_change)
+
+        button_layout.addStretch()
+        button_layout.addWidget(ignore_btn)
+        button_layout.addWidget(cancel_btn)
+        button_layout.addWidget(self._confirm_btn)
+
+    @staticmethod
+    def _ignore_button_style() -> str:
+        return """
+            QPushButton#ignoreButton, QPushButton#cancelButton {
                 background-color: transparent;
                 color: #8E8E93;
                 border: 1px solid #3A3A3A;
@@ -130,22 +194,19 @@ class HumanAssistDialog(QDialog):
                 font-size: 13px;
                 font-weight: 500;
             }
-            QPushButton#ignoreButton:hover {
+            QPushButton#ignoreButton:hover, QPushButton#cancelButton:hover {
                 background-color: #2C2C2E;
                 color: #FFFFFF;
             }
-            QPushButton#ignoreButton:pressed {
+            QPushButton#ignoreButton:pressed, QPushButton#cancelButton:pressed {
                 background-color: #3A3A3A;
             }
-        """)
-        ignore_btn.clicked.connect(self.close)
+        """
 
-        # 去处理按钮
-        handle_btn = QPushButton("去处理")
-        handle_btn.setObjectName("handleButton")
-        handle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        handle_btn.setStyleSheet("""
-            QPushButton#handleButton {
+    @staticmethod
+    def _primary_button_style() -> str:
+        return """
+            QPushButton#handleButton, QPushButton#confirmAddressButton {
                 background-color: #0A84FF;
                 color: #FFFFFF;
                 border: none;
@@ -154,21 +215,113 @@ class HumanAssistDialog(QDialog):
                 font-size: 13px;
                 font-weight: 600;
             }
-            QPushButton#handleButton:hover {
+            QPushButton#handleButton:hover, QPushButton#confirmAddressButton:hover {
                 background-color: #0070E0;
             }
-            QPushButton#handleButton:pressed {
+            QPushButton#handleButton:pressed, QPushButton#confirmAddressButton:pressed {
                 background-color: #0058B8;
             }
+        """
+
+    @staticmethod
+    def _disabled_button_style() -> str:
+        return """
+            QPushButton#confirmAddressButton {
+                background-color: #48484A;
+                color: #8E8E93;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 24px;
+                font-size: 13px;
+                font-weight: 600;
+            }
+        """
+
+    def _create_shipped_hint_widget(self) -> Optional[QWidget]:
+        eligible = str(self.payload.get("address_change_eligible") or "ok")
+        if eligible != "shipped":
+            return None
+
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        hint = str(
+            config.get(
+                "chat.address_change_shipped_confirm_hint",
+                "该订单已发货，平台可能不允许改址。操作后无法撤销，是否仍尝试修改？",
+            )
+        )
+        hint_label = QLabel(f"⚠️ {hint}")
+        hint_label.setWordWrap(True)
+        hint_label.setStyleSheet("""
+            QLabel {
+                color: #FFD60A;
+                background-color: #3A3200;
+                border-radius: 8px;
+                padding: 10px 12px;
+                font-size: 12px;
+            }
         """)
-        handle_btn.clicked.connect(self._on_handle_clicked)
+        layout.addWidget(hint_label)
 
-        button_layout.addStretch()
-        button_layout.addWidget(ignore_btn)
-        button_layout.addWidget(handle_btn)
-        container_layout.addLayout(button_layout)
+        override_btn = QPushButton("仍要尝试修改")
+        override_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        override_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #FFD60A;
+                border: 1px solid #FFD60A;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-size: 12px;
+            }
+            QPushButton:hover { background-color: #3A3200; }
+        """)
+        override_btn.clicked.connect(self._on_shipped_override)
+        layout.addWidget(override_btn)
+        return widget
 
-        layout.addWidget(container)
+    def _on_shipped_override(self) -> None:
+        self._shipped_override = True
+        if hasattr(self, "_confirm_btn"):
+            self._confirm_btn.setEnabled(True)
+            self._confirm_btn.setStyleSheet(self._primary_button_style())
+
+    def _on_address_change_cancel(self) -> None:
+        self._auto_close_timer.stop()
+        out = dict(self.payload)
+        out["focus_topic"] = "address_change"
+        self.go_to_chat_requested.emit(out)
+        self.close()
+
+    def _on_confirm_address_change(self) -> None:
+        eligible = str(self.payload.get("address_change_eligible") or "ok")
+        if eligible == "shipped":
+            hint = str(
+                config.get(
+                    "chat.address_change_shipped_confirm_hint",
+                    "该订单已发货，平台可能不允许改址。操作后无法撤销，是否仍尝试修改？",
+                )
+            )
+            reply = QMessageBox.question(
+                self,
+                "确认改址",
+                hint,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        self._auto_close_timer.stop()
+        out = dict(self.payload)
+        out["shipped_override"] = bool(
+            self._shipped_override or eligible == "shipped"
+        )
+        self.confirm_address_change_requested.emit(out)
+        self.close()
 
     def _create_info_widget(self) -> QWidget:
         """创建信息展示区域"""
@@ -230,10 +383,37 @@ class HumanAssistDialog(QDialog):
             shop_info = self._create_info_row("📦 店铺", shop_name)
             layout.addWidget(shop_info)
 
+        if self._is_address_change:
+            order_sn = str(self.payload.get("order_sn") or "")
+            goods_name = str(self.payload.get("goods_name") or "")
+            status_str = str(self.payload.get("order_status_str") or "")
+            if order_sn:
+                layout.addWidget(self._create_info_row("📋 订单号", order_sn))
+            if goods_name:
+                layout.addWidget(self._create_info_row("🛍 商品", goods_name))
+            if status_str:
+                layout.addWidget(self._create_info_row("📦 状态", status_str))
+
+            pa = self.payload.get("parsed_address") or {}
+            addr_parts = [
+                pa.get("province", ""),
+                pa.get("city", ""),
+                pa.get("district", ""),
+                pa.get("detail", ""),
+            ]
+            addr_body = "".join(str(p) for p in addr_parts if p)
+            name = str(pa.get("name") or "")
+            mobile = str(pa.get("mobile") or "")
+            addr_line = f"{addr_body} {name} {mobile}".strip()
+            if addr_line:
+                layout.addWidget(self._create_info_row("📍 新地址", addr_line))
+
         # 最近消息 / 摘要
         reason = str(self.payload.get("reason") or "")
         if reason in ("ai_after_sales_pm", "after_sales_policy"):
             message_label = QLabel("📋 问题摘要")
+        elif self._is_address_change:
+            message_label = QLabel("💬 买家原话")
         else:
             message_label = QLabel("💬 最近消息")
         message_label.setStyleSheet("""

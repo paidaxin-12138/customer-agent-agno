@@ -1,5 +1,5 @@
 """
-订单修改意图 → 转人工；物流咨询 → 调用开放平台 pdd.logistics.ordertrace.get。
+物流咨询 → 调用开放平台 pdd.logistics.ordertrace.get（改址由 AddressChangeHandler 处理）。
 
 文档：https://open.pinduoduo.com/application/document/api?id=pdd.logistics.ordertrace.get
 """
@@ -14,47 +14,6 @@ from bridge.context import Context, ContextType, ChannelType
 from config import config
 
 from .base import BaseHandler
-
-_HUMAN_NOTICE = "稍等下 这边上报一下呢亲亲"
-
-
-# 用户明确要改订单/收货信息（不走物流查询）
-_ORDER_MODIFY_PHRASES = (
-    "改收件人",
-    "修改收件人",
-    "换收件人",
-    "改收货人",
-    "修改收货人",
-    "改电话",
-    "改手机",
-    "改手机号",
-    "修改电话",
-    "修改手机",
-    "修改手机号",
-    "改收货地址",
-    "修改收货地址",
-    "换收货地址",
-    "更改地址",
-    "换地址",
-    "修改地址",
-    "改地址",
-    "收货地址",
-    "详细地址",
-    "修改订单",
-    "改订单",
-    "修改订单信息",
-    "订单备注",
-    "收货信息",
-    "联系地址",
-    "收件信息",
-)
-
-
-def _is_order_modify_intent(text: str) -> bool:
-    t = (text or "").strip()
-    if not t:
-        return False
-    return any(p in t for p in _ORDER_MODIFY_PHRASES)
 
 
 def _is_logistics_intent(text: str) -> bool:
@@ -115,7 +74,7 @@ def _extract_order_sn(text: str) -> Optional[str]:
 
 
 class OrderLogisticsHandler(BaseHandler):
-    """优先处理：改单转人工；物流咨询查轨迹。"""
+    """物流咨询查轨迹。"""
 
     def __init__(self):
         super().__init__("OrderLogisticsHandler")
@@ -130,9 +89,7 @@ class OrderLogisticsHandler(BaseHandler):
         text = (text or "").strip()
         if not text:
             return False
-        if not config.get("pinduoduo_open.enabled", True):
-            return _is_order_modify_intent(text)
-        return _is_order_modify_intent(text) or _is_logistics_intent(text)
+        return _is_logistics_intent(text)
 
     async def handle(self, context: Context, metadata: Dict[str, Any]) -> bool:
         text = context.content if isinstance(context.content, str) else ""
@@ -144,10 +101,6 @@ class OrderLogisticsHandler(BaseHandler):
 
         if not all([shop_id, user_id, from_uid]):
             return False
-
-        if _is_order_modify_intent(text):
-            await self._notify_human_transfer(context, metadata)
-            return True
 
         if not _is_logistics_intent(text):
             return False
@@ -192,41 +145,6 @@ class OrderLogisticsHandler(BaseHandler):
             )
         return True
 
-    async def _notify_human_transfer(self, context: Context, metadata: Dict[str, Any]) -> None:
-        shop_id = metadata.get("shop_id") or _kw(context, "shop_id")
-        user_id = metadata.get("user_id") or _kw(context, "user_id")
-        from_uid = metadata.get("from_uid") or _kw(context, "from_uid")
-        if not all([shop_id, user_id, from_uid]):
-            return
-        try:
-            from core.human_assist_bus import emit_human_assist
-
-            emit_human_assist("order_modify", context, metadata, context.content)
-        except Exception as e:
-            self.logger.debug(f"emit_human_assist: {e}")
-
-        try:
-            from Channel.pinduoduo.utils.API.send_message import SendMessage
-
-            sender = SendMessage(str(shop_id), str(user_id))
-            await asyncio.to_thread(sender.send_text, str(from_uid), _HUMAN_NOTICE)
-        except Exception as e:
-            self.logger.debug(f"发送转人工提示失败: {e}")
-
-        try:
-            from Channel.pinduoduo.utils.API.send_message import SendMessage
-
-            sender = SendMessage(str(shop_id), str(user_id))
-            cs_list = await asyncio.to_thread(sender.getAssignCsList)
-            my_cs_uid = f"cs_{shop_id}_{user_id}"
-            if cs_list and isinstance(cs_list, dict):
-                available = [uid for uid in cs_list.keys() if uid != my_cs_uid]
-                if available:
-                    cs_uid = available[0]
-                    await asyncio.to_thread(sender.move_conversation, str(from_uid), cs_uid)
-        except Exception as e:
-            self.logger.debug(f"转接会话: {e}")
-
     async def _send_reply(
         self,
         shop_id: Any,
@@ -235,20 +153,8 @@ class OrderLogisticsHandler(BaseHandler):
         reply: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        meta = metadata or {
-            "shop_id": str(shop_id),
-            "user_id": str(user_id),
-            "from_uid": str(from_uid),
-            "channel_name": "pinduoduo",
-        }
-        try:
-            from Channel.pinduoduo.utils.API.send_message import SendMessage
-
-            sender = SendMessage(str(shop_id), str(user_id))
-            result = await asyncio.to_thread(sender.send_text, str(from_uid), reply)
-            if isinstance(result, dict) and result.get("success"):
-                from Message.handlers.ai_reply_watchdog import notify_outbound_reply
-
-                notify_outbound_reply(metadata=meta)
-        except Exception as e:
-            self.logger.error(f"发送失败: {e}")
+        ok = await self.send_text_to_buyer(
+            shop_id, user_id, from_uid, reply, metadata=metadata
+        )
+        if not ok:
+            self.logger.error("物流话术发送失败")

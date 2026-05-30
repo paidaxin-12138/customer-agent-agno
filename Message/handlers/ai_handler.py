@@ -11,41 +11,8 @@ from bridge.reply import Reply
 from .base import BaseHandler
 from .preprocessor import MessagePreprocessor
 from Agent.bot import Bot
-
-# 与 Agent 内判定一致，避免 import CustomerAgent 拉起 LanceDB
-def _is_transient_llm_transport_error(exc: BaseException) -> bool:
-    import errno
-    import asyncio as _asyncio
-
-    seen: set[int] = set()
-    cur: Optional[BaseException] = exc
-    while cur is not None and id(cur) not in seen:
-        seen.add(id(cur))
-        if isinstance(
-            cur,
-            (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, _asyncio.TimeoutError),
-        ):
-            return True
-        if isinstance(cur, OSError):
-            en = getattr(cur, "errno", None)
-            if en in (errno.EPIPE, errno.ECONNRESET, errno.ETIMEDOUT, errno.ECONNABORTED):
-                return True
-        name = type(cur).__name__
-        if name in (
-            "ReadError",
-            "WriteError",
-            "RemoteProtocolError",
-            "LocalProtocolError",
-            "ConnectError",
-            "ReadTimeout",
-            "WriteTimeout",
-            "ConnectTimeout",
-        ):
-            return True
-        cur = cur.__cause__ or cur.__context__
-    return False
-
 from config import config
+from utils.llm_errors import is_transient_llm_transport_error
 from utils.human_transfer_intent import detect_human_transfer_intent
 
 from Message.ai_queue_load import get_ai_queue_tracker
@@ -127,25 +94,9 @@ class AIReplyHandler(BaseHandler):
             return None
 
     def _is_ai_mode_enabled(self, context: Context, metadata: Dict[str, Any]) -> bool:
-        try:
-            channel_name = str(metadata.get("channel_name") or "pinduoduo")
-            shop_id = str(metadata.get("shop_id") or "")
-            user_id = str(metadata.get("user_id") or "")
-            buyer_uid = self._resolve_buyer_uid(context, metadata)
-            if not all([shop_id, user_id, buyer_uid]):
-                return True
-            from database.db_manager import db_manager
+        from utils.ai_mode_check import is_ai_mode_enabled
 
-            acc = db_manager.get_account(channel_name, shop_id, user_id)
-            if not acc or not acc.get("id"):
-                return True
-            sess = db_manager.get_chat_session_by_buyer(int(acc["id"]), str(buyer_uid), "active")
-            if not sess:
-                return True
-            return bool(sess.get("ai_mode", True))
-        except Exception as e:
-            self.logger.debug(f"ai_mode 检查失败，回退默认 AI 开启: {e}")
-            return True
+        return is_ai_mode_enabled(context, metadata)
 
     @staticmethod
     def _guess_intent(text: str) -> str:
@@ -440,7 +391,7 @@ class AIReplyHandler(BaseHandler):
                 last_err = ValueError("empty or placeholder reply")
             except Exception as e:
                 last_err = e
-                if attempt < max_tries and _is_transient_llm_transport_error(e):
+                if attempt < max_tries and is_transient_llm_transport_error(e):
                     self.logger.warning(
                         "LLM 瞬时失败，{}s 后同步重试 ({}/{}): {}",
                         delay,
@@ -479,11 +430,17 @@ class AIReplyHandler(BaseHandler):
             if not all([shop_id, user_id, from_uid]):
                 return False
 
-            from Channel.pinduoduo.utils.API.send_message import SendMessage
+            from Message.handlers.channel_send import send_text_to_buyer
 
-            sender = SendMessage(shop_id, user_id)
-            result = await asyncio.to_thread(sender.send_text, from_uid, reply)
-            if isinstance(result, dict) and result.get("success"):
+            ok = await send_text_to_buyer(
+                shop_id,
+                user_id,
+                from_uid,
+                reply,
+                context=context,
+                metadata=metadata,
+            )
+            if ok:
                 try:
                     from database.chat_persist import persist_ai_message
 
@@ -499,7 +456,6 @@ class AIReplyHandler(BaseHandler):
                 except Exception as e:
                     self.logger.warning("persist_ai_message 失败: {}", e)
                 self._stats["send_ok"] += 1
-                notify_outbound_reply(context, metadata)
                 return True
             self._stats["send_fail"] += 1
             return False

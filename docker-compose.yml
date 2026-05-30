@@ -1,0 +1,26 @@
+services:
+  customer-agent:
+    build: .
+    image: customer-agent:latest
+    container_name: customer-agent
+    restart: always
+    # 健康检查在容器内访问 127.0.0.1:8080；默认不映射到宿主机。
+    # 若需从宿主机探针，取消下行注释并确保 config.json 中 production.health_host 为 0.0.0.0：
+    # ports:
+    #   - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./backup:/app/backup
+      - ./temp:/app/temp
+      - ./config.json:/app/config.json:ro
+    environment:
+      - ENVIRONMENT=production
+      - AGENT_CREDENTIAL_KEY=${AGENT_CREDENTIAL_KEY:-}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s

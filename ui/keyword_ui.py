@@ -10,6 +10,7 @@ from qfluentwidgets import (SubtitleLabel, CaptionLabel, BodyLabel,
                            ScrollArea, FluentIcon as FIF,
                            TableWidget)
 from database.db_manager import db_manager
+from Message.keyword_reload import reload_keyword_handler
 from utils.dialogs import confirm_action
 
 
@@ -201,6 +202,7 @@ class KeywordManagerWidget(QFrame):
                 self.keywords_data.append({"keyword": keyword})
         
         self.refreshKeywordList()
+        reload_keyword_handler()
     
     def refreshKeywordList(self):
         """刷新关键词列表"""
@@ -236,6 +238,7 @@ class KeywordManagerWidget(QFrame):
                 
             # 使用统一的更新方法
             if self.updateKeyword(keyword, new_keyword):
+                reload_keyword_handler()
                 QMessageBox.information(self, '成功', f'关键词修改成功!\n"{keyword}" -> "{new_keyword}"')
             else:
                 QMessageBox.warning(self, '失败', f'关键词修改失败!\n新关键词 "{new_keyword}" 可能已存在或为空')
@@ -258,6 +261,7 @@ class KeywordManagerWidget(QFrame):
                     # 从本地数据中移除
                     self.keywords_data = [k for k in self.keywords_data if k["keyword"] != keyword]
                     self.refreshKeywordList()
+                    reload_keyword_handler()
                     QMessageBox.information(self, '成功', f'关键词 "{keyword}" 删除成功!')
                 else:
                     print(f"删除关键词失败: {keyword}")
@@ -280,6 +284,7 @@ class KeywordManagerWidget(QFrame):
                 # 添加到本地数据
                 self.keywords_data.append({"keyword": keyword.strip()})
                 self.refreshKeywordList()
+                reload_keyword_handler()
                 return True
             else:
                 print(f"添加关键词失败: {keyword} (可能已存在)")
@@ -327,6 +332,7 @@ class KeywordManagerWidget(QFrame):
                 
                 # 刷新界面
                 self.refreshKeywordList()
+                reload_keyword_handler()
                 return True
             else:
                 print(f"更新关键词失败: {old_keyword} -> {new_keyword} (可能已存在)")
