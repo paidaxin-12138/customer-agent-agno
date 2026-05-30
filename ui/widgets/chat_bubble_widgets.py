@@ -1,19 +1,23 @@
 """实时聊天消息气泡（QListWidget + 自定义 QWidget，QPainter 三角箭头）。"""
 from __future__ import annotations
 
+import asyncio
 import html
 import re
 from datetime import datetime
 from typing import Any, Literal, Optional, Tuple
 
-from PyQt6.QtCore import Qt, QSize, QPoint
-from PyQt6.QtGui import QBrush, QColor, QPainter, QPen
+from PyQt6.QtCore import Qt, QSize, QPoint, QThread, pyqtSignal, QTimer, QRect
+from PyQt6.QtGui import QBrush, QColor, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QListWidget,
     QListWidgetItem,
     QSizePolicy,
+    QStackedLayout,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -34,6 +38,21 @@ SYSTEM_TEXT = "#98989D"
 
 _URL_RE = re.compile(r"https?://", re.I)
 _BUBBLE_MAX_W = 420
+_IMG_MAX_W = 280
+_IMG_MAX_H = 320
+_IMG_PLACEHOLDER_H = 120
+# 多行 QLabel 高度估算余量（fontMetrics / 圆角边框）
+_BUBBLE_HEIGHT_SLACK = 10
+_ITEM_HEIGHT_SLACK = 6
+
+_IMAGE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    "Referer": "https://mms.pinduoduo.com/",
+}
 
 
 class _BubbleArrow(QWidget):
@@ -74,7 +93,9 @@ def _needs_rich_html(
     image_url: Optional[str] = None,
 ) -> bool:
     ct = (content_type or "text").strip().lower()
-    if ct in ("image", "video") and (image_url or "").strip():
+    if ct == "image" and (image_url or "").strip():
+        return False
+    if ct == "video" and (image_url or "").strip():
         return True
     text = (content or "").strip()
     if not text:
@@ -93,9 +114,6 @@ def _build_body(
     url = (image_url or "").strip()
     raw = content or ""
 
-    if ct == "image" and url:
-        body = format_chat_bubble_html(url) or html.escape(raw or "[图片]")
-        return Qt.TextFormat.RichText, _colorize_html(body, text_color)
     if ct == "video" and url:
         cap = html.escape((raw or "[视频]").strip())
         link_part = format_chat_bubble_html(url) or html.escape(url)
@@ -118,6 +136,136 @@ def _colorize_html(body: str, color: str) -> str:
     )
 
 
+def _schedule_list_reflow(widget: QWidget) -> None:
+    """图片加载完成后重排所在消息列表。"""
+    bubble: QWidget | None = widget
+    while bubble is not None and not isinstance(bubble, ChatMessageBubbleWidget):
+        bubble = bubble.parentWidget()
+    if bubble is None:
+        return
+    lst: QWidget | None = bubble.parentWidget()
+    while lst is not None and not isinstance(lst, QListWidget):
+        lst = lst.parentWidget()
+    if isinstance(lst, QListWidget):
+        QTimer.singleShot(0, lambda: reflow_message_list_items(lst))
+
+
+class _ChatImageLoaderThread(QThread):
+    """后台拉取聊天图片并解码为 QPixmap。"""
+
+    loaded = pyqtSignal(QPixmap)
+    failed = pyqtSignal()
+
+    def __init__(self, url: str):
+        super().__init__()
+        self._url = (url or "").strip()
+
+    def run(self) -> None:
+        if not self._url:
+            self.failed.emit()
+            return
+        try:
+            import aiohttp
+
+            async def fetch_image() -> bytes:
+                timeout = aiohttp.ClientTimeout(total=12)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(self._url, headers=_IMAGE_HEADERS) as response:
+                        if response.status >= 400:
+                            raise ValueError(f"HTTP {response.status}")
+                        return await response.read()
+
+            image_data = asyncio.run(fetch_image())
+            if not image_data:
+                raise ValueError("empty body")
+            pixmap = QPixmap()
+            if not pixmap.loadFromData(image_data) or pixmap.isNull():
+                raise ValueError("not a decodable image")
+            self.loaded.emit(pixmap)
+        except Exception:
+            self.failed.emit()
+
+
+class _ImageBubbleBody(QWidget):
+    """图片消息：占位符 + QPixmap 异步加载。"""
+
+    size_changed = pyqtSignal()
+
+    def __init__(self, url: str, text_color: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ChatBubbleBodyImage")
+        self._loaded_h = _IMG_PLACEHOLDER_H
+        self._source_pixmap: QPixmap | None = None
+        self._stack = QStackedLayout(self)
+        self._stack.setContentsMargins(0, 0, 0, 0)
+
+        self._placeholder = QLabel("加载中…")
+        self._placeholder.setObjectName("ChatBubbleImagePlaceholder")
+        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._placeholder.setMinimumSize(160, _IMG_PLACEHOLDER_H)
+        self._placeholder.setStyleSheet(
+            f"""
+            QLabel#ChatBubbleImagePlaceholder {{
+                color: {text_color};
+                background-color: rgba(255, 255, 255, 0.08);
+                border-radius: 10px;
+                font-size: 13px;
+            }}
+            """
+        )
+        self._stack.addWidget(self._placeholder)
+
+        self._image_label = QLabel()
+        self._image_label.setObjectName("ChatBubbleImageLabel")
+        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image_label.setStyleSheet("background: transparent; border: none;")
+        self._stack.addWidget(self._image_label)
+
+        self._loader = _ChatImageLoaderThread(url)
+        self._loader.loaded.connect(self._on_loaded)
+        self._loader.failed.connect(self._on_failed)
+        self._loader.start()
+
+    def _scale_pixmap(self, pixmap: QPixmap, max_w: int) -> QPixmap:
+        w = min(max_w, _IMG_MAX_W)
+        return pixmap.scaled(
+            w,
+            _IMG_MAX_H,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+    def _on_loaded(self, pixmap: QPixmap) -> None:
+        self._source_pixmap = pixmap
+        scaled = self._scale_pixmap(pixmap, _IMG_MAX_W)
+        self._loaded_h = max(_IMG_PLACEHOLDER_H, scaled.height())
+        self._image_label.setPixmap(scaled)
+        self._image_label.setFixedSize(scaled.size())
+        self._stack.setCurrentWidget(self._image_label)
+        self.size_changed.emit()
+        _schedule_list_reflow(self)
+
+    def _on_failed(self) -> None:
+        self._source_pixmap = None
+        self._placeholder.setText("图片加载失败")
+        self._loaded_h = _IMG_PLACEHOLDER_H
+        self.size_changed.emit()
+        _schedule_list_reflow(self)
+
+    def content_height_for_width(self, _bubble_width: int) -> int:
+        return self._loaded_h
+
+    def reflow_width(self, bubble_width: int) -> None:
+        if self._source_pixmap is None or self._source_pixmap.isNull():
+            self._placeholder.setMinimumWidth(min(max(80, bubble_width - 24), _IMG_MAX_W))
+            return
+        inner_w = min(max(80, bubble_width - 24), _IMG_MAX_W)
+        scaled = self._scale_pixmap(self._source_pixmap, inner_w)
+        self._image_label.setPixmap(scaled)
+        self._image_label.setFixedSize(scaled.size())
+        self._loaded_h = max(_IMG_PLACEHOLDER_H, scaled.height())
+
+
 def _avatar_label(letter: str, bg: str) -> QLabel:
     av = QLabel(letter)
     av.setObjectName("ChatBubbleAvatar")
@@ -138,7 +286,7 @@ def _avatar_label(letter: str, bg: str) -> QLabel:
 
 
 class _BubbleFrame(QFrame):
-    """圆角气泡容器（背景/边框在 Frame 上，文字在内部 QLabel）。"""
+    """圆角气泡容器；图片用 QPixmap，富文本用 QTextBrowser，纯文本用 QLabel。"""
 
     def __init__(
         self,
@@ -147,9 +295,13 @@ class _BubbleFrame(QFrame):
         text_format: Qt.TextFormat,
         text: str,
         text_color: str,
+        image_url: Optional[str] = None,
         parent=None,
     ):
         super().__init__(parent)
+        self._text_format = text_format
+        self._text_color = text_color
+        self._image_url = (image_url or "").strip()
         self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
         self.setMaximumWidth(_BUBBLE_MAX_W)
 
@@ -190,29 +342,124 @@ class _BubbleFrame(QFrame):
         lay.setContentsMargins(12, 8, 12, 8)
         lay.setSpacing(0)
 
-        self._label = QLabel()
-        self._label.setWordWrap(True)
-        self._label.setTextFormat(text_format)
-        self._label.setAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-        )
-        self._label.setStyleSheet(
-            f"QLabel {{ color: {text_color}; background: transparent; "
-            f"font-size: 15px; border: none; padding: 0; margin: 0; }}"
-        )
+        self._body = self._create_body_widget(text_format, text, text_color)
+        lay.addWidget(self._body)
+
+    def _create_body_widget(
+        self, text_format: Qt.TextFormat, text: str, text_color: str
+    ) -> QWidget:
+        if self._image_url:
+            return _ImageBubbleBody(self._image_url, text_color)
+
         if text_format == Qt.TextFormat.RichText:
-            self._label.setTextInteractionFlags(
-                Qt.TextInteractionFlag.LinksAccessibleByMouse
-                | Qt.TextInteractionFlag.TextSelectableByMouse
+            browser = QTextBrowser()
+            browser.setObjectName("ChatBubbleBodyBrowser")
+            browser.setReadOnly(True)
+            browser.setOpenExternalLinks(True)
+            browser.setFrameShape(QFrame.Shape.NoFrame)
+            browser.setLineWrapMode(QTextBrowser.LineWrapMode.WidgetWidth)
+            browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            browser.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+            browser.document().setDocumentMargin(0)
+            browser.setStyleSheet(
+                f"""
+                QTextBrowser#ChatBubbleBodyBrowser {{
+                    color: {text_color};
+                    background: transparent;
+                    border: none;
+                    font-size: 15px;
+                    padding: 0;
+                    margin: 0;
+                }}
+                """
             )
-            self._label.setOpenExternalLinks(True)
-            self._label.setText(text)
-        else:
-            self._label.setTextInteractionFlags(
-                Qt.TextInteractionFlag.TextSelectableByMouse
-            )
-            self._label.setText(text or " ")
-        lay.addWidget(self._label)
+            browser.setHtml(text)
+            return browser
+
+        label = QLabel()
+        label.setObjectName("ChatBubbleBodyLabel")
+        label.setWordWrap(True)
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        label.setStyleSheet(
+            f"""
+            QLabel#ChatBubbleBodyLabel {{
+                color: {text_color};
+                background: transparent;
+                font-size: 15px;
+                border: none;
+                padding: 0;
+                margin: 0;
+            }}
+            """
+        )
+        label.setText(text or " ")
+        return label
+
+    def _inner_text_width(self, bubble_width: int) -> int:
+        margins = self.layout().contentsMargins()
+        return max(80, bubble_width - margins.left() - margins.right())
+
+    def _frame_vertical_margins(self) -> int:
+        m = self.layout().contentsMargins()
+        return m.top() + m.bottom()
+
+    def _plain_label_height(self, label: QLabel, inner_w: int) -> int:
+        """多行纯文本高度：boundingRect + heightForWidth 取较大值。"""
+        text = label.text() or " "
+        label.setWordWrap(True)
+        label.setFixedWidth(inner_w)
+        metrics = label.fontMetrics()
+        rect = metrics.boundingRect(
+            QRect(0, 0, inner_w, 0),
+            int(Qt.TextFlag.TextWordWrap),
+            text,
+        )
+        hfw = label.heightForWidth(inner_w)
+        return max(hfw, rect.height(), metrics.lineSpacing()) + _BUBBLE_HEIGHT_SLACK
+
+    def content_height_for_width(self, bubble_width: int) -> int:
+        inner_w = self._inner_text_width(bubble_width)
+        vm = self._frame_vertical_margins()
+        if isinstance(self._body, _ImageBubbleBody):
+            self._body.reflow_width(bubble_width)
+            body_h = max(_IMG_PLACEHOLDER_H, self._body.content_height_for_width(bubble_width))
+            return body_h + vm
+        if isinstance(self._body, QTextBrowser):
+            doc = self._body.document()
+            doc.setTextWidth(inner_w)
+            doc_h = int(doc.size().height())
+            min_h = 48 if "<img" in (self._body.toHtml() or "").lower() else 24
+            return max(min_h, doc_h) + vm + _BUBBLE_HEIGHT_SLACK
+        return self._plain_label_height(self._body, inner_w) + vm
+
+    def reflow(self, bubble_width: int) -> int:
+        w = min(_BUBBLE_MAX_W, max(120, bubble_width))
+        self.setMaximumWidth(w)
+        inner_w = self._inner_text_width(w)
+        h = self.content_height_for_width(w)
+        vm = self._frame_vertical_margins()
+        body_h = max(24, h - vm)
+        if isinstance(self._body, QLabel):
+            self._body.setFixedSize(inner_w, body_h)
+        elif isinstance(self._body, QTextBrowser):
+            self._body.setFixedWidth(inner_w)
+            self._body.setMinimumHeight(body_h)
+            self._body.setMaximumHeight(body_h)
+        elif isinstance(self._body, _ImageBubbleBody):
+            self._body.setMinimumHeight(body_h)
+        self.setFixedHeight(h)
+        return h
+
+
+def _frame_image_url(
+    content_type: Optional[str], image_url: Optional[str]
+) -> Optional[str]:
+    ct = (content_type or "text").strip().lower()
+    url = (image_url or "").strip()
+    return url if ct == "image" and url else None
 
 
 class ChatMessageBubbleWidget(QWidget):
@@ -232,7 +479,8 @@ class ChatMessageBubbleWidget(QWidget):
     ):
         super().__init__(parent)
         self.setObjectName("ChatMessageBubbleWidget")
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._bubble_frames: list[_BubbleFrame] = []
 
         ts = _format_timestamp(timestamp)
         st = (sender_type or "").strip().lower()
@@ -247,6 +495,10 @@ class ChatMessageBubbleWidget(QWidget):
             self._build_incoming(root, st, content, content_type, image_url, ts, buyer_letter)
         else:
             self._build_outgoing(root, content, content_type, image_url, ts, is_read)
+
+    def _track_bubble(self, bubble: _BubbleFrame) -> _BubbleFrame:
+        self._bubble_frames.append(bubble)
+        return bubble
 
     def _build_system(
         self,
@@ -263,7 +515,15 @@ class ChatMessageBubbleWidget(QWidget):
             image_url=image_url,
             text_color=SYSTEM_TEXT,
         )
-        bubble = _BubbleFrame(side="system", text_format=fmt, text=body, text_color=SYSTEM_TEXT)
+        bubble = self._track_bubble(
+            _BubbleFrame(
+                side="system",
+                text_format=fmt,
+                text=body,
+                text_color=SYSTEM_TEXT,
+                image_url=_frame_image_url(content_type, image_url),
+            )
+        )
         col = QVBoxLayout()
         col.setSpacing(4)
         col.addWidget(bubble, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -284,8 +544,10 @@ class ChatMessageBubbleWidget(QWidget):
         ts: str,
         buyer_letter: str,
     ) -> None:
-        avatar = _avatar_label("AI" if sender_type == "ai" else buyer_letter,
-                               "#4C87EB" if sender_type == "ai" else "#FF6B6B")
+        avatar = _avatar_label(
+            "AI" if sender_type == "ai" else buyer_letter,
+            "#4C87EB" if sender_type == "ai" else "#FF6B6B",
+        )
         fmt, body = _build_body(
             content, content_type=content_type, image_url=image_url, text_color=OTHER_TEXT
         )
@@ -295,7 +557,15 @@ class ChatMessageBubbleWidget(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(_BubbleArrow(pointing="left", color=OTHER_BUBBLE), 0, Qt.AlignmentFlag.AlignTop)
         row.addWidget(
-            _BubbleFrame(side="left", text_format=fmt, text=body, text_color=OTHER_TEXT),
+            self._track_bubble(
+                _BubbleFrame(
+                    side="left",
+                    text_format=fmt,
+                    text=body,
+                    text_color=OTHER_TEXT,
+                    image_url=_frame_image_url(content_type, image_url),
+                )
+            ),
             0,
             Qt.AlignmentFlag.AlignTop,
         )
@@ -307,8 +577,15 @@ class ChatMessageBubbleWidget(QWidget):
         if ts:
             col.addWidget(self._time_label(ts, Qt.AlignmentFlag.AlignLeft, pad_left=10))
 
+        col_widget = QWidget()
+        col_widget.setObjectName("ChatBubbleIncomingCol")
+        col_widget.setLayout(col)
+        col_widget.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred
+        )
+
         root.addWidget(avatar, 0, Qt.AlignmentFlag.AlignTop)
-        root.addLayout(col, 0)
+        root.addWidget(col_widget, 0, Qt.AlignmentFlag.AlignTop)
         root.addStretch(1)
 
     def _build_outgoing(
@@ -327,7 +604,15 @@ class ChatMessageBubbleWidget(QWidget):
         row = QHBoxLayout()
         row.setSpacing(0)
         row.addWidget(
-            _BubbleFrame(side="right", text_format=fmt, text=body, text_color=SELF_TEXT),
+            self._track_bubble(
+                _BubbleFrame(
+                    side="right",
+                    text_format=fmt,
+                    text=body,
+                    text_color=SELF_TEXT,
+                    image_url=_frame_image_url(content_type, image_url),
+                )
+            ),
             0,
             Qt.AlignmentFlag.AlignTop,
         )
@@ -338,13 +623,23 @@ class ChatMessageBubbleWidget(QWidget):
         col.setContentsMargins(0, 0, 0, 0)
         col.addLayout(row, 0)
         if ts:
-            read_hint = "已读" if is_read else "未读"
             col.addWidget(
-                self._time_label(f"{ts}  客服  {read_hint}", Qt.AlignmentFlag.AlignRight, pad_right=10)
+                self._time_label(
+                    f"{ts}  客服",
+                    Qt.AlignmentFlag.AlignRight,
+                    pad_right=10,
+                )
             )
 
+        col_widget = QWidget()
+        col_widget.setObjectName("ChatBubbleOutgoingCol")
+        col_widget.setLayout(col)
+        col_widget.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred
+        )
+
         root.addStretch(1)
-        root.addLayout(col, 0)
+        root.addWidget(col_widget, 0, Qt.AlignmentFlag.AlignTop)
         root.addWidget(_avatar_label("我", "#22C55E"), 0, Qt.AlignmentFlag.AlignTop)
 
     def _time_label(
@@ -364,25 +659,52 @@ class ChatMessageBubbleWidget(QWidget):
         )
         return lbl
 
-    def sizeHint(self) -> QSize:  # noqa: N802
+    def reflow(self, list_width: int) -> int:
+        """按列表可用宽度重算气泡高度（窗口缩放后调用）。"""
+        list_width = max(list_width, 200)
+        bubble_w = min(_BUBBLE_MAX_W, max(160, list_width - 100))
+        for frame in self._bubble_frames:
+            frame.reflow(bubble_w)
         self.layout().activate()
-        h = self.layout().sizeHint().height()
-        return QSize(0, max(h, 48))
+        self.adjustSize()
+        content_h = max(self.layout().sizeHint().height(), 48)
+        total_h = content_h + _ITEM_HEIGHT_SLACK
+        self.setFixedSize(list_width, total_h)
+        return total_h
 
-    def minimumSizeHint(self) -> QSize:  # noqa: N802
-        return self.sizeHint()
 
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        lw = self.parentWidget()
-        if lw is not None and hasattr(lw, "itemWidget"):
-            for i in range(lw.count()):
-                it = lw.item(i)
-                if lw.itemWidget(it) is self:
-                    self.layout().activate()
-                    h = self.layout().sizeHint().height()
-                    it.setSizeHint(QSize(lw.viewport().width(), max(h, 48)))
-                    break
+def _sync_list_item_widget(
+    msg_list: QListWidget, item: QListWidgetItem, widget: ChatMessageBubbleWidget, list_w: int, h: int
+) -> None:
+    """QListWidget item 与 setItemWidget 几何必须一致，否则会被裁切。"""
+    item.setSizeHint(QSize(list_w, h))
+    msg_list.setItemWidget(item, widget)
+    widget.setFixedSize(list_w, h)
+    widget.updateGeometry()
+    widget.update()
+
+
+def reflow_message_list_items(msg_list: QListWidget) -> None:
+    """重排消息列表中所有 item 的高度（聊天区 resize / 字体变化后调用）。"""
+    list_w = max(msg_list.viewport().width(), 320)
+    model = msg_list.model()
+    for i in range(msg_list.count()):
+        item = msg_list.item(i)
+        if item is None:
+            continue
+        widget = msg_list.itemWidget(item)
+        if not isinstance(widget, ChatMessageBubbleWidget):
+            continue
+        h = widget.reflow(list_w)
+        item.setSizeHint(QSize(list_w, h))
+        widget.setFixedSize(list_w, h)
+        widget.updateGeometry()
+        if model is not None:
+            idx = model.index(i, 0)
+            model.dataChanged.emit(idx, idx)
+    msg_list.doItemsLayout()
+    msg_list.viewport().update()
+    msg_list.update()
 
 
 def make_chat_message_item(
@@ -394,6 +716,7 @@ def make_chat_message_item(
     content_type: Optional[str] = None,
     image_url: Optional[str] = None,
     is_read: bool = True,
+    list_width: int = 0,
 ) -> tuple[QListWidgetItem, ChatMessageBubbleWidget]:
     widget = ChatMessageBubbleWidget(
         sender_type=sender_type,
@@ -406,5 +729,8 @@ def make_chat_message_item(
     )
     item = QListWidgetItem()
     item.setFlags(Qt.ItemFlag.NoItemFlags)
-    item.setSizeHint(widget.sizeHint())
+    w = max(list_width, 320)
+    h = widget.reflow(w)
+    item.setSizeHint(QSize(w, h))
+    widget.setFixedSize(w, h)
     return item, widget

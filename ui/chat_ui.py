@@ -49,7 +49,11 @@ from database.db_manager import db_manager
 from database.chat_persist import set_active_chat_session
 from ui.conversation_hub import get_conversation_hub, make_account_key
 from ui.widgets.account_group_list import AccountGroupList
-from ui.widgets.chat_bubble_widgets import make_chat_message_item
+from ui.widgets.chat_bubble_widgets import (
+    make_chat_message_item,
+    reflow_message_list_items,
+    _sync_list_item_widget,
+)
 from ui import apple_ui_tokens as UI
 from utils.logger_loguru import get_logger
 
@@ -263,112 +267,122 @@ class GoodsIdInputDialog(QDialog):
 
 
 class EmojiPickerDialog(QDialog):
-    """图片网格表情选择器"""
-    
+    """图片网格表情选择器（深色主题）。"""
+
+    _DIALOG_STYLE = f"""
+        QDialog {{
+            background-color: {UI.BG_PRIMARY};
+        }}
+        QLabel {{
+            color: {UI.TEXT_SECONDARY};
+            background: transparent;
+        }}
+        QScrollArea {{
+            background-color: {UI.BG_SECONDARY};
+            border: 1px solid {UI.BORDER};
+            border-radius: 10px;
+        }}
+        QWidget#EmojiPickerGrid {{
+            background-color: {UI.BG_SECONDARY};
+        }}
+    """
+
+    _EMOJI_BTN_STYLE = f"""
+        QPushButton {{
+            font-size: 28px;
+            background-color: transparent;
+            border: 2px solid transparent;
+            border-radius: 8px;
+        }}
+        QPushButton:hover {{
+            background-color: {UI.BG_TERTIARY};
+            border: 2px solid {UI.ACCENT};
+        }}
+        QPushButton:pressed {{
+            background-color: {UI.ACCENT_PRESSED};
+        }}
+    """
+
+    _FAV_BTN_STYLE = f"""
+        QPushButton {{
+            font-size: 24px;
+            background-color: transparent;
+            border: none;
+            border-radius: 6px;
+        }}
+        QPushButton:hover {{
+            background-color: {UI.BG_TERTIARY};
+        }}
+    """
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("选择表情")
         self.setFixedSize(520, 420)
-        
-        # 布局
+        self.setStyleSheet(self._DIALOG_STYLE)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(10)
-        
-        # 表情网格
+
         scroll = ScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        
-        # 表情容器
+
         emoji_widget = QWidget()
+        emoji_widget.setObjectName("EmojiPickerGrid")
         emoji_layout = QGridLayout(emoji_widget)
         emoji_layout.setContentsMargins(10, 10, 10, 10)
         emoji_layout.setSpacing(8)
-        
-        # 精选表情（按截图中的常见表情）
-        self.emojis = [
-            # 第 1 行
+
+        raw_emojis = [
             "😊", "😂", "😍", "", "😘", "😜", "😝", "😛",
-            # 第 2 行
             "😅", "😆", "😁", "🙂", "🙃", "😉", "😌", "",
-            # 第 3 行
             "😒", "😞", "😔", "😟", "😕", "🙁", "☹️", "😣",
-            # 第 4 行
             "😖", "😫", "😩", "😤", "😠", "😡", "😶", "😐",
-            # 第 5 行
             "😑", "😬", "🙄", "😯", "😦", "😧", "😨", "😰",
-            # 第 6 行
             "😥", "😓", "🤗", "🤔", "🤐", "🤓", "", "😝",
-            # 第 7 行
             "🤑", "🤒", "🤕", "😷", "🤢", "", "🤧", "😇",
-            # 第 8 行
             "🤠", "🤡", "", "🤫", "🤭", "🧐", "", "😈",
-            # 常用符号
             "👍", "👎", "👌", "✌️", "🤞", "🤟", "🤘", "👋",
             "👏", "", "💪", "🤝", "❤️", "💔", "💕", "💖",
             "🎉", "✨", "🔥", "🌟", "💯", "💐", "🌹", "🎁",
         ]
-        
-        # 创建表情按钮
+        self.emojis = [e for e in raw_emojis if e]
+
         row = 0
         col = 0
         cols_per_row = 8
-        
+
         for emoji in self.emojis:
             btn = QPushButton(emoji)
             btn.setFixedSize(44, 44)
-            btn.setStyleSheet("""
-                QPushButton {
-                    font-size: 28px;
-                    background-color: transparent;
-                    border: 2px solid transparent;
-                    border-radius: 8px;
-                }
-                QPushButton:hover {
-                    background-color: #F0F0F0;
-                    border: 2px solid #007AFF;
-                }
-                QPushButton:pressed {
-                    background-color: #E0E0E0;
-                }
-            """)
+            btn.setStyleSheet(self._EMOJI_BTN_STYLE)
             btn.clicked.connect(lambda checked, e=emoji: self._on_emoji_selected(e))
             emoji_layout.addWidget(btn, row, col)
-            
+
             col += 1
             if col >= cols_per_row:
                 col = 0
                 row += 1
-        
+
         scroll.setWidget(emoji_widget)
         layout.addWidget(scroll)
-        
-        # 常用表情栏
+
         favorites_layout = QHBoxLayout()
         favorites_layout.setSpacing(8)
-        
-        search_label = QLabel("🔍")
-        search_label.setStyleSheet("font-size: 20px;")
-        favorites_layout.addWidget(search_label)
-        
+
+        fav_label = QLabel("常用")
+        fav_label.setStyleSheet(f"font-size: 12px; color: {UI.TEXT_SECONDARY};")
+        favorites_layout.addWidget(fav_label)
+
         for fav in ["😊", "😂", "❤️", "👍", "🎉", "🔥"]:
             btn = QPushButton(fav)
             btn.setFixedSize(36, 36)
-            btn.setStyleSheet("""
-                QPushButton {
-                    font-size: 24px;
-                    background-color: transparent;
-                    border: none;
-                    border-radius: 6px;
-                }
-                QPushButton:hover {
-                    background-color: #F0F0F0;
-                }
-            """)
+            btn.setStyleSheet(self._FAV_BTN_STYLE)
             btn.clicked.connect(lambda checked, e=fav: self._on_emoji_selected(e))
             favorites_layout.addWidget(btn)
-        
+
         favorites_layout.addStretch()
         layout.addLayout(favorites_layout)
     
@@ -434,6 +448,24 @@ class ChatLiveWidget(QFrame):
         self.input_edit.installEventFilter(self)
 
         QTimer.singleShot(300, self._initial_load)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._schedule_message_list_reflow()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.FontChange:
+            self._schedule_message_list_reflow()
+
+    def _schedule_message_list_reflow(self) -> None:
+        if getattr(self, "msg_list", None) and self.msg_list.count() > 0:
+            QTimer.singleShot(0, self._reflow_message_list)
+
+    def _reflow_message_list(self) -> None:
+        if not getattr(self, "msg_list", None) or self.msg_list.count() == 0:
+            return
+        reflow_message_list_items(self.msg_list)
 
     def eventFilter(self, obj, event):
         # 监控输入框的所有活动（按键、鼠标点击、焦点变化、文本变化等）
@@ -813,7 +845,7 @@ class ChatLiveWidget(QFrame):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.msg_list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
-        self.msg_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.msg_list.setResizeMode(QListWidget.ResizeMode.Fixed)
         self.msg_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.msg_list.setMinimumHeight(120)
         self.msg_list.setSizePolicy(
@@ -1699,6 +1731,8 @@ class ChatLiveWidget(QFrame):
                 list_width=list_w,
             )
         self._scroll_messages_to_bottom()
+        QTimer.singleShot(0, self._reflow_message_list)
+        QTimer.singleShot(120, self._reflow_message_list)
 
     def _append_message_row(
         self,
@@ -1712,6 +1746,7 @@ class ChatLiveWidget(QFrame):
         *,
         list_width: int = 0,
     ):
+        list_w = list_width or max(self.msg_list.viewport().width(), 320)
         item, widget = make_chat_message_item(
             sender_type=sender_type,
             content=content,
@@ -1720,13 +1755,15 @@ class ChatLiveWidget(QFrame):
             content_type=content_type,
             image_url=image_url,
             is_read=is_read,
+            list_width=list_w,
         )
         self.msg_list.addItem(item)
-        self.msg_list.setItemWidget(item, widget)
-        widget.setMinimumWidth(list_width or self.msg_list.viewport().width())
-        widget.adjustSize()
-        h = widget.layout().sizeHint().height() if widget.layout() else widget.sizeHint().height()
-        item.setSizeHint(QSize(list_width or self.msg_list.viewport().width(), max(h, 48)))
+        _sync_list_item_widget(self.msg_list, item, widget, list_w, item.sizeHint().height())
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if getattr(self, "msg_list", None) and self.msg_list.count() > 0:
+            QTimer.singleShot(0, self._reflow_message_list)
 
     def _rebuild_quick_replies(self, account_id: Optional[int] = None):
         while self.quick_layout.count():

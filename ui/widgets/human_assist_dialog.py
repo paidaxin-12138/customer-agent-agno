@@ -18,12 +18,16 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QGraphicsDropShadowEffect,
     QMessageBox,
+    QApplication,
 )
 
 from config import config
 from utils.logger_loguru import get_logger
 
 logger = get_logger("HumanAssistDialog")
+
+_MESSAGE_BOX_MAX_H = 160
+_ADDRESS_CHANGE_MESSAGE_MAX_H = 200
 
 
 class HumanAssistDialog(QDialog):
@@ -438,20 +442,25 @@ class HumanAssistDialog(QDialog):
             or self.payload.get("question")
             or ""
         )
-        if len(question) > 220:
-            question = question[:220] + "..."
 
         message_content = self._create_message_box(question or "无消息内容")
+        self._message_box_frame = message_content
         layout.addWidget(message_content, 1)
+        self._refresh_message_box_height()
 
         return widget
 
-    @staticmethod
-    def _create_message_box(text: str) -> QFrame:
-        """最近消息弹性容器：高度随内容增长，过长时可滚动。"""
+    def _create_message_box(self, text: str) -> QFrame:
+        """最近消息容器：固定最大高度，内容过长时内部滚动。"""
         frame = QFrame()
         frame.setObjectName("recentMessageBox")
-        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
+        max_h = (
+            _ADDRESS_CHANGE_MESSAGE_MAX_H
+            if self._is_address_change
+            else _MESSAGE_BOX_MAX_H
+        )
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        frame.setMaximumHeight(max_h + 20)
         frame.setStyleSheet("""
             QFrame#recentMessageBox {
                 background-color: #2C2C2E;
@@ -469,7 +478,8 @@ class HumanAssistDialog(QDialog):
         editor.setFrameShape(QFrame.Shape.NoFrame)
         editor.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
+        editor.setFixedHeight(max_h)
+        editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         editor.setStyleSheet("""
             QTextEdit {
                 color: #E5E5EA;
@@ -481,23 +491,38 @@ class HumanAssistDialog(QDialog):
             }
         """)
         box_layout.addWidget(editor)
-
-        # 按文档高度自适应（上限 160px，超出滚动）
-        doc = editor.document()
-        doc.setTextWidth(max(frame.width() - 24, 360))
-        content_h = int(doc.size().height()) + 8
-        editor.setMinimumHeight(max(40, min(content_h, 160)))
-        editor.setMaximumHeight(160)
+        self._message_box_editor = editor
+        self._message_box_max_h = max_h
         return frame
 
+    def _refresh_message_box_height(self) -> None:
+        """按实际宽度重排消息文本换行（高度固定，内部滚动）。"""
+        editor = getattr(self, "_message_box_editor", None)
+        frame = getattr(self, "_message_box_frame", None)
+        if editor is None or frame is None:
+            return
+        max_h = getattr(self, "_message_box_max_h", _MESSAGE_BOX_MAX_H)
+        frame_w = frame.width()
+        if frame_w <= 0:
+            frame_w = max(self.width() - 48, 360)
+        doc = editor.document()
+        doc.setTextWidth(max(frame_w - 24, 200))
+        editor.setFixedHeight(max_h)
+
     def _fit_dialog_to_content(self) -> None:
-        """根据内容微调弹窗高度，避免消息区与按钮重叠。"""
+        """根据内容微调弹窗高度，避免超出屏幕可用区域。"""
+        self._refresh_message_box_height()
         self.adjustSize()
         hint = self.sizeHint()
         min_h = 420 if self._is_address_change else 280
         max_h = 560 if self._is_address_change else 480
         w = max(self.minimumWidth(), hint.width())
         h = max(min_h, min(hint.height() + 12, max_h))
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            w = min(w, avail.width() - 32)
+            h = min(h, avail.height() - 32)
         self.resize(w, h)
 
     def _create_info_row(self, label_text: str, value_text: str) -> QWidget:
@@ -562,6 +587,7 @@ class HumanAssistDialog(QDialog):
         
         # 窗口居中显示
         self._center_on_parent()
+        self._refresh_message_box_height()
         self._fit_dialog_to_content()
         
         # 再次激活，确保在最前面
@@ -575,26 +601,25 @@ class HumanAssistDialog(QDialog):
             logger.info("弹窗已带到最前面")
 
     def _center_on_parent(self):
-        """在父窗口居中显示"""
+        """在父窗口或屏幕居中显示，并确保不超出可用区域。"""
+        my_rect = self.geometry()
         if self.parent() and self.parent().isVisible():
             parent_rect = self.parent().geometry()
-            my_rect = self.geometry()
-
-            # 计算居中位置
             x = parent_rect.x() + (parent_rect.width() - my_rect.width()) // 2
             y = parent_rect.y() + (parent_rect.height() - my_rect.height()) // 2
-
-            self.move(x, y)
-            logger.info(f"弹窗已居中到父窗口：{x}, {y}")
         else:
-            # 如果没有父窗口或父窗口不可见，在屏幕居中
-            screen = self.window().screen()
-            if screen:
-                screen_geometry = screen.availableGeometry()
-                my_rect = self.geometry()
-                
-                x = screen_geometry.x() + (screen_geometry.width() - my_rect.width()) // 2
-                y = screen_geometry.y() + (screen_geometry.height() - my_rect.height()) // 2
-                
-                self.move(x, y)
-                logger.info(f"弹窗已在屏幕居中：{x}, {y}")
+            screen = self.window().screen() or QApplication.primaryScreen()
+            if not screen:
+                return
+            screen_geometry = screen.availableGeometry()
+            x = screen_geometry.x() + (screen_geometry.width() - my_rect.width()) // 2
+            y = screen_geometry.y() + (screen_geometry.height() - my_rect.height()) // 2
+
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            x = max(avail.x(), min(x, avail.right() - my_rect.width() + 1))
+            y = max(avail.y(), min(y, avail.bottom() - my_rect.height() + 1))
+
+        self.move(x, y)
+        logger.info(f"弹窗已居中：{x}, {y}")

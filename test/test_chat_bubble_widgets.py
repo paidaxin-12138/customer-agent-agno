@@ -1,7 +1,7 @@
 """聊天气泡 Widget 单元测试（无 GUI 窗口）。"""
 import pytest
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QLabel, QFrame
+from PyQt6.QtWidgets import QApplication, QLabel, QFrame, QWidget
 
 from ui.widgets.chat_bubble_widgets import (
     CHAT_BG,
@@ -12,6 +12,7 @@ from ui.widgets.chat_bubble_widgets import (
     _BubbleFrame,
     _build_body,
     make_chat_message_item,
+    reflow_message_list_items,
 )
 
 
@@ -44,9 +45,15 @@ def test_outgoing_bubble_widget(qapp):
     )
     frame = w.findChild(QFrame, "ChatRightBubbleFrame")
     assert frame is not None
-    label = frame.findChild(QLabel)
+    label = frame.findChild(QLabel, "ChatBubbleBodyLabel")
     assert label is not None
     assert "测试消息" in label.text()
+    time_lbl = w.findChild(QLabel, "ChatBubbleTime")
+    assert time_lbl is not None
+    assert "12:30" in time_lbl.text()
+    assert "客服" in time_lbl.text()
+    assert "已读" not in time_lbl.text()
+    assert "未读" not in time_lbl.text()
 
 
 def test_incoming_bubble_widget(qapp):
@@ -58,9 +65,73 @@ def test_incoming_bubble_widget(qapp):
     )
     frame = w.findChild(QFrame, "ChatLeftBubbleFrame")
     assert frame is not None
-    label = frame.findChild(QLabel)
+    label = frame.findChild(QLabel, "ChatBubbleBodyLabel")
     assert label is not None
     assert "买家你好" in label.text()
+
+
+def test_image_bubble_uses_pixmap_loader(qapp):
+    w = ChatMessageBubbleWidget(
+        sender_type="customer",
+        content="",
+        timestamp="12:33",
+        content_type="image",
+        image_url="https://example.com/photo.jpg",
+    )
+    frame = w.findChild(QFrame, "ChatLeftBubbleFrame")
+    assert frame is not None
+    body = frame.findChild(QWidget, "ChatBubbleBodyImage")
+    assert body is not None
+    placeholder = body.findChild(QLabel, "ChatBubbleImagePlaceholder")
+    assert placeholder is not None
+    assert "加载中" in placeholder.text()
+
+
+def test_multiline_ai_bubble_frame_height(qapp):
+    text = (
+        "亲亲，小店给您发了商品卡片，是「功能底胶封层甲油胶套装」，"
+        "价格2元。您点开卡片看看详情，满意再拍哈。"
+    )
+    frame = _BubbleFrame(
+        side="left",
+        text_format=Qt.TextFormat.PlainText,
+        text=text,
+        text_color=OTHER_TEXT,
+    )
+    frame_h = frame.reflow(320)
+    label = frame.findChild(QLabel, "ChatBubbleBodyLabel")
+    assert label is not None
+    vm = frame.layout().contentsMargins().top() + frame.layout().contentsMargins().bottom()
+    assert frame_h >= label.height() + vm
+
+
+def test_bubble_reflow(qapp):
+    w = ChatMessageBubbleWidget(
+        sender_type="human",
+        content="长消息" * 20,
+        timestamp="12:34",
+    )
+    h_narrow = w.reflow(400)
+    h_wide = w.reflow(800)
+    assert h_narrow >= 48
+    assert h_wide >= 48
+
+
+def test_reflow_message_list_items(qapp):
+    from PyQt6.QtWidgets import QListWidget
+
+    lst = QListWidget()
+    lst.resize(500, 600)
+    item, widget = make_chat_message_item(
+        sender_type="customer",
+        content="测试",
+        timestamp="12:35",
+        list_width=500,
+    )
+    lst.addItem(item)
+    lst.setItemWidget(item, widget)
+    reflow_message_list_items(lst)
+    assert item.sizeHint().height() >= 48
 
 
 def test_bubble_frame_plain_text_color(qapp):

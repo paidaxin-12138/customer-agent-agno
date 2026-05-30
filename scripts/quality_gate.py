@@ -4,6 +4,8 @@
 Usage:
   .venv/bin/python scripts/quality_gate.py
   .venv/bin/python scripts/quality_gate.py --full
+  .venv/bin/python scripts/quality_gate.py --audit
+  .venv/bin/python scripts/quality_gate.py --audit --audit-strict
 """
 
 from __future__ import annotations
@@ -29,9 +31,38 @@ def run(cmd: list[str], title: str) -> None:
     print(f"[PASS] {title} (elapsed={elapsed:.2f}s)")
 
 
+def run_pip_audit(py: str, *, strict: bool) -> None:
+    title = "Dependency vulnerability scan (pip-audit)"
+    cmd = [py, "-m", "pip_audit", "--desc", "off", "--progress-spinner", "off"]
+    print(f"\n[STEP] {title}")
+    print("       " + " ".join(cmd))
+    start = time.perf_counter()
+    result = subprocess.run(cmd, cwd=ROOT)
+    elapsed = time.perf_counter() - start
+    if result.returncode == 0:
+        print(f"[PASS] {title} (elapsed={elapsed:.2f}s)")
+        return
+    if strict:
+        raise SystemExit(f"[FAIL] {title} (elapsed={elapsed:.2f}s)")
+    print(
+        f"[WARN] {title} found known vulnerabilities "
+        f"(elapsed={elapsed:.2f}s; use --audit-strict to fail the gate)"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run project quality gate")
     parser.add_argument("--full", action="store_true", help="Run broader pytest suite")
+    parser.add_argument(
+        "--audit",
+        action="store_true",
+        help="Run pip-audit dependency vulnerability scan (requires dev deps)",
+    )
+    parser.add_argument(
+        "--audit-strict",
+        action="store_true",
+        help="Fail the gate when pip-audit reports vulnerabilities",
+    )
     args = parser.parse_args()
 
     py = sys.executable
@@ -58,6 +89,8 @@ def main() -> int:
             "pytest",
             "test/test_move_conversation.py",
             "test/test_ai_handler_async.py",
+            "test/test_chat_bubble_widgets.py",
+            "test/test_human_assist_dialog.py",
             "-q",
         ],
         "Run focused regression tests",
@@ -65,6 +98,9 @@ def main() -> int:
 
     if args.full:
         run([py, "-m", "pytest", "test/", "-q"], "Run full test suite")
+
+    if args.audit:
+        run_pip_audit(py, strict=args.audit_strict)
 
     print("\n[OK] Quality gate passed.")
     return 0

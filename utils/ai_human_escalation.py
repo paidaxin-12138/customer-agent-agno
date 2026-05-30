@@ -91,8 +91,8 @@ def build_after_sales_pm_summary(
     buyer_text: Optional[str],
     ai_reply: Optional[str],
     *,
-    max_buyer: int = 200,
-    max_ai: int = 120,
+    max_buyer: int = 2000,
+    max_ai: int = 800,
 ) -> str:
     """组装弹窗摘要：买家诉求 + AI 已发话术。"""
     buyer = (buyer_text or "").strip()
