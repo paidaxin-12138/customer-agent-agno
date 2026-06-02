@@ -129,6 +129,7 @@ def build_escalation_payload(
         }
         if extra and isinstance(extra, dict):
             payload.update(extra)
+        payload["comfort_sent"] = bool(metadata.get("_outbound_comfort_sent"))
         return payload
     except Exception as e:
         _bus_log.debug("build_escalation_payload 失败: {}", e)
@@ -157,7 +158,9 @@ def emit_human_assist(
         "media_human": "买家发图片/视频需人工查看",
         "queue_degrade": "排队繁忙已自动安抚（可关注是否需人工）",
         "after_sales_policy": "售后策略需人工处理",
-        "ai_after_sales_pm": "AI 无法处理的售后问题（已安抚买家）",
+        "ai_after_sales_pm": "AI 回复需产品经理跟进",
+        "buyer_emotion_alert": "买家情绪波动预警",
+        "buyer_emotion_escalate": "买家情绪波动（已转人工）",
         "order_address_change": "买家申请改地址（需确认）",
     }
     note = f"[系统] {labels.get(reason, reason)}"

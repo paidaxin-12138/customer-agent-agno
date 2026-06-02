@@ -36,7 +36,7 @@ def _configured_ws_concurrency() -> int:
 
 
 CONFIGURED_LIMITS = {
-    "message_consumer_max_concurrent": 28,
+    "message_consumer_max_concurrent": 16,
     "pdd_websocket_max_concurrent_messages": _configured_ws_concurrency(),
     "queue_max_size": QueueConfig().max_size,
 }
@@ -169,7 +169,7 @@ async def _probe_semaphore_parallelism(limit: int, workers: int) -> int:
 
 @pytest.mark.asyncio
 async def test_configured_limits_snapshot():
-    assert CONFIGURED_LIMITS["message_consumer_max_concurrent"] == 28
+    assert CONFIGURED_LIMITS["message_consumer_max_concurrent"] == 16
     assert CONFIGURED_LIMITS["pdd_websocket_max_concurrent_messages"] == _configured_ws_concurrency()
     assert CONFIGURED_LIMITS["queue_max_size"] == 1000
 
@@ -243,7 +243,7 @@ def _print_report(results: List[BenchResult], sem_peaks: dict) -> None:
         f"  · 拼多多 WebSocket 入站：最多同时处理 {CONFIGURED_LIMITS['pdd_websocket_max_concurrent_messages']} 条（PDDChannel.message_semaphore）"
     )
     print(
-        "  · 消息队列消费者：最多同时处理 28 条（不同买家；chat.message_consumer_max_concurrent）"
+        "  · 消息队列消费者：最多同时处理 16 条（不同买家；chat.message_consumer_max_concurrent）"
     )
     print("  · 同一买家多条消息：串行（per-buyer asyncio.Lock）")
     print(f"  · 队列积压上限：{CONFIGURED_LIMITS['queue_max_size']} 条/店铺队列")

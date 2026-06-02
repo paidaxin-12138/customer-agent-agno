@@ -146,7 +146,17 @@ def _format_message_line(m: Dict[str, Any]) -> str:
     body = (m.get("content") or "").strip().replace("\n", " ")
     if len(body) > 400:
         body = body[:400] + "…"
-    return f"{_ROLE_TAG.get(role, role)}：{body}"
+    ts_raw = m.get("sent_at") or m.get("created_at")
+    ts = ""
+    if ts_raw is not None:
+        try:
+            from utils.chat_time import format_chat_iso
+
+            ts = format_chat_iso(ts_raw)
+        except Exception:
+            ts = str(ts_raw)[:19]
+    prefix = f"[{ts}] " if ts else ""
+    return f"{prefix}{_ROLE_TAG.get(role, role)}：{body}"
 
 
 def _extract_slots(text: str, slots: Dict[str, str]) -> None:
@@ -343,6 +353,19 @@ def build_layered_prompt(
             "【回复要求】结合长期摘要与任务状态理解指代；短期原文优先；不要重复寒暄。\n"
             f"【本轮买家消息】\n{q}"
         )
+        try:
+            ku = getattr(context, "kwargs", None)
+            raw_ts = getattr(ku, "timestamp", None) if ku else None
+            if raw_ts is not None:
+                from utils.chat_time import (
+                    format_chat_iso,
+                    naive_shanghai_from_unix_ts,
+                )
+
+                ts_val = naive_shanghai_from_unix_ts(float(raw_ts) / 1000.0)
+                parts.append(f"【本轮消息时间】{format_chat_iso(ts_val)}")
+        except Exception:
+            pass
 
         db_manager.update_session_memory(
             sid,

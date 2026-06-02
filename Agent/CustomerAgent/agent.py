@@ -15,6 +15,7 @@ from Agent.CustomerAgent.tools.move_conversation import transfer_conversation
 from Agent.CustomerAgent.tools.get_product_list import get_shop_products, get_product_skus
 from Agent.CustomerAgent.tools.send_goods_link import send_goods_link
 from config import get_config
+import asyncio
 from typing import Any, Dict, List, Optional
 from utils.logger_loguru import get_logger
 from pydantic import BaseModel, Field
@@ -41,16 +42,19 @@ _NATURAL_STYLE_CONTEXT = (
 _KNOWLEDGE_GROUNDING: List[str] = [
     "本店主营以知识库检索到的「美甲灯/光疗灯」及其中明确写明的配件为准；不得编造未在检索结果中出现的在售 SKU、库存、价格或规格。",
     "知识库里若只出现美甲步骤中的底胶/色胶/封层/光疗胶等通用概念，仅代表美甲流程说明，不等同于本店在售甲油胶商品；买家问「有没有美甲胶/甲油胶/胶类」时，若检索片段未列出可发货的胶类产品，应如实说明本店以美甲灯为主、胶类需确认或引导其选购灯适用类型，禁止用「都有」「有货」等空泛承诺。",
-    "若用户问题与检索内容无关或检索为空：简短说明本店当前可查到的上架范围，并给出可执行下一步（如「我去问问产品经理」「稍后回复」）；不要凭想象补全商品信息。",
-    "若检索未覆盖买家问的商品（如打磨机、胶类等）：明确说明知识库/在售链接里暂未查到，应说「我去问问产品经理」「稍后由产品经理确认」；禁止使用「转人工客服」「转人工」「问老板」「找老板」「问店主」「转同事」等话术。",
-    "不要引导买家「再发图」「发照片」来辨认商品：本链路中 AI 无法查看聊天图片；识图需求应说「我去问问产品经理」，话术上避免让顾客重复发图给机器人。",
+    "若用户问题与检索内容无关或检索为空：简短说明本店当前可查到的上架范围，并引导买家补充描述；"
+    "不要编造商品信息，可说「我暂时还不清楚，您可以更详细描述，或者我帮您转人工客服」。",
+    "若检索未覆盖买家问的商品（如打磨机、胶类等）：明确说明知识库/在售链接里暂未查到，"
+    "引导买家补充需求或转人工；禁止使用「转人工客服」「问老板」「找老板」等含糊表述。",
+    "不要引导买家「再发图」「发照片」来辨认商品：本链路中 AI 无法查看聊天图片；"
+    "识图需求应引导买家转人工或补充文字描述。",
     "当买家询问商品相关信息（价格、规格、库存、款式、颜色等）时，必须优先使用 get_shop_products（实时列表含 SKU）或 get_product_skus(goods_id) 查询，再基于工具返回回答；无需先同步知识库。禁止凭空猜测或编造商品信息。",
     "如果知识库检索结果为空，但买家询问具体商品，应使用 get_shop_products 工具查询店铺在售商品，然后根据查询结果推荐合适的商品给买家。",
     "推荐商品时：优先从 get_shop_products 返回的商品列表中选择 1-2 款最匹配的，提供商品名称、价格、核心卖点；不要一次性推荐超过 2 款。",
-    "当买家询问「有没有 XX 款」「有没有 XX 功能」「有什么颜色」「有哪些款式」时：先用 get_shop_products 查询商品列表，确认有货后再推荐；若无此商品，如实告知「知识库暂未收录这款，我去问问产品经理」并推荐相似款。",
+    "当买家询问「有没有 XX 款」「有没有 XX 功能」「有什么颜色」「有哪些款式」时：先用 get_shop_products 查询商品列表，确认有货后再推荐；若无此商品，如实告知暂未查到并推荐相似款或引导转人工。",
     "【语言匹配】自动检测买家使用的语言（中文/英文/泰语/越南语等），并用相同语言回复；买家说中文就用中文回答，买家说英文就用英文回答，保持语言一致。",
-    "【禁止话术】禁止使用以下表述：「转人工」「转人工客服」「人工客服」「问老板」「找老板」「问店主」「转同事」「转其他客服」；统一改为「我去问问产品经理」「这边跟产品经理确认下」「稍后产品经理回复您」。",
-    "【禁止编造】严禁编造以下信息：商品颜色（如「只有黑色」「有白色」）、商品款式、库存状态、商品名称；如知识库和商品列表中都未找到，必须如实说明「暂未查到」并主动提出「我去问问产品经理」。",
+    "【禁止话术】禁止频繁使用「产品经理」作为兜底；知识库未覆盖时使用「我暂时还不清楚，您可以更详细描述，或者我帮您转人工客服」。",
+    "【禁止编造】严禁编造以下信息：商品颜色（如「只有黑色」「有白色」）、商品款式、库存状态、商品名称；如知识库和商品列表中都未找到，必须如实说明「暂未查到」并引导补充描述或转人工。",
     "【三层记忆】输入中含【长期摘要】【任务状态】【短期记忆】：长期摘要用于更早事实；任务状态中的意图/槽位/待确认/流程节点必须遵守；短期记忆为最近几轮原文，指代词（这个/那款）优先对照短期与任务状态理解。",
 ]
 
@@ -81,7 +85,47 @@ def _customer_agno_knowledge_retriever(km: "KnowledgeManager"):
             except (TypeError, ValueError):
                 pass
         try:
-            hits = km.search_knowledge(q, top_k=limit)
+            timeout_sec = 5.0
+            try:
+                from config import get_config
+
+                timeout_sec = float(
+                    get_config("chat.knowledge_retrieval_timeout_sec", 5) or 5
+                )
+            except (TypeError, ValueError):
+                pass
+            timeout_sec = max(0.5, min(timeout_sec, 30.0))
+
+            async def _search_async() -> Any:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(km.search_knowledge, q, top_k=limit),
+                    timeout=timeout_sec,
+                )
+
+            def _run_search() -> Any:
+                try:
+                    asyncio.get_running_loop()
+                except RuntimeError:
+                    return asyncio.run(_search_async())
+                from concurrent.futures import ThreadPoolExecutor
+
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    return pool.submit(asyncio.run, _search_async()).result(
+                        timeout=timeout_sec + 1.0
+                    )
+
+            if timeout_sec > 0:
+                try:
+                    hits = _run_search()
+                except (asyncio.TimeoutError, TimeoutError):
+                    log.warning(
+                        "knowledge_retriever 超时 {:.1f}s，跳过 RAG: {}",
+                        timeout_sec,
+                        q[:80],
+                    )
+                    return None
+            else:
+                hits = km.search_knowledge(q, top_k=limit)
         except Exception as e:
             log.warning(f"knowledge_retriever 检索失败: {e}")
             return None
@@ -166,6 +210,12 @@ class CustomerAgent(Bot):
             api_base = get_config("llm.api_base", "")
             max_tokens = get_config("llm.max_tokens", None)
             temperature = get_config("llm.temperature", 0.7)
+            chat_max = get_config("chat.ai_max_tokens", None)
+            chat_temp = get_config("chat.ai_temperature", None)
+            if chat_max is not None:
+                max_tokens = chat_max
+            if chat_temp is not None:
+                temperature = chat_temp
             try:
                 if max_tokens is not None:
                     max_tokens = int(max_tokens)

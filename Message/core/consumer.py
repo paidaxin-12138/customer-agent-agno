@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 class MessageConsumer:
     """消息消费者 - 有界 worker 池，避免 create_task 无限堆积"""
 
-    def __init__(self, queue_name: str, max_concurrent: int = 28):
+    def __init__(self, queue_name: str, max_concurrent: int = 16):
         self.queue_name = queue_name
         self.max_concurrent = max(1, max_concurrent)
         self.handlers: List[MessageHandler] = []
@@ -122,10 +122,11 @@ class MessageConsumer:
         """处理单个消息"""
         user_key = self._extract_user_id(wrapper.context)
         lock = self._buyer_locks.lock_for(user_key)
-        async with lock:
-            metadata: Dict = {}
+        processed = False
+        metadata: Dict = {}
+        await lock.acquire()
+        try:
             try:
-                processed = False
                 metadata = wrapper.to_metadata()
                 try:
                     kwargs = getattr(wrapper.context, "kwargs", None)
@@ -188,7 +189,8 @@ class MessageConsumer:
 
                 if not processed and not metadata.get("_outbound_comfort_sent"):
                     self.logger.warning(
-                        f"Message {wrapper.message_id} not processed by any handler"
+                        "Message {} 未被任何 handler 处理，尝试 fallback_reply",
+                        wrapper.message_id,
                     )
                     try:
                         from Message.handlers.fallback_reply import (
@@ -216,6 +218,14 @@ class MessageConsumer:
             except Exception as e:
                 self.logger.error(f"Failed to process message {wrapper.message_id}: {e}")
                 self._record_process_failure(metadata, error=e)
+        finally:
+            lock.release()
+            self.logger.info(
+                "Message {} 处理完成 processed={} user_key={}",
+                wrapper.message_id,
+                processed,
+                user_key,
+            )
 
     def _extract_user_id(self, context: Context) -> str:
         """提取用户ID"""
@@ -246,7 +256,7 @@ class MessageConsumerManager:
         self._consumers: Dict[str, MessageConsumer] = {}
         self.logger = get_logger("ConsumerManager")
 
-    def create_consumer(self, queue_name: str, max_concurrent: int = 28) -> MessageConsumer:
+    def create_consumer(self, queue_name: str, max_concurrent: int = 16) -> MessageConsumer:
         """创建消费者"""
         if queue_name in self._consumers:
             self.logger.warning(f"Consumer {queue_name} already exists")

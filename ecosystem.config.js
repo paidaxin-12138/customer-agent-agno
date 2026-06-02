@@ -30,6 +30,10 @@ module.exports = {
       env: {
         PYTHONUNBUFFERED: "1",
         LOG_LEVEL: "info",
+        LLM_MODEL_NAME: "qwen-turbo",
+        LLM_MAX_TOKENS: "500",
+        LLM_TEMPERATURE: "0.5",
+        MESSAGE_CONSUMER_MAX_CONCURRENT: "16",
       },
       env_production: {
         ENVIRONMENT: "production",

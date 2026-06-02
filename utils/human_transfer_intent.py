@@ -95,3 +95,25 @@ def detect_human_transfer_intent(text: Optional[str]) -> bool:
             return False
         return True
     return False
+
+
+def detect_manager_escalation_intent(text: Optional[str]) -> bool:
+    """买家是否明确要求找经理/主管。"""
+    t = _prepare_text(text or "")
+    if not t:
+        return False
+    phrases = (
+        "找经理",
+        "找主管",
+        "找店长",
+        "找负责人",
+        "找领导",
+        "叫经理",
+        "让经理",
+    )
+    return any(p in t for p in phrases)
+
+
+def has_explicit_transfer_intent(text: Optional[str]) -> bool:
+    """买家是否明确要求转人工 / 找经理 / 人工客服（用于 AI fallback 是否弹窗转人工）。"""
+    return detect_human_transfer_intent(text) or detect_manager_escalation_intent(text)

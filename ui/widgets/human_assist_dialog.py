@@ -41,14 +41,22 @@ class HumanAssistDialog(QDialog):
         super().__init__(parent)
         self.payload = payload
         reason = str(payload.get("reason") or "")
+        self._comfort_sent = bool(payload.get("comfort_sent"))
+        self._comfort_dispatched = self._comfort_sent
         self._is_address_change = reason == "order_address_change"
+        self._is_emotion_alert = reason == "buyer_emotion_alert"
         self._shipped_override = False
         if reason == "ai_after_sales_pm":
-            self._dialog_title = "🔔 售后问题需人工处理"
+            self._dialog_title = "🔔 AI 回复需产品经理跟进"
         elif reason == "after_sales_policy":
             self._dialog_title = "🔔 售后需人工处理"
         elif self._is_address_change:
             self._dialog_title = "🔔 买家申请改地址"
+        elif reason == "buyer_emotion_escalate":
+            self._dialog_title = "⚠️ 买家情绪波动（已转人工）"
+        elif self._is_emotion_alert:
+            nick = str(payload.get("buyer_nickname") or "买家")
+            self._dialog_title = f"⚠️ 监测到「{nick}」有情绪波动"
         else:
             self._dialog_title = "🔔 买家申请转人工"
         self.setWindowTitle(self._dialog_title)
@@ -138,12 +146,31 @@ class HumanAssistDialog(QDialog):
         button_layout.setSpacing(12)
         if self._is_address_change:
             self._build_address_change_buttons(button_layout)
+        elif self._is_emotion_alert:
+            self._build_emotion_alert_buttons(button_layout)
         else:
             self._build_default_buttons(button_layout)
         container_layout.addLayout(button_layout)
 
         layout.addWidget(container)
         QTimer.singleShot(0, self._fit_dialog_to_content)
+
+    def _build_emotion_alert_buttons(self, button_layout: QHBoxLayout) -> None:
+        ack_btn = QPushButton("我知道了")
+        ack_btn.setObjectName("ignoreButton")
+        ack_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        ack_btn.setStyleSheet(self._ignore_button_style())
+        ack_btn.clicked.connect(self.close)
+
+        handle_btn = QPushButton("去了解")
+        handle_btn.setObjectName("handleButton")
+        handle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        handle_btn.setStyleSheet(self._primary_button_style())
+        handle_btn.clicked.connect(self._on_handle_clicked)
+
+        button_layout.addStretch()
+        button_layout.addWidget(ack_btn)
+        button_layout.addWidget(handle_btn)
 
     def _build_default_buttons(self, button_layout: QHBoxLayout) -> None:
         ignore_btn = QPushButton("稍后再说")
@@ -298,6 +325,25 @@ class HumanAssistDialog(QDialog):
             self._confirm_btn.setEnabled(True)
             self._confirm_btn.setStyleSheet(self._primary_button_style())
 
+    def _maybe_send_comfort_on_dismiss(self) -> None:
+        """弹窗关闭/取消时补发安抚语（检测阶段未成功发送时）。"""
+        if self._comfort_dispatched:
+            return
+        try:
+            from utils.human_escalation_comfort import (
+                send_human_transfer_comfort_from_payload,
+            )
+
+            if send_human_transfer_comfort_from_payload(self.payload):
+                self._comfort_dispatched = True
+        except Exception as e:
+            logger.debug(f"弹窗关闭补发安抚跳过: {e}")
+
+    def closeEvent(self, event):
+        self._auto_close_timer.stop()
+        self._maybe_send_comfort_on_dismiss()
+        super().closeEvent(event)
+
     def _on_address_change_cancel(self) -> None:
         self._auto_close_timer.stop()
         out = dict(self.payload)
@@ -420,7 +466,7 @@ class HumanAssistDialog(QDialog):
 
         # 最近消息 / 摘要
         reason = str(self.payload.get("reason") or "")
-        if reason in ("ai_after_sales_pm", "after_sales_policy"):
+        if reason in ("ai_after_sales_pm", "after_sales_policy", "buyer_emotion_alert", "buyer_emotion_escalate"):
             message_label = QLabel("📋 问题摘要")
         elif self._is_address_change:
             message_label = QLabel("💬 买家原话")

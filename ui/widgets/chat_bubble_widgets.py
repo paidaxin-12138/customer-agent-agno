@@ -80,11 +80,9 @@ class _BubbleArrow(QWidget):
 
 
 def _format_timestamp(t: Any) -> str:
-    if t is None:
-        return ""
-    if isinstance(t, datetime):
-        return t.strftime("%H:%M")
-    return str(t)[:8]
+    from utils.chat_time import format_chat_display_relative
+
+    return format_chat_display_relative(t)
 
 
 def _needs_rich_html(
@@ -437,7 +435,11 @@ class _BubbleFrame(QFrame):
         if isinstance(self._body, QTextBrowser):
             doc = self._body.document()
             doc.setTextWidth(inner_w)
-            doc_h = int(doc.size().height())
+            layout = doc.documentLayout()
+            if layout is not None:
+                doc_h = int(layout.documentSize().height())
+            else:
+                doc_h = int(doc.size().height())
             min_h = 48 if "<img" in (self._body.toHtml() or "").lower() else 24
             return max(min_h, doc_h) + vm + _BUBBLE_HEIGHT_SLACK
         return self._plain_label_height(self._body, inner_w) + vm
@@ -679,6 +681,7 @@ class ChatMessageBubbleWidget(QWidget):
         content_h = max(self.layout().sizeHint().height(), 48)
         total_h = content_h + _ITEM_HEIGHT_SLACK
         self.setFixedSize(list_width, total_h)
+        self.setMaximumHeight(total_h)
         return total_h
 
 
@@ -706,6 +709,10 @@ def reflow_message_widgets(
             parent = parent.parentWidget()
         if list_w <= 0:
             list_w = max(container.width(), 320)
+    margins = layout.contentsMargins()
+    total_h = margins.top() + margins.bottom()
+    spacing = layout.spacing()
+    count = 0
     for i in range(layout.count()):
         lay_item = layout.itemAt(i)
         if lay_item is None:
@@ -716,9 +723,17 @@ def reflow_message_widgets(
         h = widget.reflow(list_w)
         widget.setFixedWidth(list_w)
         widget.setFixedHeight(h)
+        widget.setMaximumHeight(h)
         widget.updateGeometry()
+        if count > 0:
+            total_h += spacing
+        total_h += h
+        count += 1
+    if count > 0:
+        container.setMinimumHeight(total_h)
     container.adjustSize()
     container.update()
+    layout.activate()
 
 
 def reflow_message_list_items(msg_list: QListWidget) -> None:

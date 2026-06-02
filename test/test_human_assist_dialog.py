@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import sys
+from unittest.mock import MagicMock, patch
 
 import pytest
 from PyQt6.QtWidgets import QApplication
@@ -43,6 +44,40 @@ def test_dialog_auto_close_timer_started(qapp):
     dialog = HumanAssistDialog(PAYLOAD)
     assert dialog._auto_close_timer.isActive()
     dialog.close()
+
+
+def test_dialog_dismiss_sends_comfort_when_not_sent(qapp):
+    payload = {
+        **PAYLOAD,
+        "comfort_sent": False,
+        "platform_shop_id": "shop1",
+        "seller_user_id": "seller1",
+    }
+    dialog = HumanAssistDialog(payload)
+    mock_sender = MagicMock()
+    mock_sender.send_text.return_value = {"success": True}
+    with patch(
+        "Channel.pinduoduo.utils.API.send_message.SendMessage",
+        return_value=mock_sender,
+    ):
+        dialog.close()
+    mock_sender.send_text.assert_called_once()
+    assert dialog._comfort_dispatched is True
+
+
+def test_dialog_dismiss_skips_comfort_when_already_sent(qapp):
+    payload = {
+        **PAYLOAD,
+        "comfort_sent": True,
+        "platform_shop_id": "shop1",
+        "seller_user_id": "seller1",
+    }
+    dialog = HumanAssistDialog(payload)
+    with patch(
+        "Channel.pinduoduo.utils.API.send_message.SendMessage",
+    ) as mock_cls:
+        dialog.close()
+    mock_cls.assert_not_called()
 
 
 def test_recent_message_box_expands(qapp):

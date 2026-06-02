@@ -102,7 +102,7 @@ class ChatConfig(BaseModel):
     manual_mode_send_notice: bool = False
     buyer_burst_merge_gap_sec: float = 45
     buyer_burst_merge_max_parts: int = 40
-    message_consumer_max_concurrent: int = 28
+    message_consumer_max_concurrent: int = 16
     ws_message_max_concurrent: int = 16
     ai_watchdog_enabled: bool = True
     ai_watchdog_escalate_sec: int = 150
@@ -122,6 +122,17 @@ class ChatConfig(BaseModel):
     session_idle_resolve_check_interval_sec: int = 60
     address_change_enabled: bool = True
     human_transfer_semantic_enabled: bool = True
+    human_transfer_notice: str = "稍等下 这边上报一下呢亲亲"
+    buyer_emotion_alert_enabled: bool = True
+    buyer_emotion_escalate_threshold: int = 2
+    ai_pm_escalation_enabled: bool = True
+    ai_max_tokens: int = 500
+    ai_temperature: float = 0.5
+    ai_fallback_to_human_on_unknown: bool = False
+    ai_unknown_fallback_notice: str = (
+        "亲，我暂时还不清楚，您可以描述得更详细些，或者我帮您转人工客服？"
+    )
+    knowledge_retrieval_timeout_sec: float = 5.0
     unhandled_fallback_enabled: bool = True
     unhandled_fallback_notice: str = (
         "亲，消息已收到，客服稍后会回复您；如需人工请回复「人工」。"
@@ -132,7 +143,7 @@ class ChatConfig(BaseModel):
     )
     ai_mode_check_retries: int = 3
     ai_mode_check_retry_delay_sec: float = 0.12
-    ai_mode_check_fail_open: bool = False
+    ai_mode_check_fail_open: bool = True
     ws_auto_reconnect_enabled: bool = True
     ws_reconnect_delay_sec: float = 5.0
     ws_reconnect_max_attempts: int = 0
@@ -271,8 +282,8 @@ config_base = {
         "manual_mode_send_notice": False,
         "buyer_burst_merge_gap_sec": 45,
         "buyer_burst_merge_max_parts": 40,
-        # LLM 压测约 30 并发无限流；应用侧留 2 路余量
-        "message_consumer_max_concurrent": 28,
+        # LLM 压测约 30 并发无限流；应用侧留余量，默认 16 路
+        "message_consumer_max_concurrent": 16,
         "ws_message_max_concurrent": 16,
         "ai_watchdog_enabled": True,
         "ai_watchdog_escalate_sec": 150,
@@ -404,6 +415,17 @@ config_base = {
             "亲，该订单当前状态暂不支持在线改地址，请回复「人工」为您处理~"
         ),
         "human_transfer_semantic_enabled": True,
+        "human_transfer_notice": "稍等下 这边上报一下呢亲亲",
+        "buyer_emotion_alert_enabled": True,
+        "buyer_emotion_escalate_threshold": 2,
+        "ai_pm_escalation_enabled": True,
+        "ai_max_tokens": 500,
+        "ai_temperature": 0.5,
+        "ai_fallback_to_human_on_unknown": False,
+        "ai_unknown_fallback_notice": (
+            "亲，我暂时还不清楚，您可以描述得更详细些，或者我帮您转人工客服？"
+        ),
+        "knowledge_retrieval_timeout_sec": 5.0,
         "unhandled_fallback_enabled": True,
         "unhandled_fallback_notice": (
             "亲，消息已收到，客服稍后会回复您；如需人工请回复「人工」。"
@@ -414,7 +436,7 @@ config_base = {
         ),
         "ai_mode_check_retries": 3,
         "ai_mode_check_retry_delay_sec": 0.12,
-        "ai_mode_check_fail_open": False,
+        "ai_mode_check_fail_open": True,
         "ws_auto_reconnect_enabled": True,
         "ws_reconnect_delay_sec": 5.0,
         "ws_reconnect_max_attempts": 0,

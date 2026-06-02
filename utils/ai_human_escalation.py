@@ -18,6 +18,9 @@ _PM_ESCALATION_PHRASES = (
     "稍后由产品经理",
     "产品同事确认",
     "跟产品确认",
+    "产品同事",
+    "产品那边",
+    "产品侧",
 )
 
 # 货损/质量/错发等售后投诉（不一定含「退货」字样）
@@ -62,6 +65,8 @@ def is_product_manager_escalation_reply(text: Optional[str]) -> bool:
     t = (text or "").strip()
     if not t:
         return False
+    if "产品经理" in t:
+        return True
     return any(p in t for p in _PM_ESCALATION_PHRASES)
 
 
@@ -77,14 +82,32 @@ def is_after_sales_complaint_context(
     return any(p in combined for p in _DAMAGE_COMPLAINT_PHRASES)
 
 
+def should_escalate_ai_pm_reply(ai_reply: Optional[str]) -> bool:
+    """AI 回复含产品经理跟进话术 → 需本地人工弹窗报告。"""
+    return is_product_manager_escalation_reply(ai_reply)
+
+
 def should_escalate_ai_pm_after_sales(
     buyer_text: Optional[str],
     ai_reply: Optional[str],
 ) -> bool:
-    """AI 已用产品经理话术安抚且属于售后/货损 → 需本地人工弹窗。"""
+    """兼容旧逻辑：售后场景 + 产品经理话术。"""
     if not is_product_manager_escalation_reply(ai_reply):
         return False
     return is_after_sales_complaint_context(buyer_text, ai_reply)
+
+
+def build_pm_escalation_summary(
+    buyer_text: Optional[str],
+    ai_reply: Optional[str],
+    *,
+    max_buyer: int = 2000,
+    max_ai: int = 800,
+) -> str:
+    """组装产品经理跟进弹窗摘要。"""
+    return build_after_sales_pm_summary(
+        buyer_text, ai_reply, max_buyer=max_buyer, max_ai=max_ai
+    )
 
 
 def build_after_sales_pm_summary(

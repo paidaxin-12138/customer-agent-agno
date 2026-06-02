@@ -8,6 +8,10 @@ from .base import BaseHandler
 from .channel_send import send_text_to_buyer, transfer_to_available_cs_async
 from database.db_manager import db_manager
 from utils.human_transfer_intent import detect_human_transfer_intent
+from utils.human_escalation_comfort import (
+    resolve_session_ids,
+    send_human_transfer_comfort,
+)
 from utils.logger_loguru import get_logger
 
 _DEFAULT_KEYWORDS = frozenset(
@@ -46,7 +50,7 @@ class KeywordDetectionHandler(BaseHandler):
             "转售后",
         }
     )
-    _HUMAN_TRANSFER_NOTICE = "稍等下 这边上报一下呢亲亲"
+    _HUMAN_TRANSFER_NOTICE = "稍等下 这边上报一下呢亲亲"  # 兼容旧引用；实际文案见 chat.human_transfer_notice
 
     def __init__(self):
         super().__init__("KeywordDetectionHandler")
@@ -118,31 +122,16 @@ class KeywordDetectionHandler(BaseHandler):
 
     async def handle(self, context: Context, metadata: Dict[str, Any]) -> bool:
         try:
-            shop_id = context.kwargs.shop_id
-            user_id = context.kwargs.user_id
-            from_uid = context.kwargs.from_uid
+            shop_id, user_id, from_uid = resolve_session_ids(context, metadata)
 
             wants_bus = False
             if context.type == ContextType.TEXT and isinstance(context.content, str):
                 wants_bus = self._wants_human_assist_bus(context.content)
 
-            if not all([shop_id, user_id, from_uid]):
-                if wants_bus:
-                    try:
-                        from core.human_assist_bus import emit_human_assist
-
-                        emit_human_assist(
-                            "keyword_human",
-                            context,
-                            metadata,
-                            context.content,
-                        )
-                    except Exception as e:
-                        self.logger.debug(f"emit_human_assist 跳过(无会话): {e}")
-                    return True
-                return False
-
             if wants_bus:
+                await send_human_transfer_comfort(
+                    context, metadata, reason="keyword_human"
+                )
                 try:
                     from core.human_assist_bus import emit_human_assist
 
@@ -154,14 +143,11 @@ class KeywordDetectionHandler(BaseHandler):
                     )
                 except Exception as e:
                     self.logger.debug(f"emit_human_assist 跳过: {e}")
-                await send_text_to_buyer(
-                    shop_id,
-                    user_id,
-                    from_uid,
-                    self._HUMAN_TRANSFER_NOTICE,
-                    context=context,
-                    metadata=metadata,
-                )
+                if not all([shop_id, user_id, from_uid]):
+                    return True
+
+            if not all([shop_id, user_id, from_uid]):
+                return False
 
             if await transfer_to_available_cs_async(shop_id, user_id, from_uid):
                 self.logger.info("会话已成功转接给其他客服")

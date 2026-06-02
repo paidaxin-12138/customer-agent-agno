@@ -117,6 +117,48 @@ def persist_customer_from_context(
     )
 
 
+def persist_platform_civility_from_context(
+    channel_name: str,
+    platform_shop_id: str,
+    seller_user_id: str,
+    login_username: str,
+    buyer_uid: str,
+    buyer_nickname: str,
+    preview: str,
+    message_id: Optional[str],
+    ts: float,
+) -> None:
+    """平台自动文明提示：sender_type=system，不计为有效出站回复。"""
+    from database.db_manager import db_manager
+
+    acc = db_manager.get_account(channel_name, platform_shop_id, seller_user_id)
+    if not acc or not acc.get("id"):
+        return
+    account_id = int(acc["id"])
+    sid = db_manager.get_or_create_chat_session(
+        account_id=account_id,
+        platform_shop_id=platform_shop_id,
+        account_name=login_username,
+        buyer_uid=buyer_uid,
+        buyer_nickname=buyer_nickname or "买家",
+    )
+    sent = naive_shanghai_from_unix_ts(ts) if ts else shanghai_naive_now()
+    mid = message_id if message_id else None
+    if mid == "":
+        mid = None
+    db_manager.add_chat_message(
+        session_id=sid,
+        account_id=account_id,
+        sender_type="system",
+        content=preview or "",
+        message_id=mid,
+        content_type="text",
+        image_url=None,
+        increment_unread=False,
+        sent_at=sent,
+    )
+
+
 def persist_seller_mall_cs_from_context(
     channel_name: str,
     platform_shop_id: str,
@@ -130,6 +172,21 @@ def persist_seller_mall_cs_from_context(
     ts: float,
 ) -> None:
     """手机端 / 其他客户端以 mall_cs 身份发送的消息，写入 human 侧记录。"""
+    from utils.platform_system_msg import is_platform_civility_message
+
+    if is_platform_civility_message(context):
+        persist_platform_civility_from_context(
+            channel_name,
+            platform_shop_id,
+            seller_user_id,
+            login_username,
+            buyer_uid,
+            buyer_nickname,
+            preview,
+            message_id,
+            ts,
+        )
+        return
     from database.db_manager import db_manager
 
     acc = db_manager.get_account(channel_name, platform_shop_id, seller_user_id)

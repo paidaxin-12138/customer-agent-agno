@@ -854,10 +854,10 @@ class PDDChannel(Channel):
                 except Exception as e:
                     self.logger.warning(f"重新创建队列失败: {queue_name}, {e}")
 
-            # 创建新的消费者（默认 28，相对 API 上限 30 留 2 路余量，见 chat.message_consumer_max_concurrent）
+            # 创建新的消费者（默认 16，相对 API 上限留余量，见 chat.message_consumer_max_concurrent）
             from config import get_config
 
-            max_ai = int(get_config("chat.message_consumer_max_concurrent", 28) or 28)
+            max_ai = int(get_config("chat.message_consumer_max_concurrent", 16) or 16)
             max_ai = max(1, min(max_ai, 50))
             consumer = message_consumer_manager.create_consumer(
                 queue_name, max_concurrent=max_ai
@@ -915,6 +915,19 @@ class PDDChannel(Channel):
                 return
 
             if context:
+                from utils.platform_system_msg import (
+                    is_platform_civility_message,
+                    mark_platform_civility_context,
+                )
+
+                if is_platform_civility_message(context):
+                    mark_platform_civility_context(context)
+                    self.logger.info(
+                        "平台文明用语系统消息，不标记会话已回复: type={} content={!r}",
+                        context.type,
+                        context.content,
+                    )
+
                 try:
                     from core.human_assist_bus import (
                         emit_buyer_conversation_ended,
@@ -938,9 +951,14 @@ class PDDChannel(Channel):
                 try:
                     from ui.conversation_hub import get_conversation_hub
 
-                    get_conversation_hub().record_from_context(
-                        self.channel_name, shop_id, user_id, username, context
-                    )
+                    if not is_platform_civility_message(context):
+                        get_conversation_hub().record_from_context(
+                            self.channel_name, shop_id, user_id, username, context
+                        )
+                    else:
+                        get_conversation_hub().record_platform_civility_from_context(
+                            self.channel_name, shop_id, user_id, username, context
+                        )
                 except Exception as hub_err:
                     self.logger.debug(f"会话列表登记跳过: {hub_err}")
 
@@ -1108,6 +1126,11 @@ class PDDChannel(Channel):
         send_message: Any,
     ) -> None:
         """本店客服消息；解析 type=19 快捷退款卡下行（含是否已过期）。"""
+        from utils.platform_system_msg import is_platform_civility_message
+
+        if is_platform_civility_message(context):
+            self.logger.info("忽略平台文明用语 mall_cs 消息: {!r}", context.content)
+            return
         payload = _context_struct_payload(context)
         if payload.get("event") != "ask_refund_card_push":
             if context.content:
@@ -1210,6 +1233,11 @@ class PDDChannel(Channel):
         send_message: Any,
     ) -> None:
         """商城系统消息：快捷退款卡过期/确认等平台侧通知。"""
+        from utils.platform_system_msg import is_platform_civility_message
+
+        if is_platform_civility_message(context):
+            self.logger.info("忽略平台文明用语 mall_system_msg: {!r}", context.content)
+            return
         payload = _context_struct_payload(context)
         event = payload.get("event")
         if event == "refund_card_confirmed":

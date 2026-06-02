@@ -236,7 +236,13 @@ class AddressChangeHandler(BaseHandler):
 
         try:
             from core.human_assist_bus import emit_human_assist
+            from utils.human_escalation_comfort import send_human_transfer_comfort
 
+            await send_human_transfer_comfort(
+                context,
+                metadata,
+                reason="order_address_change",
+            )
             emit_human_assist(
                 "order_address_change",
                 context,

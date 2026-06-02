@@ -12,8 +12,12 @@ from .base import BaseHandler
 from .preprocessor import MessagePreprocessor
 from Agent.bot import Bot
 from config import config
-from utils.llm_errors import is_transient_llm_transport_error
-from utils.human_transfer_intent import detect_human_transfer_intent
+from utils.llm_errors import (
+    get_ai_unknown_fallback_notice,
+    is_transient_llm_transport_error,
+    sanitize_ai_reply_content,
+)
+from utils.human_transfer_intent import has_explicit_transfer_intent
 
 from Message.ai_queue_load import get_ai_queue_tracker
 from Message.handlers.ai_reply_watchdog import (
@@ -111,6 +115,86 @@ class AIReplyHandler(BaseHandler):
             return "product_spec"
         return "general"
 
+    def _should_escalate_to_human(self, text: str) -> bool:
+        return has_explicit_transfer_intent(text)
+
+    async def _handle_unknown_ai_failure(
+        self,
+        context: Context,
+        metadata: Dict[str, Any],
+        question: str,
+        session_key: Optional[str],
+        epoch: int,
+        reason: str,
+    ) -> bool:
+        """无法回答时发送兜底话术；仅买家明确要求转人工/找经理时才弹窗转人工。"""
+        q = (question or str(context.content or "")).strip()
+        if self._should_escalate_to_human(q):
+            return await self._escalate_immediate(
+                context, metadata, q, session_key, epoch, reason
+            )
+        if bool(config.get("chat.ai_fallback_to_human_on_unknown", False)):
+            return await self._escalate_immediate(
+                context, metadata, q, session_key, epoch, reason
+            )
+        notice = get_ai_unknown_fallback_notice()
+        ok = await self._send_reply(context, notice, metadata)
+        if ok:
+            self._stats["ai_fallback"] += 1
+            await self.log_message(context, "AI未知兜底", notice[:80])
+        else:
+            return await self._escalate_immediate(
+                context, metadata, q, session_key, epoch, reason
+            )
+        return True
+
+    def _resolve_effective_buyer_query(
+        self,
+        context: Context,
+        metadata: Dict[str, Any],
+        processed_content: str,
+    ) -> str:
+        from utils.platform_system_msg import is_marked_platform_civility
+        from utils.unreplied_buyer_messages import build_unreplied_buyer_query_for_ai
+
+        raw = str(context.content or "")
+        base = (processed_content or raw).strip()
+        if is_marked_platform_civility(context):
+            self.logger.info("跳过平台文明用语提示，合并未回复买家消息")
+            base = ""
+        try:
+            max_scan = int(config.get("chat.unreplied_buyer_scan_count", 5) or 5)
+            max_parts = int(config.get("chat.unreplied_buyer_max_parts", 3) or 3)
+            max_chars = int(config.get("chat.unreplied_buyer_max_chars", 2000) or 2000)
+        except (TypeError, ValueError):
+            max_scan, max_parts, max_chars = 5, 3, 2000
+        merged = build_unreplied_buyer_query_for_ai(
+            base,
+            context,
+            metadata,
+            max_scan=max(1, min(max_scan, 10)),
+            max_parts=max(1, min(max_parts, 5)),
+            max_chars=max(200, min(max_chars, 4000)),
+        )
+        if merged:
+            return merged
+        if base:
+            return base
+        try:
+            from utils.buyer_burst_merge import build_merged_buyer_query_for_ai
+
+            gap = float(config.get("chat.buyer_burst_merge_gap_sec", 45) or 45)
+            max_burst = int(config.get("chat.buyer_burst_merge_max_parts", 40) or 40)
+            return build_merged_buyer_query_for_ai(
+                raw,
+                context,
+                metadata,
+                gap_seconds=gap,
+                max_parts=max(4, min(max_burst, 80)),
+            )
+        except Exception:
+            return raw
+
     def _get_session_key(self, context: Context, metadata: Dict[str, Any]) -> Optional[str]:
         return resolve_session_key(context, metadata)
 
@@ -187,31 +271,23 @@ class AIReplyHandler(BaseHandler):
                 return True
 
             processed_content = self.preprocessor.process(context.content, context.type)
-            try:
-                from utils.buyer_burst_merge import build_merged_buyer_query_for_ai
-
-                gap = float(config.get("chat.buyer_burst_merge_gap_sec", 45) or 45)
-                max_parts = int(config.get("chat.buyer_burst_merge_max_parts", 40) or 40)
-                max_parts = max(4, min(max_parts, 80))
-                raw_pc = processed_content
-                processed_content = build_merged_buyer_query_for_ai(
-                    processed_content,
-                    context,
-                    metadata,
-                    gap_seconds=gap,
-                    max_parts=max_parts,
-                )
-            except Exception as e:
-                self.logger.debug("买家连发合并跳过: {}", e)
+            processed_content = self._resolve_effective_buyer_query(
+                context, metadata, processed_content
+            )
 
             session_key = self._get_session_key(context, metadata)
             raw_buyer_text = str(context.content or "")
 
             if bool(config.get("chat.human_transfer_semantic_enabled", True)) and (
-                detect_human_transfer_intent(raw_buyer_text)
-                or detect_human_transfer_intent(processed_content)
+                self._should_escalate_to_human(raw_buyer_text)
+                or self._should_escalate_to_human(processed_content)
             ):
                 self.logger.info("AI 兜底识别转人工意图: {!r}", raw_buyer_text)
+                from utils.human_escalation_comfort import send_human_transfer_comfort
+
+                await send_human_transfer_comfort(
+                    context, metadata, reason="keyword_human"
+                )
                 try:
                     from core.human_assist_bus import emit_human_assist
 
@@ -223,10 +299,6 @@ class AIReplyHandler(BaseHandler):
                     )
                 except Exception as e:
                     self.logger.debug(f"emit_human_assist(keyword_human): {e}")
-                notice = "稍等下 这边上报一下呢亲亲"
-                ok = await self._send_reply(context, notice, metadata)
-                if ok:
-                    notify_outbound_reply(context, metadata)
                 return True
 
             try:
@@ -266,9 +338,11 @@ class AIReplyHandler(BaseHandler):
                 return True
 
             if self._is_invalid_ai_content(reply):
-                return await self._escalate_immediate(
+                return await self._handle_unknown_ai_failure(
                     context, metadata, processed_content, session_key, epoch, "ai_failed"
                 )
+
+            reply = sanitize_ai_reply_content(reply)
 
             success = await self._send_reply(context, reply, metadata)
             if success:
@@ -291,12 +365,12 @@ class AIReplyHandler(BaseHandler):
                     self.logger.debug(f"ops telemetry finish: {e}")
                 self._stats["ai_ok"] += 1
                 await self.log_message(context, "AI回复发送成功", f"回复: {reply[:120]}...")
-                await self._maybe_escalate_after_sales_pm_reply(
+                await self._maybe_escalate_pm_reply(
                     context, metadata, processed_content, reply
                 )
             else:
                 self._stats["send_fail"] += 1
-                return await self._escalate_immediate(
+                return await self._handle_unknown_ai_failure(
                     context, metadata, processed_content, session_key, epoch, "ai_failed"
                 )
 
@@ -308,30 +382,35 @@ class AIReplyHandler(BaseHandler):
         except Exception as e:
             self.logger.error(f"AI回复处理失败: {e}")
             q = str(context.content or "")
-            return await self._escalate_immediate(
+            return await self._handle_unknown_ai_failure(
                 context, metadata, q, session_key, epoch, "ai_failed"
             )
 
-    async def _maybe_escalate_after_sales_pm_reply(
+    async def _maybe_escalate_pm_reply(
         self,
         context: Context,
         metadata: Dict[str, Any],
         buyer_text: str,
         ai_reply: str,
     ) -> None:
-        """AI 对售后/货损问题回复「问产品经理」时，弹窗通知人工并附摘要。"""
-        if not bool(config.get("chat.ai_pm_after_sales_escalation_enabled", True)):
+        """AI 回复含「产品经理」跟进话术时，弹窗通知人工并附摘要。"""
+        if not bool(config.get("chat.ai_pm_escalation_enabled", True)):
+            self.logger.debug("产品经理跟进弹窗已关闭 (chat.ai_pm_escalation_enabled=false)")
             return
         try:
             from utils.ai_human_escalation import (
-                build_after_sales_pm_summary,
-                should_escalate_ai_pm_after_sales,
+                build_pm_escalation_summary,
+                should_escalate_ai_pm_reply,
             )
             from core.human_assist_bus import emit_human_assist
 
-            if not should_escalate_ai_pm_after_sales(buyer_text, ai_reply):
+            if not should_escalate_ai_pm_reply(ai_reply):
                 return
-            summary = build_after_sales_pm_summary(buyer_text, ai_reply)
+            summary = build_pm_escalation_summary(buyer_text, ai_reply)
+            self.logger.info(
+                "AI 回复含产品经理跟进话术，触发人工报告: {}",
+                ai_reply[:80],
+            )
             emit_human_assist(
                 "ai_after_sales_pm",
                 context,
@@ -340,11 +419,11 @@ class AIReplyHandler(BaseHandler):
             )
             await self.log_message(
                 context,
-                "售后转人工弹窗",
+                "产品经理跟进弹窗",
                 summary[:120],
             )
         except Exception as e:
-            self.logger.debug(f"售后产品经理转人工弹窗跳过: {e}")
+            self.logger.warning(f"产品经理跟进弹窗失败: {e}", exc_info=True)
 
     async def _escalate_immediate(
         self,

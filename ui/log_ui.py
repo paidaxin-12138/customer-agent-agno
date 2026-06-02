@@ -14,7 +14,8 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QAbstractTableModel, Q
 from PyQt6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QWidget,
                             QTextEdit, QMessageBox, QSplitter,
                             QTableView, QHeaderView, QApplication,
-                            QStyledItemDelegate, QStyleOptionViewItem)
+                            QStyledItemDelegate, QStyleOptionViewItem,
+                            QFileDialog)
 from PyQt6.QtGui import QFont, QTextCursor, QColor, QTextCharFormat, QBrush, QPainter
 from qfluentwidgets import (CardWidget, SubtitleLabel, CaptionLabel, BodyLabel,
                            PushButton, StrongBodyLabel,
@@ -250,6 +251,10 @@ class LogModel(QAbstractTableModel):
         self._logs.clear()
         self._filtered_logs.clear()
         self.layoutChanged.emit()
+
+    def filtered_items(self) -> List[LogItem]:
+        """当前筛选后可见的日志项（用于导出）。"""
+        return list(self._filtered_logs)
 
 
 class LogTableDelegate(QStyledItemDelegate):
@@ -494,6 +499,7 @@ class LogControlWidget(CardWidget):
     """日志控制组件"""
 
     clear_logs = pyqtSignal()
+    export_logs = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -510,15 +516,25 @@ class LogControlWidget(CardWidget):
         title_label = StrongBodyLabel("日志控制")
         layout.addWidget(title_label)
 
-        # 清空按钮
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+
+        self.export_btn = PushButton("导出")
+        self.export_btn.setIcon(FIF.SAVE)
+        self.export_btn.setFixedSize(120, 40)
+        btn_row.addWidget(self.export_btn)
+
         self.clear_btn = PushButton("清空")
         self.clear_btn.setIcon(FIF.DELETE)
         self.clear_btn.setFixedSize(120, 40)
-        layout.addWidget(self.clear_btn)
+        btn_row.addWidget(self.clear_btn)
+
+        layout.addLayout(btn_row)
 
     def connectSignals(self):
         """连接信号"""
         self.clear_btn.clicked.connect(self.clear_logs.emit)
+        self.export_btn.clicked.connect(self.export_logs.emit)
 
 
 class LogUI(QFrame):
@@ -614,6 +630,7 @@ class LogUI(QFrame):
         # 日志信号已在setupLogHandler中连接
         self.filter_widget.filter_changed.connect(self.apply_filter)
         self.control_widget.clear_logs.connect(self.clear_logs)
+        self.control_widget.export_logs.connect(self.export_logs)
     
     def handle_log_received(self, level: str, message: str, record):
         """处理接收到的日志"""
@@ -636,7 +653,6 @@ class LogUI(QFrame):
             cancel_text="取消",
             destructive=True,
         ):
-            self.log_records.clear()
             self.log_display.clear_all()
             InfoBar.success(
                 title="清空成功",
@@ -646,6 +662,78 @@ class LogUI(QFrame):
                 position=InfoBarPosition.TOP,
                 duration=2000,
                 parent=self
+            )
+
+    def export_logs(self):
+        """导出当前筛选后的日志到文件。"""
+        model = self.log_display.log_table.model()
+        items = model.filtered_items() if isinstance(model, LogModel) else []
+        if not items:
+            InfoBar.warning(
+                title="无日志可导出",
+                content="当前没有可导出的日志记录",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=2500,
+                parent=self,
+            )
+            return
+
+        default_name = f"customer_agent_logs_{datetime.now():%Y%m%d_%H%M%S}.txt"
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "导出日志",
+            default_name,
+            "文本文件 (*.txt);;CSV 文件 (*.csv)",
+        )
+        if not file_path:
+            return
+
+        try:
+            if file_path.lower().endswith(".csv") or "csv" in (selected_filter or "").lower():
+                import csv
+
+                with open(file_path, "w", encoding="utf-8-sig", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["时间", "级别", "模块", "文件", "消息"])
+                    for item in items:
+                        writer.writerow(
+                            [
+                                item.timestamp,
+                                item.level,
+                                item.module,
+                                item.file_info,
+                                item.message,
+                            ]
+                        )
+            else:
+                if not file_path.lower().endswith(".txt"):
+                    file_path = f"{file_path}.txt"
+                with open(file_path, "w", encoding="utf-8") as f:
+                    for item in items:
+                        f.write(item.formatted_text)
+                        f.write("\n")
+
+            InfoBar.success(
+                title="导出成功",
+                content=f"已导出 {len(items)} 条日志",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=2500,
+                parent=self,
+            )
+        except OSError as e:
+            self.logger.error("日志导出失败: {}", e)
+            InfoBar.error(
+                title="导出失败",
+                content=str(e),
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3500,
+                parent=self,
             )
     
     

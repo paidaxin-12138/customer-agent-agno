@@ -204,6 +204,53 @@ class ConversationHub(QObject):
 
         run_on_main_thread(_do)
 
+    def record_platform_civility_from_context(
+        self,
+        channel_name: str,
+        shop_id: str,
+        user_id: str,
+        username: str,
+        context: Context,
+    ) -> None:
+        """平台文明用语提示：写入 system 侧记录，不计为商家已回复。"""
+        peer_uid, nickname = parse_peer_from_context(context)
+        if not peer_uid:
+            return
+        account_key = make_account_key(channel_name, shop_id, username)
+        raw_preview = _preview_text(context.content)
+        ts = time.time()
+        if context.kwargs.timestamp is not None:
+            try:
+                ts = float(context.kwargs.timestamp) / 1000.0
+            except (TypeError, ValueError):
+                _hub_log.debug("解析消息时间戳失败，使用当前时间")
+        try:
+            from database.chat_persist import persist_platform_civility_from_context
+
+            persist_platform_civility_from_context(
+                channel_name,
+                shop_id,
+                user_id,
+                username,
+                peer_uid,
+                nickname or "买家",
+                raw_preview,
+                getattr(context.kwargs, "msg_id", None),
+                ts,
+            )
+        except Exception as e:
+            _hub_log.warning("persist platform civility 失败: {}", e)
+        with self._lock:
+            acc = self._by_account.setdefault(account_key, {})
+            st = acc.get(peer_uid)
+            if st is None:
+                st = _ConvState(nickname=nickname or "买家")
+                acc[peer_uid] = st
+            st.preview = raw_preview or st.preview
+            st.updated_at = time.time()
+            st.messages.append(("system", raw_preview, ts))
+        self._emit_hub_updates(account_key, peer_uid, "system", raw_preview, ts)
+
     def record_manual_sent(
         self,
         channel_name: str,

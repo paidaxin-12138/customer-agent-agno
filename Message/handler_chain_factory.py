@@ -11,6 +11,7 @@ _cached_address_change_handler = None
 _cached_order_logistics_handler = None
 _cached_image_video_handler = None
 _cached_after_sales_apply_handler = None
+_cached_buyer_emotion_handler = None
 
 
 def _get_image_video_handler():
@@ -57,6 +58,23 @@ def _get_order_logistics_handler():
 
             get_logger("handler_chain").warning(f"OrderLogisticsHandler 导入失败: {e}")
     return _cached_order_logistics_handler
+
+
+def _get_buyer_emotion_handler():
+    """买家情绪波动 → 预警弹窗 / 达阈值转人工。"""
+    global _cached_buyer_emotion_handler
+    if _cached_buyer_emotion_handler is None:
+        try:
+            from .handlers.buyer_emotion_handler import BuyerEmotionHandler
+
+            _cached_buyer_emotion_handler = BuyerEmotionHandler()
+        except ImportError as e:
+            from utils.logger_loguru import get_logger
+
+            get_logger("handler_chain").warning(
+                f"BuyerEmotionHandler 导入失败: {e}"
+            )
+    return _cached_buyer_emotion_handler
 
 
 def _get_after_sales_apply_handler():
@@ -121,6 +139,10 @@ def handler_chain(use_ai=True, businessHours=None, bot=None):
     as_handler = _get_after_sales_apply_handler()
     if as_handler is not None:
         handlers.append(as_handler)
+
+    emotion_handler = _get_buyer_emotion_handler()
+    if emotion_handler is not None:
+        handlers.append(emotion_handler)
 
     keyword_handler = _get_keyword_handler()
     if keyword_handler is not None:

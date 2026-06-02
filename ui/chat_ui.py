@@ -5,11 +5,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+import time
 from typing import Any, Dict, List, Optional
 
-from PyQt6.QtCore import QEvent, Qt, QThread, pyqtSignal, QTimer, QSize
+from PyQt6.QtCore import QEvent, QEventLoop, Qt, QThread, pyqtSignal, QTimer, QSize
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -30,6 +32,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QPushButton,
     QScrollArea,
+    QProgressBar,
 )
 
 from qfluentwidgets import (
@@ -49,6 +52,7 @@ from database.chat_persist import set_active_chat_session
 from ui.conversation_hub import get_conversation_hub, make_account_key
 from ui.widgets.account_group_list import AccountGroupList
 from ui.widgets.chat_bubble_widgets import (
+    ChatMessageBubbleWidget,
     make_chat_message_widget,
     reflow_message_widgets,
 )
@@ -57,6 +61,9 @@ from utils.logger_loguru import get_logger
 
 # 人工协助会话打开时一次性载入历史条数上限
 _CHAT_HISTORY_LIMIT = 100_000
+_MSG_RENDER_BATCH = 4
+_MSG_RENDER_INTERVAL_MS = 60
+_MSG_LOADING_MIN_MS = 1500
 
 # 与 apple_ui_tokens / Apple 深色规范一致（聊天区 HTML 与顶栏）
 _C_BG = UI.BG_PRIMARY
@@ -68,6 +75,7 @@ _C_TEXT = UI.TEXT_PRIMARY
 _C_MUTED = UI.TEXT_SECONDARY
 _C_DIM = UI.TEXT_TERTIARY
 _C_ACCENT = UI.ACCENT
+_C_LOADING = "#7A909F"  # 加载态：比主 accent 更柔和的蓝灰
 _C_GREEN = UI.SUCCESS
 _C_AI_BUBBLE = "#1D2D46"
 _C_MSG_BODY = "#E6EAF2"
@@ -450,6 +458,42 @@ class ChatLiveWidget(QFrame):
         self._reflow_timer = QTimer(self)
         self._reflow_timer.setSingleShot(True)
         self._reflow_timer.timeout.connect(self._reflow_message_list)
+
+    def _layout_alive(self, layout: Any) -> bool:
+        if layout is None:
+            return False
+        try:
+            layout.count()
+            return True
+        except RuntimeError:
+            return False
+
+    def _ensure_message_area(self) -> bool:
+        scroll = getattr(self, "msg_scroll", None)
+        if scroll is None:
+            return False
+        container = getattr(self, "msg_container", None)
+        layout = getattr(self, "msg_layout", None)
+        try:
+            ok = (
+                container is not None
+                and self._layout_alive(layout)
+                and scroll.widget() is container
+            )
+        except RuntimeError:
+            ok = False
+        if ok:
+            return True
+        self.logger.warning("消息区 layout 失效，正在重建")
+        self.msg_container = QWidget()
+        self.msg_container.setObjectName("LiveChatMsgList")
+        self.msg_container.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.msg_container.setAutoFillBackground(False)
+        self.msg_layout = QVBoxLayout(self.msg_container)
+        self.msg_layout.setContentsMargins(0, 8, 0, 8)
+        self.msg_layout.setSpacing(6)
+        scroll.setWidget(self.msg_container)
+        return True
 
     def _message_area_width(self) -> int:
         if getattr(self, "msg_scroll", None):
@@ -852,6 +896,29 @@ class ChatLiveWidget(QFrame):
 
         tb.addLayout(info, 0)
         tb.addLayout(actions_row, 0)
+        self._msg_loading_bar = QProgressBar()
+        self._msg_loading_bar.setObjectName("LiveChatLoadingBar")
+        self._msg_loading_bar.setFixedHeight(3)
+        self._msg_loading_bar.setTextVisible(False)
+        self._msg_loading_bar.setRange(0, 100)
+        self._msg_loading_bar.setValue(0)
+        self._msg_loading_bar.hide()
+        self._msg_loading_bar.setStyleSheet(
+            f"""
+            QProgressBar#LiveChatLoadingBar {{
+                background-color: rgba(255, 255, 255, 0.06);
+                border: none;
+                border-radius: 2px;
+                max-height: 3px;
+                min-height: 3px;
+            }}
+            QProgressBar#LiveChatLoadingBar::chunk {{
+                background-color: {_C_LOADING};
+                border-radius: 2px;
+            }}
+            """
+        )
+        tb.addWidget(self._msg_loading_bar)
         rv.addWidget(top_bar)
 
         self.msg_scroll = ScrollArea()
@@ -873,6 +940,26 @@ class ChatLiveWidget(QFrame):
         self.msg_layout.setContentsMargins(0, 8, 0, 8)
         self.msg_layout.setSpacing(6)
         self.msg_scroll.setWidget(self.msg_container)
+
+        self._msg_area = QWidget()
+        self._msg_area.setObjectName("LiveChatMsgArea")
+        msg_area_lay = QVBoxLayout(self._msg_area)
+        msg_area_lay.setContentsMargins(0, 0, 0, 0)
+        msg_area_lay.setSpacing(0)
+
+        msg_area_lay.addWidget(self.msg_scroll, 1)
+
+        self._msg_render_job: Optional[Dict[str, Any]] = None
+        self._render_token = 0
+        self._render_in_progress = False
+        self._msg_loading_started_at = 0.0
+        self._msg_loading_hide_not_before = 0.0
+        self._msg_render_pending = False
+        self._pending_after_render_refresh = False
+        self._msg_load_notify = False
+        self._msg_loading_total = 0
+        self._msg_last_loaded_id = 0
+        self._msg_last_loaded_session_id: Optional[int] = None
 
         input_area = QFrame()
         input_area.setObjectName("LiveChatInputArea")
@@ -958,7 +1045,7 @@ class ChatLiveWidget(QFrame):
         ia.addWidget(qr_scroll)
         ia.addWidget(tools_wrap)
         ia.addLayout(inp_send_row)
-        rv.addWidget(self.msg_scroll, 1)
+        rv.addWidget(self._msg_area, 1)
         rv.addWidget(input_area)
 
         split.addWidget(self.account_list)
@@ -1257,6 +1344,14 @@ class ChatLiveWidget(QFrame):
         )
         if key != account_key or str(customer_uid) != str(self._current.get("buyer_uid")):
             return
+        if getattr(self, "_msg_render_job", None):
+            self._msg_render_pending = True
+            return
+        if self._is_message_loading_visible():
+            self._msg_render_pending = True
+            return
+        if self._sync_incremental_messages():
+            return
         self._render_messages_from_db()
 
     def _on_account_filter(self, account_id):
@@ -1302,6 +1397,16 @@ class ChatLiveWidget(QFrame):
         return q in nick or q in prev or q in buid
 
     def _refresh_session_trees(self):
+        keep_sid: Optional[int] = None
+        keep_aid: Optional[int] = None
+        if self._current:
+            try:
+                keep_sid = int(self._current.get("session_id", 0))
+                keep_aid = int(self._current.get("account", {}).get("id", 0))
+            except (TypeError, ValueError):
+                keep_sid = None
+                keep_aid = None
+        restore_item: Optional[QTreeWidgetItem] = None
         self.session_tree.clear()
         accounts = (
             [a for a in self._accounts if a["id"] == self._filter_account_id]
@@ -1342,7 +1447,18 @@ class ChatLiveWidget(QFrame):
                     {"type": "session", "session": s, "account": acc},
                 )
                 parent.addChild(child)
+                if (
+                    restore_item is None
+                    and keep_sid is not None
+                    and keep_aid is not None
+                    and int(s["id"]) == keep_sid
+                    and int(acc["id"]) == keep_aid
+                ):
+                    restore_item = child
             parent.setExpanded(True)
+        if restore_item is not None:
+            self.session_tree.setCurrentItem(restore_item)
+            self.session_tree.scrollToItem(restore_item)
 
     def apply_human_escalation(self, payload: dict) -> None:
         """弹窗后跳转：聚焦接待账号与买家，并载入库内全部聊天记录。"""
@@ -1380,6 +1496,7 @@ class ChatLiveWidget(QFrame):
         self._update_header_visuals()
         self._set_chat_enabled(True)
         self._rebuild_quick_replies(aid)
+        self._msg_load_notify = True
         self._render_messages_from_db()
         self._select_tree_session_for_buyer(aid, str(payload["buyer_uid"]))
         try:
@@ -1442,11 +1559,15 @@ class ChatLiveWidget(QFrame):
             # 同时显示 InfoBar 通知（作为额外提醒）
             bar_title = "🔔 买家申请转人工"
             if reason == "ai_after_sales_pm":
-                bar_title = "🔔 售后问题需人工处理"
+                bar_title = "🔔 AI 回复需产品经理跟进"
             elif reason == "after_sales_policy":
                 bar_title = "🔔 售后需人工处理"
             elif reason == "order_address_change":
                 bar_title = "🔔 买家申请改地址"
+            elif reason == "buyer_emotion_alert":
+                bar_title = "⚠️ 买家情绪波动预警"
+            elif reason == "buyer_emotion_escalate":
+                bar_title = "⚠️ 买家情绪波动（已转人工）"
             InfoBar.warning(
                 title=bar_title,
                 content=f"买家：{buyer_nickname}\n问题：{question[:50]}",
@@ -1699,8 +1820,13 @@ class ChatLiveWidget(QFrame):
         if fresh:
             s = fresh
         acc = data["account"]
+        session_id = int(s["id"])
+        was_same_session = (
+            self._current is not None
+            and int(self._current.get("session_id", 0)) == session_id
+        )
         # 切换到其它买家前，若当前会话在人工模式则自动切回 AI
-        if self._current and int(self._current.get("session_id", 0)) != int(s["id"]):
+        if self._current and not was_same_session:
             self._restore_ai_for_current_if_manual()
         self._current = {
             "session_id": s["id"],
@@ -1710,28 +1836,63 @@ class ChatLiveWidget(QFrame):
             "ai_mode": s.get("ai_mode", True),
         }
         set_active_chat_session(int(acc["id"]), str(s["buyer_uid"]))
-        db_manager.mark_chat_messages_read(int(s["id"]))
+        db_manager.mark_chat_messages_read(session_id)
         self._update_header_visuals()
         if not self._current.get("ai_mode", True):
             self._reset_input_activity_timer()
         self._set_chat_enabled(True)
-        self._rebuild_quick_replies(int(acc["id"]))
+        if not was_same_session:
+            self._rebuild_quick_replies(int(acc["id"]))
+        if (
+            was_same_session
+            and not getattr(self, "_render_in_progress", False)
+            and self._message_widget_count() > 0
+        ):
+            try:
+                self._hub.total_unread_changed.emit(db_manager.get_total_unread_chat())
+            except Exception as e:
+                self.logger.debug("total_unread_changed emit (session reselect): {}", e)
+            return
+        self._msg_load_notify = True
+        self._show_message_loading_early()
+        self._pending_after_render_refresh = True
         self._render_messages_from_db()
-        self.account_list.reload(self._filter_account_id)
-        self._refresh_session_trees()
         try:
             self._hub.total_unread_changed.emit(db_manager.get_total_unread_chat())
         except Exception as e:
             self.logger.debug("total_unread_changed emit (session click): {}", e)
 
-    def _clear_messages(self) -> None:
-        if not getattr(self, "msg_layout", None):
+    def _flush_after_render_refresh(self) -> None:
+        if not getattr(self, "_pending_after_render_refresh", False):
             return
+        self._pending_after_render_refresh = False
+        self.account_list.reload(self._filter_account_id)
+        self._refresh_session_trees()
+
+    def _clear_messages(self) -> None:
+        if not self._ensure_message_area():
+            return
+        pending: List[QWidget] = []
         while self.msg_layout.count():
             item = self.msg_layout.takeAt(0)
             w = item.widget()
             if w is not None:
-                w.deleteLater()
+                pending.append(w)
+        for w in pending:
+            w.hide()
+            w.setParent(None)
+            w.deleteLater()
+        for child in list(self.msg_container.children()):
+            if isinstance(child, ChatMessageBubbleWidget):
+                child.hide()
+                child.setParent(None)
+                child.deleteLater()
+        self.msg_container.setMinimumHeight(0)
+        self._msg_last_loaded_id = 0
+        self._msg_last_loaded_session_id = None
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
 
     def _scroll_messages_to_bottom(self) -> None:
         if not getattr(self, "msg_scroll", None):
@@ -1739,28 +1900,313 @@ class ChatLiveWidget(QFrame):
         bar = self.msg_scroll.verticalScrollBar()
         bar.setValue(bar.maximum())
 
+    def _cancel_message_render(self) -> None:
+        self._render_token += 1
+        self._msg_render_job = None
+
+    def _is_message_loading_visible(self) -> bool:
+        bar = getattr(self, "_msg_loading_bar", None)
+        return bar is not None and bar.isVisible()
+
+    def _show_message_loading_early(self) -> None:
+        """切换会话后立即显示加载条（不等待数据库查询）。"""
+        now = time.monotonic()
+        self._msg_loading_started_at = now
+        self._msg_loading_hide_not_before = now + (_MSG_LOADING_MIN_MS / 1000.0)
+        bar = getattr(self, "_msg_loading_bar", None)
+        if bar is not None:
+            bar.setRange(0, 0)
+            bar.show()
+        if self._current:
+            self.chat_sub.setText("正在加载聊天记录…")
+            self.chat_sub.setStyleSheet(
+                f"color: {_C_LOADING}; font-size: 12px; font-weight: 500;"
+            )
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+
+    def _apply_loading_progress(self, current: int, total: int) -> None:
+        total = max(1, int(total))
+        current = min(max(0, int(current)), total)
+        bar = getattr(self, "_msg_loading_bar", None)
+        if bar is not None:
+            bar.setRange(0, total)
+            bar.setValue(current)
+        pct = int(current * 100 / total) if total else 0
+        if hasattr(self, "chat_sub") and self._current:
+            self.chat_sub.setText(f"加载中 {pct}% · {current}/{total}")
+            self.chat_sub.setStyleSheet(
+                f"color: {_C_LOADING}; font-size: 12px; font-weight: 500;"
+            )
+
+    def _show_message_loading(self, total: int) -> None:
+        total = max(1, int(total))
+        self._msg_loading_total = total
+        self._msg_loading_started_at = time.monotonic()
+        self._apply_loading_progress(0, total)
+        bar = getattr(self, "_msg_loading_bar", None)
+        if bar is not None:
+            bar.show()
+        self.logger.info("消息加载 UI 显示: total={}", total)
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+
+    def _update_message_loading_progress(self, current: int, total: int) -> None:
+        self._apply_loading_progress(current, total)
+        bar = getattr(self, "_msg_loading_bar", None)
+        if bar is not None and not bar.isVisible():
+            bar.show()
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+
+    def _hide_message_loading(self) -> None:
+        not_before = getattr(self, "_msg_loading_hide_not_before", 0.0)
+        remain = not_before - time.monotonic()
+        if remain > 0.05:
+            QTimer.singleShot(int(remain * 1000), self._hide_message_loading_impl)
+            return
+        self._hide_message_loading_impl()
+
+    def _hide_message_loading_impl(self) -> None:
+        bar = getattr(self, "_msg_loading_bar", None)
+        if bar is not None:
+            bar.hide()
+        if self._current:
+            self._update_header_visuals()
+
+    def _notify_message_load_success(self, total: int) -> None:
+        if not self._current:
+            return
+        nick = self._current.get("buyer_nickname") or "买家"
+        if total <= 0:
+            content = f"{nick}：暂无历史消息"
+        else:
+            content = f"{nick}：已加载 {total} 条聊天记录"
+        InfoBar.success(
+            title="加载完成",
+            content=content,
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=2200,
+            parent=self,
+        )
+
+    def _schedule_msg_render_tick(self, delay_ms: int = 0) -> None:
+        token = self._render_token
+
+        def _run() -> None:
+            if token != self._render_token:
+                return
+            self._on_msg_render_tick()
+
+        QTimer.singleShot(max(0, int(delay_ms)), _run)
+
+    def _render_tick_reason(self, job: Optional[Dict[str, Any]]) -> str:
+        if not job:
+            return "no_job"
+        if job.get("token") != self._render_token:
+            return f"token_mismatch job={job.get('token')} cur={self._render_token}"
+        if not self._ensure_message_area():
+            return "layout_unavailable"
+        return "ok"
+
+    def _on_msg_render_tick(self) -> None:
+        job = getattr(self, "_msg_render_job", None)
+        reason = self._render_tick_reason(job)
+        if reason != "ok":
+            self.logger.warning("消息渲染跳过: {}", reason)
+            if reason == "layout_unavailable":
+                self._render_in_progress = False
+                self._msg_render_job = None
+                self._hide_message_loading()
+            return
+
+        rows = job.get("rows") or []
+        idx = int(job.get("index") or 0)
+        total = int(job.get("total") or len(rows))
+        buyer_letter = str(job.get("buyer_letter") or "买")
+        list_w = max(int(job.get("list_w") or 0), self._message_area_width())
+        job["list_w"] = list_w
+        end = min(idx + _MSG_RENDER_BATCH, len(rows))
+
+        self.msg_container.setUpdatesEnabled(False)
+        self.msg_scroll.setUpdatesEnabled(False)
+        try:
+            for i in range(idx, end):
+                m = rows[i]
+                try:
+                    self._append_message_row(
+                        m["sender_type"],
+                        m.get("content") or "",
+                        m.get("sent_at") or m.get("created_at"),
+                        buyer_letter,
+                        m.get("content_type"),
+                        m.get("image_url"),
+                        bool(m.get("is_read", True)),
+                        list_width=list_w,
+                    )
+                except Exception as e:
+                    self.logger.warning("消息行渲染失败 idx={}: {}", i, e)
+        except Exception as e:
+            self.logger.exception("消息批次渲染异常 idx={}: {}", idx, e)
+        finally:
+            self.msg_container.setUpdatesEnabled(True)
+            self.msg_scroll.setUpdatesEnabled(True)
+
+        if getattr(self, "_msg_render_job", None) is not job:
+            return
+
+        job["index"] = end
+        self._update_message_loading_progress(end, total)
+        if end <= _MSG_RENDER_BATCH or end >= total or end % 20 == 0:
+            self.logger.info("消息加载进度: {}/{}", end, total)
+
+        if end >= len(rows):
+            if rows and self._current:
+                self._msg_last_loaded_id = int(rows[-1]["id"])
+                self._msg_last_loaded_session_id = int(self._current["session_id"])
+            self._msg_render_job = None
+            self._finalize_message_render()
+            return
+        self._schedule_msg_render_tick(_MSG_RENDER_INTERVAL_MS)
+
+    def _finalize_message_render(self) -> None:
+        list_w = self._message_area_width()
+        reflow_message_widgets(self.msg_container, self.msg_layout, list_w)
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+        reflow_message_widgets(self.msg_container, self.msg_layout, list_w)
+        self.msg_container.adjustSize()
+
+        elapsed_ms = (time.monotonic() - self._msg_loading_started_at) * 1000.0
+        remain_ms = max(0, int(_MSG_LOADING_MIN_MS - elapsed_ms))
+        QTimer.singleShot(remain_ms, self._complete_message_render)
+
+    def _complete_message_render(self) -> None:
+        if getattr(self, "_msg_render_job", None):
+            return
+        self._render_in_progress = False
+        reflow_message_widgets(
+            self.msg_container, self.msg_layout, self._message_area_width()
+        )
+        self._hide_message_loading()
+        self._flush_after_render_refresh()
+        self._scroll_messages_to_bottom()
+        QTimer.singleShot(0, self._reflow_message_list)
+        QTimer.singleShot(80, self._reflow_message_list)
+        QTimer.singleShot(200, self._reflow_message_list)
+        if self._msg_render_pending:
+            self._msg_render_pending = False
+            QTimer.singleShot(120, self._sync_incremental_messages)
+            return
+        if getattr(self, "_msg_load_notify", False):
+            self._msg_load_notify = False
+            self._notify_message_load_success(int(getattr(self, "_msg_loading_total", 0)))
+
     def _render_messages_from_db(self) -> None:
         if not self._current:
             return
+        if getattr(self, "_render_in_progress", False):
+            self._msg_render_pending = True
+            return
         sid = int(self._current["session_id"])
+        self._cancel_message_render()
+        render_token = self._render_token
+        self._msg_render_pending = False
+        self._render_in_progress = True
+
         rows = db_manager.get_chat_messages(sid, limit=_CHAT_HISTORY_LIMIT)
         nick = self._current.get("buyer_nickname") or "买家"
         buyer_letter = _avatar_letter(nick)
+
+        total = len(rows)
+        if total == 0:
+            self._msg_render_job = None
+            self._render_in_progress = False
+            self._clear_messages()
+            QTimer.singleShot(0, self._hide_message_loading)
+            QTimer.singleShot(0, self._flush_after_render_refresh)
+            if getattr(self, "_msg_load_notify", False):
+                self._msg_load_notify = False
+                QTimer.singleShot(0, lambda: self._notify_message_load_success(0))
+            return
+
+        if not self._ensure_message_area():
+            self.logger.error("消息区不可用，取消加载 session={}", sid)
+            self._render_in_progress = False
+            QTimer.singleShot(0, self._hide_message_loading)
+            return
+
+        self._show_message_loading(total)
         self._clear_messages()
+        self._msg_render_job = {
+            "rows": rows,
+            "index": 0,
+            "total": total,
+            "buyer_letter": buyer_letter,
+            "list_w": self._message_area_width(),
+            "token": render_token,
+        }
+        self.logger.info(
+            "消息加载开始: session={} total={} token={}", sid, total, render_token
+        )
+        self._schedule_msg_render_tick(0)
+
+    def _can_incremental_message_update(self) -> bool:
+        if not self._current or getattr(self, "_render_in_progress", False):
+            return False
+        sid = int(self._current["session_id"])
+        if getattr(self, "_msg_last_loaded_session_id", None) != sid:
+            return False
+        return self._message_widget_count() > 0
+
+    def _sync_incremental_messages(self, *, refresh_tree: bool = True) -> bool:
+        """仅追加尚未显示的新消息，避免整页重载。"""
+        if not self._can_incremental_message_update():
+            return False
+        if not self._ensure_message_area():
+            return False
+        sid = int(self._current["session_id"])
+        after_id = int(getattr(self, "_msg_last_loaded_id", 0) or 0)
+        rows = db_manager.get_chat_messages_after_id(sid, after_id)
+        if not rows:
+            return False
+
+        nick = self._current.get("buyer_nickname") or "买家"
+        buyer_letter = _avatar_letter(nick)
         list_w = self._message_area_width()
-        for m in rows:
-            self._append_message_row(
-                m["sender_type"],
-                m.get("content") or "",
-                m.get("sent_at") or m.get("created_at"),
-                buyer_letter,
-                m.get("content_type"),
-                m.get("image_url"),
-                bool(m.get("is_read", True)),
-                list_width=list_w,
-            )
+        self.msg_container.setUpdatesEnabled(False)
+        self.msg_scroll.setUpdatesEnabled(False)
+        try:
+            for m in rows:
+                self._append_message_row(
+                    m["sender_type"],
+                    m.get("content") or "",
+                    m.get("sent_at") or m.get("created_at"),
+                    buyer_letter,
+                    m.get("content_type"),
+                    m.get("image_url"),
+                    bool(m.get("is_read", True)),
+                    list_width=list_w,
+                )
+                after_id = max(after_id, int(m["id"]))
+        finally:
+            self.msg_container.setUpdatesEnabled(True)
+            self.msg_scroll.setUpdatesEnabled(True)
+
+        self._msg_last_loaded_id = after_id
+        self._msg_last_loaded_session_id = sid
+        reflow_message_widgets(self.msg_container, self.msg_layout, list_w)
         self._scroll_messages_to_bottom()
-        self._schedule_message_list_reflow()
+        if refresh_tree:
+            self._refresh_session_trees()
+        self.logger.debug("增量载入 {} 条新消息 session={}", len(rows), sid)
+        return True
 
     def _append_message_row(
         self,
@@ -1918,4 +2364,4 @@ class ChatLiveWidget(QFrame):
         except Exception as e:
             self.logger.debug("watchdog notify_outbound_reply: {}", e)
         self.input_edit.clear()
-        self._render_messages_from_db()
+        QTimer.singleShot(80, self._sync_incremental_messages)

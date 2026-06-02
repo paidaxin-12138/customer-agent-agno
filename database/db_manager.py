@@ -1446,6 +1446,43 @@ class DatabaseManager:
         finally:
             session.close()
 
+    def get_chat_messages_after_id(
+        self, session_id: int, after_id: int, limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """获取某会话中 id 大于 after_id 的新消息（时间正序）。"""
+        session = self.get_session()
+        try:
+            q = (
+                session.query(ChatMessage)
+                .filter(ChatMessage.session_id == session_id)
+                .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
+            )
+            if after_id > 0:
+                q = q.filter(ChatMessage.id > after_id)
+            rows = q.limit(limit).all()
+            return [
+                {
+                    "id": m.id,
+                    "session_id": m.session_id,
+                    "message_id": m.message_id,
+                    "account_id": m.account_id,
+                    "sender_type": m.sender_type,
+                    "content": m.content,
+                    "content_type": m.content_type,
+                    "image_url": m.image_url,
+                    "is_read": bool(m.is_read),
+                    "read_at": m.read_at,
+                    "sent_at": m.sent_at,
+                    "created_at": m.created_at,
+                }
+                for m in rows
+            ]
+        except SQLAlchemyError as e:
+            self.logger.error(f"get_chat_messages_after_id 失败: {e}")
+            return []
+        finally:
+            session.close()
+
     def mark_chat_messages_read(self, session_id: int) -> bool:
         session = self.get_session()
         try:

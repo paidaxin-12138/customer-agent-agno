@@ -3,9 +3,9 @@ from config import ChatConfig, ConfigModel, warn_unknown_config_keys, config_bas
 
 def test_chat_config_coerces_numeric_fields():
     cfg = ChatConfig.model_validate(
-        {"message_consumer_max_concurrent": "28", "ws_message_max_concurrent": 16}
+        {"message_consumer_max_concurrent": "16", "ws_message_max_concurrent": 16}
     )
-    assert cfg.message_consumer_max_concurrent == 28
+    assert cfg.message_consumer_max_concurrent == 16
 
 
 def test_warn_unknown_chat_keys_does_not_raise():
@@ -18,5 +18,5 @@ def test_warn_unknown_chat_keys_does_not_raise():
 
 def test_config_model_accepts_merged_defaults():
     model = ConfigModel(**config_base)
-    assert model.chat.message_consumer_max_concurrent == 28
+    assert model.chat.message_consumer_max_concurrent == 16
     assert model.pinduoduo_open.enabled is True

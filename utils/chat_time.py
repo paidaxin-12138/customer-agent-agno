@@ -33,6 +33,11 @@ def now_for_db() -> datetime:
 
 def format_display_datetime(t: Any) -> str:
     """运营看板、列表等完整时间展示：YYYY-MM-DD HH:MM:SS（上海墙钟）。"""
+    return format_chat_iso(t)
+
+
+def format_chat_iso(t: Any) -> str:
+    """AI 上下文用完整时间：YYYY-MM-DD HH:MM:SS（上海墙钟）。"""
     if t is None:
         return ""
     if isinstance(t, datetime):
@@ -57,3 +62,33 @@ def format_chat_timestamp(t: Any) -> str:
         return local.strftime("%m-%d %H:%M")
     s = str(t).strip()
     return s[:16] if len(s) > 16 else s
+
+
+def format_chat_display_relative(t: Any) -> str:
+    """界面气泡旁展示：今天/昨天 HH:MM，更早则 YYYY-MM-DD HH:MM。"""
+    if t is None:
+        return ""
+    if isinstance(t, datetime):
+        if t.tzinfo is not None:
+            local = t.astimezone(_SH).replace(tzinfo=None)
+        else:
+            local = t
+    else:
+        s = str(t).strip()
+        if not s:
+            return ""
+        try:
+            local = datetime.fromisoformat(s[:19])
+        except ValueError:
+            return s[:16] if len(s) > 16 else s
+    now = shanghai_naive_now()
+    hm = local.strftime("%H:%M")
+    if local.date() == now.date():
+        return f"今天 {hm}"
+    from datetime import timedelta
+
+    if local.date() == (now - timedelta(days=1)).date():
+        return f"昨天 {hm}"
+    if local.year == now.year:
+        return local.strftime("%m-%d %H:%M")
+    return local.strftime("%Y-%m-%d %H:%M")
