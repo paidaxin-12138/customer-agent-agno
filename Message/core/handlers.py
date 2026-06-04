@@ -94,11 +94,16 @@ class CatchAllHandler(MessageHandler):
     _DEFAULT_COMFORT = (
         "亲，消息已收到，客服稍后会回复您；如需人工请回复「人工」。"
     )
+    allowed_stages = frozenset({"idle"})
 
     def __init__(self):
         super().__init__()
 
     def can_handle(self, context: Context) -> bool:
+        from Agent.CustomerAgent.conversation_memory import get_current_stage
+
+        if get_current_stage(context) not in self.allowed_stages:
+            return False
         return True
 
     async def handle(self, context: Context, metadata: Dict[str, Any]) -> bool:

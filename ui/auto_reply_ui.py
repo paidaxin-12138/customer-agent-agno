@@ -251,6 +251,32 @@ class AutoReplyThread(QThread):
 auto_reply_manager = AutoReplyManager()
 
 
+def resolve_account_secrets(account_data: dict) -> dict:
+    """
+    列表查询 get_accounts_by_shop 出于安全不返回 cookies/password；
+    上线/离线等操作前需按 user_id 从 DB 拉取完整凭据。
+    """
+    merged = dict(account_data)
+    if merged.get("cookies"):
+        return merged
+    try:
+        full = db_manager.get_account(
+            merged["channel_name"],
+            merged["shop_id"],
+            merged["user_id"],
+            include_secrets=True,
+        )
+    except Exception:
+        full = None
+    if full:
+        if full.get("cookies"):
+            merged["cookies"] = full["cookies"]
+        if full.get("password"):
+            merged["password"] = full["password"]
+        merged["has_cookies"] = bool(full.get("cookies"))
+    return merged
+
+
 class SetStatusThread(QThread):
     """设置账号状态的线程"""
     
@@ -265,10 +291,14 @@ class SetStatusThread(QThread):
     def run(self):
         """在后台线程中执行状态更新"""
         try:
+            self.account_data = resolve_account_secrets(self.account_data)
             # 1. 调用API设置平台状态
             cookies = self.account_data.get("cookies")
             if not cookies:
-                raise ValueError("账号缺少cookies，无法设置状态")
+                hint = ""
+                if self.account_data.get("has_cookies"):
+                    hint = "（数据库有记录但读取失败，请重启应用或在「账号管理」点验证）"
+                raise ValueError(f"账号缺少 cookies，无法设置状态{hint}")
 
             account_monitor = AccountMonitor(cookies)
             
@@ -783,7 +813,8 @@ class AutoReplyUI(QFrame):
                             "password": account["password"],
                             "status": account["status"],
                             "user_id": account["user_id"],
-                            "cookies": account["cookies"]
+                            "cookies": account["cookies"],
+                            "has_cookies": account.get("has_cookies", False),
                         }
                         self.accounts_data.append(account_data)
                         

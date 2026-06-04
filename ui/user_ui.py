@@ -618,7 +618,23 @@ class UserManagerWidget(QFrame):
             # 1. 检查账号是否已存在
             existing_account = db_manager.get_account(channel_name, shop_id, user_id)
             if existing_account:
-                QMessageBox.information(self, "提示", f"账号 '{username}' 已存在于店铺 '{shop_name}' 中，无需重复添加。")
+                db_manager.update_account_cookies(
+                    channel_name, shop_id, user_id, result.get("cookies")
+                )
+                if result.get("password"):
+                    db_manager.update_account_info(
+                        channel_name,
+                        shop_id,
+                        user_id,
+                        password=result.get("password"),
+                    )
+                db_manager.update_account_status(channel_name, shop_id, user_id, 1)
+                QMessageBox.information(
+                    self,
+                    "提示",
+                    f"账号 '{username}' 已存在，已更新 Cookie 并设为在线。",
+                )
+                self.reloadAccounts()
                 return
 
             # 2. 检查店铺是否存在，不存在则添加

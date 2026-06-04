@@ -10,6 +10,7 @@ from bridge.context import Context, ContextType
 from config import config
 
 from .base import BaseHandler
+from .stage_constants import ALL_HANDLER_STAGES
 
 _DEFAULT_BUYER_NOTICE = (
     "亲亲，图片和视频需要人工客服打开才能看清，这边已经帮您备注给同事啦，"
@@ -20,10 +21,12 @@ _DEFAULT_BUYER_NOTICE = (
 class ImageVideoHumanHandler(BaseHandler):
     """图片/视频 → 人工协助（与关键词转人工同一套弹窗与实时聊天）。"""
 
+    allowed_stages = ALL_HANDLER_STAGES
+
     def __init__(self):
         super().__init__("ImageVideoHumanHandler")
 
-    def can_handle(self, context: Context) -> bool:
+    def _can_handle_impl(self, context: Context) -> bool:
         if not bool(config.get("chat.image_video_forward_human", True)):
             return False
         return context.type in (ContextType.IMAGE, ContextType.VIDEO)

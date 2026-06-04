@@ -19,6 +19,7 @@ from utils.human_escalation_comfort import (
 )
 
 from .base import BaseHandler
+from .stage_constants import ALL_HANDLER_STAGES
 from .channel_send import transfer_to_available_cs_async
 from .order_logistics_handler import _kw
 
@@ -26,10 +27,12 @@ from .order_logistics_handler import _kw
 class BuyerEmotionHandler(BaseHandler):
     """买家负面情绪 / 催促 / 投诉 → 人工预警或转人工。"""
 
+    allowed_stages = ALL_HANDLER_STAGES
+
     def __init__(self):
         super().__init__("BuyerEmotionHandler")
 
-    def can_handle(self, context: Context) -> bool:
+    def _can_handle_impl(self, context: Context) -> bool:
         if not bool(config.get("chat.buyer_emotion_alert_enabled", True)):
             return False
         if context.type != ContextType.TEXT:

@@ -16,6 +16,8 @@ from ..models.queue_models import MessageWrapper
 
 logger = get_logger(__name__)
 
+_AI_CHAIN_HANDLERS = frozenset({"AIReplyHandler", "CatchAllHandler"})
+
 
 class MessageConsumer:
     """消息消费者 - 有界 worker 池，避免 create_task 无限堆积"""
@@ -142,6 +144,37 @@ class MessageConsumer:
                 except Exception as e:
                     self.logger.debug(f"metadata enrich skipped: {e}")
                 metadata["user_key"] = user_key
+                try:
+                    ku = getattr(wrapper.context, "kwargs", None)
+                    raw = getattr(ku, "raw_data", None) if ku else None
+                    if isinstance(raw, dict) and raw.get("_transfer_takeover"):
+                        metadata["transfer_takeover"] = True
+                except Exception:
+                    pass
+
+                try:
+                    from Agent.CustomerAgent.conversation_memory import (
+                        prime_session_stage_on_context,
+                    )
+
+                    prime_session_stage_on_context(wrapper.context, metadata)
+                except Exception as stage_err:
+                    self.logger.debug(f"prime_session_stage: {stage_err}")
+
+                try:
+                    from utils.intent_stage_reset import try_intent_stage_reset
+
+                    msg_text = (
+                        wrapper.context.content
+                        if isinstance(wrapper.context.content, str)
+                        else str(wrapper.context.content or "")
+                    )
+                    if try_intent_stage_reset(
+                        wrapper.context, metadata, message_text=msg_text
+                    ):
+                        prime_session_stage_on_context(wrapper.context, metadata)
+                except Exception as reset_err:
+                    self.logger.debug(f"intent_stage_reset: {reset_err}")
 
                 watchdog_epoch = 0
                 try:
@@ -162,14 +195,24 @@ class MessageConsumer:
                             success = await handler.handle(wrapper.context, metadata)
                             if success:
                                 processed = True
+                                hname = handler.__class__.__name__
+                                metadata["handled_by"] = hname
+                                metadata["handler_already_processed"] = (
+                                    hname not in _AI_CHAIN_HANDLERS
+                                )
                                 try:
                                     from core.app_metrics import record_message_processed
 
                                     record_message_processed()
                                 except Exception:
                                     pass
+                                extra = (
+                                    " transfer_takeover"
+                                    if metadata.get("transfer_takeover")
+                                    else ""
+                                )
                                 self.logger.debug(
-                                    f"Message {wrapper.message_id} handled by {handler.__class__.__name__}"
+                                    f"Message {wrapper.message_id} handled by {hname}{extra}"
                                 )
                                 break
                     except Exception as e:
@@ -188,9 +231,19 @@ class MessageConsumer:
                         continue
 
                 if not processed and not metadata.get("_outbound_comfort_sent"):
+                    try:
+                        from Agent.CustomerAgent.conversation_memory import (
+                            get_current_stage,
+                        )
+
+                        stage_now = get_current_stage(wrapper.context, metadata)
+                    except Exception:
+                        stage_now = "?"
                     self.logger.warning(
-                        "Message {} 未被任何 handler 处理，尝试 fallback_reply",
+                        "Message {} 未被任何 handler 处理 stage={} type={}，尝试 fallback_reply",
                         wrapper.message_id,
+                        stage_now,
+                        getattr(wrapper.context.type, "value", wrapper.context.type),
                     )
                     try:
                         from Message.handlers.fallback_reply import (

@@ -12,7 +12,7 @@ from copy import deepcopy
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from contextlib import contextmanager
 from agno.models.openai import OpenAILike
 from agno.knowledge.embedder.openai import OpenAIEmbedder
@@ -123,6 +123,17 @@ class ChatConfig(BaseModel):
     address_change_enabled: bool = True
     human_transfer_semantic_enabled: bool = True
     human_transfer_notice: str = "稍等下 这边上报一下呢亲亲"
+    # 转接：售后专用子账号 seller_user_id 列表，AI/规则转人工时优先转给这些号
+    preferred_transfer_seller_user_ids: List[str] = Field(default_factory=list)
+    inbound_transfer_system_notice: str = (
+        "[会话已转接] 售前/其他客服已将买家转给您，请关注后续消息"
+    )
+    inbound_transfer_buyer_notice: str = ""
+    inbound_transfer_default_manual: bool = False
+    inbound_transfer_force_takeover: bool = True
+    inbound_transfer_takeover_ai_mode: bool = True
+    inbound_transfer_enqueue_unreplied: bool = True
+    transfer_auto_rose_enabled: bool = False
     buyer_emotion_alert_enabled: bool = True
     buyer_emotion_escalate_threshold: int = 2
     ai_pm_escalation_enabled: bool = True
@@ -159,6 +170,7 @@ class RetentionConfig(BaseModel):
     lifecycle_hour: int = 3
     lifecycle_minute: int = 0
     vector_days: int = 0
+    stage_idle_timeout_sec: int = 1800
 
 
 class ProductionConfig(BaseModel):
@@ -320,6 +332,16 @@ config_base = {
         "session_idle_resolve_enabled": True,
         "session_idle_resolve_minutes": 5,
         "session_idle_resolve_check_interval_sec": 60,
+        "preferred_transfer_seller_user_ids": [],
+        "inbound_transfer_system_notice": (
+            "[会话已转接] 售前/其他客服已将买家转给您，请关注后续消息"
+        ),
+        "inbound_transfer_buyer_notice": "",
+        "inbound_transfer_default_manual": False,
+        "inbound_transfer_force_takeover": True,
+        "inbound_transfer_takeover_ai_mode": True,
+        "inbound_transfer_enqueue_unreplied": True,
+        "transfer_auto_rose_enabled": False,
         "after_sales_apply_check_orders_by_uid": True,
         "after_sales_apply_no_orders_notice": (
             "亲，暂未查到您在本店的订单记录，请确认是否用下单账号咨询，"
@@ -426,6 +448,13 @@ config_base = {
             "亲，我暂时还不清楚，您可以描述得更详细些，或者我帮您转人工客服？"
         ),
         "knowledge_retrieval_timeout_sec": 5.0,
+        "intent_reset_enabled": True,
+        "intent_reset_stages": [
+            "address_change",
+            "logistics",
+            "after_sales",
+            "await_confirm",
+        ],
         "unhandled_fallback_enabled": True,
         "unhandled_fallback_notice": (
             "亲，消息已收到，客服稍后会回复您；如需人工请回复「人工」。"
@@ -457,6 +486,7 @@ config_base = {
         "lifecycle_hour": 3,
         "lifecycle_minute": 0,
         "vector_days": 0,
+        "stage_idle_timeout_sec": 1800,
     },
     "production": {
         "health_enabled": True,

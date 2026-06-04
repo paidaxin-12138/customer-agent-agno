@@ -347,6 +347,92 @@ def days_since_purchase(
     return max(0.0, (ref - ts) / 86400.0)
 
 
+def _order_has_mms_trace(order: Dict[str, Any]) -> bool:
+    for key in ("traceInfoList", "trace_info_list", "trackInfoList"):
+        val = order.get(key)
+        if isinstance(val, list) and val:
+            return True
+    return False
+
+
+def pick_logistics_order(
+    orders: List[Dict[str, Any]],
+    preferred_order_sn: Optional[str] = None,
+) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
+    """
+    为物流查询从 userAllOrder 列表中解析订单。
+
+    Returns:
+        (status, order_sn, order)
+        status:
+          - ok：已唯一确定
+          - not_found：文本中的订单号不在该买家列表中
+          - no_orders：列表为空
+          - need_pick：多笔已发货等需买家指定订单号
+    """
+    if not isinstance(orders, list):
+        return "no_orders", None, None
+
+    pref = (preferred_order_sn or "").strip()
+    if pref:
+        order = find_order_by_sn(orders, pref)
+        if order:
+            return "ok", pref, order
+        return "not_found", None, None
+
+    candidates: List[Tuple[str, Dict[str, Any]]] = []
+    for order in orders:
+        sn = _order_sn_from_record(order)
+        if sn:
+            candidates.append((sn, order))
+    if not candidates:
+        return "no_orders", None, None
+    if len(candidates) == 1:
+        sn, order = candidates[0]
+        return "ok", sn, order
+
+    with_trace = [(sn, o) for sn, o in candidates if _order_has_mms_trace(o)]
+    if len(with_trace) == 1:
+        sn, order = with_trace[0]
+        return "ok", sn, order
+
+    shipped = [(sn, o) for sn, o in candidates if order_shipping_status(o) > 0]
+    if len(shipped) == 1:
+        sn, order = shipped[0]
+        return "ok", sn, order
+    if len(shipped) > 1:
+        return "need_pick", None, None
+
+    candidates.sort(
+        key=lambda item: order_purchase_unix_ts(item[1]) or 0.0, reverse=True
+    )
+    return "ok", candidates[0][0], candidates[0][1]
+
+
+def format_logistics_order_pick_prompt(orders: List[Dict[str, Any]]) -> str:
+    """多笔订单时引导买家发送订单号。"""
+    shipped = [o for o in orders if order_shipping_status(o) > 0]
+    pool = shipped if shipped else list(orders)
+    pool = sorted(
+        pool,
+        key=lambda o: order_purchase_unix_ts(o) or 0.0,
+        reverse=True,
+    )
+    lines = ["亲，您这边有多笔订单，麻烦发一下要查询物流的那笔订单号："]
+    for order in pool[:5]:
+        sn = _order_sn_from_record(order)
+        if not sn:
+            continue
+        status_str = str(order.get("orderStatusStr") or "").strip()
+        if status_str:
+            lines.append(f"- {sn}（{status_str}）")
+        else:
+            ship = "已发货" if order_shipping_status(order) > 0 else "未发货"
+            lines.append(f"- {sn}（{ship}）")
+    lines.append("订单号在拼多多「我的订单」详情页可复制，格式类似 250105-xxxxxxxx~")
+    return "\n".join(lines)
+
+
 def find_order_by_sn(
     orders: List[Dict[str, Any]], order_sn: str
 ) -> Optional[Dict[str, Any]]:
@@ -489,6 +575,8 @@ __all__ = [
     "order_after_sales_status",
     "order_merchant_refund_block_reason",
     "pick_refund_card_order",
+    "pick_logistics_order",
+    "format_logistics_order_pick_prompt",
     "days_since_purchase",
     "find_order_by_sn",
 ]

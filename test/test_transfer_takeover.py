@@ -1,0 +1,68 @@
+"""转接后强制接管：stage/ai_mode 与未回复入队。"""
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from utils.transfer_takeover import (
+    apply_inbound_transfer_takeover,
+    inbound_transfer_initial_ai_mode,
+)
+
+
+def test_inbound_transfer_initial_ai_mode_when_takeover_on(monkeypatch):
+    monkeypatch.setattr(
+        "utils.transfer_takeover.config.get",
+        lambda key, default=None: {
+            "chat.inbound_transfer_force_takeover": True,
+            "chat.inbound_transfer_takeover_ai_mode": True,
+            "chat.inbound_transfer_default_manual": True,
+        }.get(key, default),
+    )
+    assert inbound_transfer_initial_ai_mode() is True
+
+
+@pytest.mark.asyncio
+async def test_takeover_enqueues_unreplied(monkeypatch):
+    monkeypatch.setattr(
+        "utils.transfer_takeover.config.get",
+        lambda key, default=None: {
+            "chat.inbound_transfer_force_takeover": True,
+            "chat.inbound_transfer_takeover_ai_mode": True,
+            "chat.inbound_transfer_enqueue_unreplied": True,
+            "chat.inbound_transfer_default_manual": True,
+            "chat.unreplied_buyer_max_parts": 3,
+        }.get(key, default),
+    )
+    mock_db = MagicMock()
+    mock_db.get_account.return_value = {"id": 1}
+    mock_db.get_chat_session_by_buyer.return_value = {"id": 9}
+
+    put_mock = AsyncMock(return_value="queued-1")
+
+    with (
+        patch("database.db_manager.db_manager", mock_db),
+        patch(
+            "utils.transfer_takeover._resolve_session_id",
+            return_value=9,
+        ),
+        patch(
+            "utils.unreplied_buyer_messages.get_unreplied_buyer_messages",
+            return_value=["转接前买家问题"],
+        ),
+        patch("Agent.CustomerAgent.conversation_memory.update_session_state"),
+        patch("Message.put_message", put_mock),
+    ):
+        ok = await apply_inbound_transfer_takeover(
+            channel_name="pinduoduo",
+            shop_id="570414651",
+            seller_user_id="184046586",
+            login_username="pdd57041465173",
+            buyer_uid="4216881609",
+            queue_name="pdd_570414651",
+        )
+
+    assert ok is True
+    mock_db.set_session_ai_mode.assert_called_once_with(9, True)
+    put_mock.assert_awaited_once()

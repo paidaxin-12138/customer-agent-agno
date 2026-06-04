@@ -38,6 +38,13 @@ def _preview_text(content: Any, max_len: int = 80) -> str:
 
 def parse_peer_from_context(context: Context) -> Tuple[Optional[str], str]:
     """解析买家 uid 与展示名。"""
+    if context.type == ContextType.TRANSFER:
+        from utils.pdd_transfer import resolve_buyer_uid_from_transfer
+
+        buid = resolve_buyer_uid_from_transfer(context)
+        if buid:
+            nick = (getattr(context.kwargs, "nickname", None) or "").strip() or "买家"
+            return buid, nick
     ku = context.kwargs
     from_user = (ku.from_user or "").lower()
     to_user = (ku.to_user or "").lower()
@@ -108,16 +115,21 @@ class ConversationHub(QObject):
                 _hub_log.debug("解析消息时间戳失败，使用当前时间")
         from database.chat_persist import split_chat_body_for_storage
 
-        ct, _row_body, _img = split_chat_body_for_storage(context, raw_preview)
-        if ct == "image":
-            preview = "[图片]"
-        elif ct == "video":
-            preview = "[视频]"
-        else:
-            preview = raw_preview
-
         is_mall_cs = context.type == ContextType.MALL_CS
-        role = "agent" if is_mall_cs else "user"
+        is_transfer = context.type == ContextType.TRANSFER
+        if is_transfer:
+            from utils.pdd_transfer import format_transfer_system_preview
+
+            preview = format_transfer_system_preview(context)
+        else:
+            ct, _row_body, _img = split_chat_body_for_storage(context, raw_preview)
+            if ct == "image":
+                preview = "[图片]"
+            elif ct == "video":
+                preview = "[视频]"
+            else:
+                preview = raw_preview
+        role = "system" if is_transfer else ("agent" if is_mall_cs else "user")
         mid = getattr(context.kwargs, "msg_id", None)
         if mid is not None:
             mid = str(mid) if mid else None
@@ -132,10 +144,23 @@ class ConversationHub(QObject):
         try:
             from database.chat_persist import (
                 persist_customer_from_context,
+                persist_inbound_transfer_from_context,
                 persist_seller_mall_cs_from_context,
             )
 
-            if is_mall_cs:
+            if is_transfer:
+                persist_inbound_transfer_from_context(
+                    channel_name,
+                    shop_id,
+                    user_id,
+                    username,
+                    peer_uid,
+                    nickname or "买家",
+                    preview,
+                    mid,
+                    ts,
+                )
+            elif is_mall_cs:
                 persist_seller_mall_cs_from_context(
                     channel_name,
                     shop_id,

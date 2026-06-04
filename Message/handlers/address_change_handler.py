@@ -21,6 +21,21 @@ from utils.address_change_policy import pick_order_for_address_change
 from .base import BaseHandler
 from .order_logistics_handler import _kw
 
+_CONFIRM_MARKERS = ("确认改址", "确认", "同意", "好的", "可以", "确定", "行")
+_CANCEL_MARKERS = ("取消", "不要改", "不改了", "算了", "不用改", "放弃")
+
+
+def _is_address_confirm_message(text: str) -> bool:
+    t = (text or "").strip()
+    if not t or _is_address_cancel_message(t):
+        return False
+    return any(m in t for m in _CONFIRM_MARKERS)
+
+
+def _is_address_cancel_message(text: str) -> bool:
+    t = (text or "").strip()
+    return any(m in t for m in _CANCEL_MARKERS)
+
 
 def _audit_address_change(
     *,
@@ -59,10 +74,51 @@ def _cfg(key: str, default: str) -> str:
 class AddressChangeHandler(BaseHandler):
     """改址专用处理器（查物流仍由 OrderLogisticsHandler 处理）。"""
 
+    allowed_stages = frozenset({"idle", "address_change", "await_confirm"})
+
     def __init__(self):
         super().__init__("AddressChangeHandler")
 
-    def can_handle(self, context: Context) -> bool:
+    def _finish(
+        self,
+        context: Context,
+        metadata: Dict[str, Any],
+        *,
+        parsed: Any = None,
+        order_sn: str = "",
+        stage: str = "address_change",
+        release_stage: bool = False,
+    ) -> bool:
+        from Agent.CustomerAgent.conversation_memory import (
+            commit_handler_session_from_context,
+        )
+
+        slots: Dict[str, str] = {}
+        if order_sn:
+            slots["order_sn"] = order_sn
+        if parsed is not None:
+            for key, val in (
+                ("name", getattr(parsed, "name", None)),
+                ("phone", getattr(parsed, "mobile", None)),
+                ("province", getattr(parsed, "province", None)),
+                ("city", getattr(parsed, "city", None)),
+                ("district", getattr(parsed, "district", None)),
+                ("address", getattr(parsed, "detail", None) or getattr(parsed, "full_text", None)),
+            ):
+                if val:
+                    slots[key] = str(val)
+        commit_handler_session_from_context(
+            context,
+            metadata,
+            stage=stage,
+            intent="address_change",
+            slots=slots or None,
+            source_handler="AddressChangeHandler",
+            release_stage=release_stage,
+        )
+        return True
+
+    def _can_handle_impl(self, context: Context) -> bool:
         if not config.get("chat.address_change_enabled", True):
             return False
         if context.type != ContextType.TEXT:
@@ -71,7 +127,13 @@ class AddressChangeHandler(BaseHandler):
         if ch is not None and ch != ChannelType.PINDUODUO:
             return False
         text = context.content if isinstance(context.content, str) else ""
-        return is_address_change_intent((text or "").strip())
+        text = (text or "").strip()
+        from Agent.CustomerAgent.conversation_memory import get_current_stage
+
+        stage = get_current_stage(context)
+        if stage == "await_confirm":
+            return _is_address_confirm_message(text) or _is_address_cancel_message(text) or is_address_change_intent(text)
+        return is_address_change_intent(text)
 
     async def handle(self, context: Context, metadata: Dict[str, Any]) -> bool:
         text = context.content if isinstance(context.content, str) else ""
@@ -82,6 +144,34 @@ class AddressChangeHandler(BaseHandler):
         from_uid = metadata.get("from_uid") or _kw(context, "from_uid")
         if not all([shop_id, user_id, from_uid]):
             return False
+
+        from Agent.CustomerAgent.conversation_memory import get_current_stage
+
+        if get_current_stage(context, metadata) == "await_confirm":
+            if _is_address_cancel_message(text):
+                await self._send_reply(
+                    shop_id,
+                    user_id,
+                    from_uid,
+                    _cfg(
+                        "address_change_cancel_text",
+                        "好的亲，已取消本次改址操作，如需修改可重新发送新地址~",
+                    ),
+                    metadata,
+                )
+                return self._finish(context, metadata, release_stage=True)
+            if _is_address_confirm_message(text):
+                await self._send_reply(
+                    shop_id,
+                    user_id,
+                    from_uid,
+                    _cfg(
+                        "address_change_success_text",
+                        "亲，已收到您的确认，店主会在后台为您处理改址，请留意物流更新~",
+                    ),
+                    metadata,
+                )
+                return self._finish(context, metadata, release_stage=True)
 
         parsed = parse_address_from_text(text)
         level = address_parse_level(parsed)
@@ -97,7 +187,7 @@ class AddressChangeHandler(BaseHandler):
                 ),
                 metadata,
             )
-            return True
+            return self._finish(context, metadata, parsed=parsed, stage="address_change")
 
         if level == AddressParseLevel.PARTIAL:
             await self._send_reply(
@@ -110,7 +200,7 @@ class AddressChangeHandler(BaseHandler):
                 ),
                 metadata,
             )
-            return True
+            return self._finish(context, metadata, parsed=parsed, stage="address_change")
 
         try:
             from Channel.pinduoduo.utils.API.chat_orders import ChatOrdersAPI
@@ -141,7 +231,7 @@ class AddressChangeHandler(BaseHandler):
                 ),
                 metadata,
             )
-            return True
+            return self._finish(context, metadata, parsed=parsed, release_stage=True)
 
         brief, pick_status = pick_order_for_address_change(orders, text, parsed)
 
@@ -156,7 +246,7 @@ class AddressChangeHandler(BaseHandler):
                 ),
                 metadata,
             )
-            return True
+            return self._finish(context, metadata, parsed=parsed, release_stage=True)
 
         if pick_status == "need_order_sn":
             await self._send_reply(
@@ -169,7 +259,7 @@ class AddressChangeHandler(BaseHandler):
                 ),
                 metadata,
             )
-            return True
+            return self._finish(context, metadata, parsed=parsed, stage="address_change")
 
         if pick_status == "not_found":
             await self._send_reply(
@@ -182,7 +272,7 @@ class AddressChangeHandler(BaseHandler):
                 ),
                 metadata,
             )
-            return True
+            return self._finish(context, metadata, parsed=parsed, release_stage=True)
 
         if pick_status == "no_eligible" or brief is None:
             await self._send_reply(
@@ -195,7 +285,13 @@ class AddressChangeHandler(BaseHandler):
                 ),
                 metadata,
             )
-            return True
+            return self._finish(
+                context,
+                metadata,
+                parsed=parsed,
+                order_sn=brief.order_sn if brief else "",
+                release_stage=True,
+            )
 
         if brief.eligible == "shipped":
             await self._send_reply(
@@ -267,7 +363,16 @@ class AddressChangeHandler(BaseHandler):
                 shop_id=str(shop_id),
             )
 
-        return True
+        finish_stage = "await_confirm" if brief.eligible == "shipped" else "address_change"
+        finish_release = brief.eligible != "shipped"
+        return self._finish(
+            context,
+            metadata,
+            parsed=parsed,
+            order_sn=brief.order_sn if brief else "",
+            stage=finish_stage,
+            release_stage=finish_release,
+        )
 
     async def _send_reply(
         self,

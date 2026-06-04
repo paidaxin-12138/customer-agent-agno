@@ -120,17 +120,16 @@ async def transfer_to_available_cs_async(
     *,
     exclude_self: bool = True,
 ) -> bool:
-    """转接给第一个可用客服（默认排除当前账号）。"""
+    """转接给可用客服：优先 config 中售后子账号，否则按负载最低。"""
     cs_list = await get_cs_list_async(shop_id, user_id)
     if not cs_list or not isinstance(cs_list, dict):
         return False
-    my_cs_uid = f"cs_{shop_id}_{user_id}"
-    candidates = [
-        uid for uid in cs_list.keys() if not exclude_self or uid != my_cs_uid
-    ]
-    if not candidates:
-        return False
-    result = await move_conversation_async(
-        shop_id, user_id, from_uid, candidates[0]
+    from utils.pdd_transfer import pick_transfer_cs_uid
+
+    cs_uid = pick_transfer_cs_uid(
+        cs_list, str(shop_id), str(user_id), exclude_self=exclude_self
     )
+    if not cs_uid:
+        return False
+    result = await move_conversation_async(shop_id, user_id, from_uid, cs_uid)
     return isinstance(result, dict) and bool(result.get("success"))

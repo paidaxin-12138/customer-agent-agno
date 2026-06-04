@@ -60,6 +60,14 @@
     "session_idle_resolve_enabled": true,
     "session_idle_resolve_minutes": 5,
     "session_idle_resolve_check_interval_sec": 60,
+    "preferred_transfer_seller_user_ids": ["174053423"],
+    "inbound_transfer_system_notice": "[会话已转接] 售前已将买家转给您，请关注后续消息",
+    "inbound_transfer_buyer_notice": "",
+    "inbound_transfer_default_manual": false,
+    "inbound_transfer_force_takeover": true,
+    "inbound_transfer_takeover_ai_mode": true,
+    "inbound_transfer_enqueue_unreplied": true,
+    "transfer_auto_rose_enabled": false,
     "after_sales_apply_enabled": true,
     "after_sales_apply_return_refund_days": 7,
     "after_sales_apply_card_valid_hours": 48,
@@ -114,6 +122,13 @@
     "unreplied_buyer_scan_count": 5,
     "unreplied_buyer_max_parts": 3,
     "unreplied_buyer_max_chars": 2000,
+    "intent_reset_enabled": true,
+    "intent_reset_stages": [
+      "address_change",
+      "logistics",
+      "after_sales",
+      "await_confirm"
+    ],
     "unhandled_fallback_enabled": true,
     "unhandled_fallback_notice": "亲，消息已收到，客服稍后会回复您；如需人工请回复「人工」。",
     "message_consumer_max_concurrent": 16,
@@ -134,7 +149,8 @@
     "temp_dir": "temp",
     "lifecycle_hour": 3,
     "lifecycle_minute": 0,
-    "vector_days": 0
+    "vector_days": 0,
+    "stage_idle_timeout_sec": 1800
   },
   "production": {
     "health_enabled": true,

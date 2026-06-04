@@ -147,10 +147,38 @@ def _human_notice_for_reason(reason: str) -> str:
 class AfterSalesApplyHandler(BaseHandler):
     """按购买天数与买家意图：发卡（退货退款/换货）或转人工。"""
 
+    allowed_stages = frozenset({"idle", "after_sales"})
+
     def __init__(self):
         super().__init__("AfterSalesApplyHandler")
 
-    def can_handle(self, context: Context) -> bool:
+    @staticmethod
+    def _finish(
+        context: Context,
+        metadata: Dict[str, Any],
+        *,
+        order_sn: Optional[str] = None,
+        release_stage: bool = False,
+    ) -> bool:
+        from Agent.CustomerAgent.conversation_memory import (
+            commit_handler_session_from_context,
+        )
+
+        slots: Dict[str, str] = {}
+        if order_sn:
+            slots["order_sn"] = order_sn
+        commit_handler_session_from_context(
+            context,
+            metadata,
+            stage="after_sales",
+            intent="after_sales",
+            slots=slots or None,
+            source_handler="AfterSalesApplyHandler",
+            release_stage=release_stage,
+        )
+        return True
+
+    def _can_handle_impl(self, context: Context) -> bool:
         if not config.get("chat.after_sales_apply_enabled", True):
             return False
         ch = context.channel_type
@@ -196,7 +224,7 @@ class AfterSalesApplyHandler(BaseHandler):
                         "亲，看到您这笔订单已在售后处理中，请在订单详情查看进度；有疑问可回复「人工」。",
                     ),
                 )
-                return True
+                return self._finish(context, metadata, order_sn=order_sn, release_stage=True)
             if not is_after_sales_related(text):
                 return False
 
@@ -228,7 +256,7 @@ class AfterSalesApplyHandler(BaseHandler):
                             "亲，订单查询暂时失败，请稍后再试或回复「人工」协助处理~",
                         ),
                     )
-                    return True
+                    return self._finish(context, metadata, release_stage=True)
                 if status == "no_orders":
                     await self._send_text(
                         shop_id,
@@ -240,7 +268,7 @@ class AfterSalesApplyHandler(BaseHandler):
                             "或从订单页进入客服后再申请售后~",
                         ),
                     )
-                    return True
+                    return self._finish(context, metadata, release_stage=True)
                 if status == "no_eligible":
                     await self._send_text(
                         shop_id,
@@ -252,7 +280,7 @@ class AfterSalesApplyHandler(BaseHandler):
                             "如有疑问请回复「人工」为您处理~",
                         ),
                     )
-                    return True
+                    return self._finish(context, metadata, release_stage=True)
                 order_sn = resolved_sn
             except Exception as e:
                 self.logger.error(f"按买家 UID 查询订单失败: {e}")
@@ -265,7 +293,7 @@ class AfterSalesApplyHandler(BaseHandler):
                         "亲，订单查询暂时失败，请稍后再试或回复「人工」协助处理~",
                     ),
                 )
-                return True
+                return self._finish(context, metadata, release_stage=True)
         else:
             order_sn = preferred_sn
             if not order_sn:
@@ -296,7 +324,7 @@ class AfterSalesApplyHandler(BaseHandler):
                     "或从订单页进聊天发订单卡片，我这边给您发退换货申请~",
                 ),
             )
-            return True
+            return self._finish(context, metadata)
 
         remember_order(str(shop_id), str(from_uid), order_sn, ttl_sec=ttl)
 
@@ -346,7 +374,7 @@ class AfterSalesApplyHandler(BaseHandler):
             await self._transfer_to_human(
                 context, metadata, shop_id, user_id, from_uid, notice
             )
-            return True
+            return self._finish(context, metadata, release_stage=True)
 
         policy_type = decision.after_sales_type
         if policy_type in (None, AFTER_SALES_REFUND_ONLY):
@@ -358,7 +386,7 @@ class AfterSalesApplyHandler(BaseHandler):
                 from_uid,
                 _human_notice_for_reason("refund_only"),
             )
-            return True
+            return self._finish(context, metadata, release_stage=True)
 
         refund_amount = int(
             config.get("chat.after_sales_apply_refund_amount_fen", 0) or 0
@@ -389,7 +417,7 @@ class AfterSalesApplyHandler(BaseHandler):
                     "亲，暂未获取到订单金额，请您在订单详情页直接申请售后，或回复「人工」协助处理~",
                 ),
             )
-            return True
+            return self._finish(context, metadata, release_stage=True)
 
         from utils.merchant_refund_apply_record import (
             RefundApplyGate,
@@ -407,7 +435,7 @@ class AfterSalesApplyHandler(BaseHandler):
                 f"（本地已有代申请记录）"
             )
             await self._send_text(shop_id, user_id, from_uid, notice)
-            return True
+            return self._finish(context, metadata, release_stage=True)
 
         from Channel.pinduoduo.utils.API.chat_orders import build_ask_refund_apply_params
 
@@ -434,7 +462,7 @@ class AfterSalesApplyHandler(BaseHandler):
                     "亲，暂未获取到订单金额，请您在订单详情页直接申请售后，或回复「人工」协助处理~",
                 ),
             )
-            return True
+            return self._finish(context, metadata, release_stage=True)
 
         if int(policy_type or 0) != card_params.after_sales_type:
             self.logger.info(
@@ -533,7 +561,7 @@ class AfterSalesApplyHandler(BaseHandler):
                 refund_amount_fen=card_params.refund_amount,
             )
             await self._send_text(shop_id, user_id, from_uid, notice)
-        return True
+        return self._finish(context, metadata, order_sn=order_sn, release_stage=True)
 
     async def _transfer_to_human(
         self,

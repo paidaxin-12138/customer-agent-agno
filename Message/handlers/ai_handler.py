@@ -39,6 +39,8 @@ _FAILURE_PLACEHOLDER_MARKERS = (
 class AIReplyHandler(BaseHandler):
     """专注的AI回复处理器"""
 
+    allowed_stages = frozenset({"idle", "product_qa", "recommend"})
+
     def __init__(self, bot: Bot = None, auto_reply_types: set = None):
         super().__init__("AIReplyHandler")
         if bot is None:
@@ -75,7 +77,7 @@ class AIReplyHandler(BaseHandler):
         }
         self._pending_intent: Optional[str] = None
 
-    def can_handle(self, context: Context) -> bool:
+    def _can_handle_impl(self, context: Context) -> bool:
         return context.type in self.auto_reply_types
 
     def _resolve_buyer_uid(self, context: Context, metadata: Dict[str, Any]) -> Optional[str]:
@@ -104,16 +106,9 @@ class AIReplyHandler(BaseHandler):
 
     @staticmethod
     def _guess_intent(text: str) -> str:
-        t = (text or "").lower()
-        if any(k in t for k in ("物流", "快递", "发货", "到哪")):
-            return "logistics"
-        if any(k in t for k in ("退", "换", "售后", "保修")):
-            return "after_sales"
-        if any(k in t for k in ("多少钱", "价格", "优惠")):
-            return "price"
-        if any(k in t for k in ("颜色", "款式", "规格", "参数")):
-            return "product_spec"
-        return "general"
+        from Agent.CustomerAgent.conversation_memory import _guess_intent
+
+        return _guess_intent(text)
 
     def _should_escalate_to_human(self, text: str) -> bool:
         return has_explicit_transfer_intent(text)
@@ -331,7 +326,9 @@ class AIReplyHandler(BaseHandler):
 
             ai_t0 = time.perf_counter()
             async with tracker.ai_inflight():
-                reply = await self._get_ai_reply_with_sync_retry(processed_content, context)
+                reply = await self._get_ai_reply_with_sync_retry(
+                    processed_content, context, metadata
+                )
 
             if is_escalated(session_key, epoch):
                 self.logger.info("会话已转人工，跳过发送 AI 正文")
@@ -447,7 +444,12 @@ class AIReplyHandler(BaseHandler):
         await self.log_message(context, "立即转人工", reason)
         return True
 
-    async def _get_ai_reply_with_sync_retry(self, query: str, context: Context) -> Optional[str]:
+    async def _get_ai_reply_with_sync_retry(
+        self,
+        query: str,
+        context: Context,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
         if not self.bot:
             self.logger.warning("AIReplyHandler: Bot 未注入")
             return None
@@ -464,7 +466,7 @@ class AIReplyHandler(BaseHandler):
         last_err: Optional[Exception] = None
         for attempt in range(1, max_tries + 1):
             try:
-                content = await self._call_bot_once(query, context)
+                content = await self._call_bot_once(query, context, metadata)
                 if not self._is_invalid_ai_content(content):
                     return content
                 last_err = ValueError("empty or placeholder reply")
@@ -487,19 +489,52 @@ class AIReplyHandler(BaseHandler):
             self.logger.warning(f"AI 无有效回复: {last_err}")
         return None
 
-    async def _call_bot_once(self, query: str, context: Context) -> Optional[str]:
-        if hasattr(self.bot, "async_reply"):
-            res = await self.bot.async_reply(query, context)
+    async def _call_bot_once(
+        self,
+        query: str,
+        context: Context,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        from Agent.CustomerAgent.agent import (
+            reset_knowledge_retrieval_enabled,
+            set_knowledge_retrieval_enabled,
+        )
+        from Agent.CustomerAgent.conversation_memory import (
+            load_task_state,
+            resolve_session_id,
+        )
+        from utils.need_retrieval import need_retrieval
+
+        meta = metadata or {}
+        intent = self._guess_intent(query)
+        stage = "idle"
+        last_intent: Optional[str] = None
+        sid = resolve_session_id(context, meta)
+        if sid is not None:
+            task = load_task_state(sid)
+            stage = task.stage or "idle"
+            last_intent = task.last_intent or task.intent or None
+        rag_on = need_retrieval(
+            intent=intent,
+            stage=stage,
+            handler_already_processed=bool(meta.get("handler_already_processed")),
+            last_intent=last_intent,
+            current_text=query,
+        )
+        rag_tok = set_knowledge_retrieval_enabled(rag_on)
+        try:
+            if hasattr(self.bot, "async_reply"):
+                res = await self.bot.async_reply(query, context)
+            elif hasattr(self.bot, "reply"):
+                res = await asyncio.to_thread(self.bot.reply, query, context)
+            else:
+                self.logger.warning("Bot不支持 reply/async_reply")
+                return None
             if isinstance(res, Reply):
                 return getattr(res, "content", None)
             return str(res) if res is not None else None
-        if hasattr(self.bot, "reply"):
-            res = await asyncio.to_thread(self.bot.reply, query, context)
-            if isinstance(res, Reply):
-                return getattr(res, "content", None)
-            return str(res) if res is not None else None
-        self.logger.warning("Bot不支持 reply/async_reply")
-        return None
+        finally:
+            reset_knowledge_retrieval_enabled(rag_tok)
 
     async def _send_reply(self, context: Context, reply: str, metadata: Dict[str, Any]) -> bool:
         try:

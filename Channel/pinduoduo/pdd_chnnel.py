@@ -965,7 +965,9 @@ class PDDChannel(Channel):
                 # 根据消息类型决定处理方式
                 if self._should_process_immediately(context):
                     # 立即处理的消息类型
-                    await self._handle_immediate_message(context, shop_id, user_id)
+                    await self._handle_immediate_message(
+                        context, shop_id, user_id, username, queue_name
+                    )
                     self.logger.debug(f"立即处理消息: {context.type}, ID: {pdd_message.msg_id}")
                 elif self._should_queue_message(context):
                     # 需要放入队列的消息类型
@@ -1032,11 +1034,17 @@ class PDDChannel(Channel):
         
         return context.type in queue_types
     
-    async def _handle_immediate_message(self, context: Context, shop_id: str, user_id: str):
+    async def _handle_immediate_message(
+        self,
+        context: Context,
+        shop_id: str,
+        user_id: str,
+        username: str,
+        queue_name: str,
+    ):
         """
         立即处理消息
         """
-        username = context.kwargs.username
         recipient_uid = context.kwargs.from_uid
         try:
             from Channel.pinduoduo.utils.API.send_message import SendMessage
@@ -1083,12 +1091,58 @@ class PDDChannel(Channel):
                 await self._handle_mall_system_msg(context, shop_id, user_id, send_message)
                 
             elif context.type == ContextType.TRANSFER:
-                # 转接消息
-                self.logger.info(f"转接消息: {context.content}")
-                send_message.send_text(recipient_uid,"[玫瑰]")
+                await self._handle_inbound_transfer(
+                    context, shop_id, user_id, username, send_message, queue_name
+                )
                 
         except Exception as e:
             self.logger.error(f"立即处理消息失败: {e}")
+
+    async def _handle_inbound_transfer(
+        self,
+        context: Context,
+        shop_id: str,
+        user_id: str,
+        username: str,
+        send_message: Any,
+        queue_name: str,
+    ) -> None:
+        """售前/其他客服转接进线：记录已在 hub 完成；可选强制接管并入队未回复。"""
+        from utils.pdd_transfer import resolve_buyer_uid_from_transfer
+
+        buyer_uid = resolve_buyer_uid_from_transfer(context)
+        self.logger.info(
+            "转接消息 shop={}-{} buyer={} content={!r}",
+            shop_id,
+            username,
+            buyer_uid,
+            context.content,
+        )
+        if not buyer_uid:
+            self.logger.warning(
+                "转接消息未能解析买家 UID（shop={} user={}），请核对 WS raw_data",
+                shop_id,
+                user_id,
+            )
+            return
+        try:
+            from utils.transfer_takeover import apply_inbound_transfer_takeover
+
+            await apply_inbound_transfer_takeover(
+                channel_name=self.channel_name,
+                shop_id=str(shop_id),
+                seller_user_id=str(user_id),
+                login_username=str(username),
+                buyer_uid=str(buyer_uid),
+                queue_name=queue_name,
+            )
+        except Exception as takeover_err:
+            self.logger.warning(f"转接强制接管失败: {takeover_err}")
+        notice = str(config.get("chat.inbound_transfer_buyer_notice") or "").strip()
+        if notice:
+            await asyncio.to_thread(send_message.send_text, str(buyer_uid), notice)
+        if bool(config.get("chat.transfer_auto_rose_enabled", False)):
+            await asyncio.to_thread(send_message.send_text, str(buyer_uid), "[玫瑰]")
 
     async def _notify_refund_card_unusable(
         self,

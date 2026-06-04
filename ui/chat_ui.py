@@ -777,6 +777,9 @@ class ChatLiveWidget(QFrame):
         title_layout.addWidget(
             CaptionLabel("选择账号与会话，查看记录并人工回复买家")
         )
+        self._ws_status_label = CaptionLabel("")
+        self._ws_status_label.setWordWrap(True)
+        title_layout.addWidget(self._ws_status_label)
         ph.addWidget(title_area)
         ph.addStretch()
         layout.addWidget(page_header)
@@ -1136,9 +1139,49 @@ class ChatLiveWidget(QFrame):
         self.account_list.reload()
         self._refresh_session_trees()
         self._rebuild_quick_replies()
+        self._refresh_ws_status_hint()
+
+    def _refresh_ws_status_hint(self) -> None:
+        """提示 WebSocket 是否在收消息（与「开始回复」绑定，非仅上线）。"""
+        label = getattr(self, "_ws_status_label", None)
+        if label is None:
+            return
+        try:
+            from core.connection_status import ConnectionState, ConnectionStatusManager
+            from ui.auto_reply_ui import auto_reply_manager
+
+            connected = [
+                s
+                for s in ConnectionStatusManager().get_all_status()
+                if s.state == ConnectionState.CONNECTED
+            ]
+            running = auto_reply_manager.get_running_count()
+            if connected:
+                names = "、".join(s.username for s in connected[:3])
+                extra = f" 等{len(connected)}个" if len(connected) > 3 else ""
+                label.setText(
+                    f"消息通道：已连接 {names}{extra}。"
+                    "浏览器可只看不回；勿与软件同一子账号同时在网页「接待」。"
+                    "转接请转到本软件「开始回复」的接待号，将自动截流并由 AI 处理。"
+                )
+                label.setStyleSheet("color: #32D74B;")
+            elif running > 0:
+                label.setText(
+                    "消息通道：正在连接 WebSocket… 若长时间无会话，请在「自动回复」确认已点「开始回复」。"
+                )
+                label.setStyleSheet("color: #FF9F0A;")
+            else:
+                label.setText(
+                    "消息通道：未连接。请在「自动回复」对接待账号点「上线」→「开始回复」；"
+                    "仅上线不会收到买家消息。转接须转到本软件正在监听的那个子账号。"
+                )
+                label.setStyleSheet("color: #FF6B6B;")
+        except Exception as e:
+            self.logger.debug("WS 状态提示刷新失败: {}", e)
 
     def _on_sync_tick(self):
         """周期同步钩子：预留平台历史拉取，再刷新会话树。"""
+        self._refresh_ws_status_hint()
         try:
             if self._filter_account_id:
                 self._sync.sync_messages(int(self._filter_account_id))

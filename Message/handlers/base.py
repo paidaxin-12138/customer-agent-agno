@@ -1,20 +1,33 @@
 """
 处理器基类和通用工具
 """
-import json
-from typing import Dict, Any, Optional
+from typing import ClassVar, Dict, Any, Optional, FrozenSet
 from utils.logger_loguru import get_logger
 from bridge.context import Context
 from ..core.handlers import MessageHandler
 
 
-
 class BaseHandler(MessageHandler):
     """处理器基类，提供通用功能"""
+
+    allowed_stages: ClassVar[FrozenSet[str]] = frozenset({"idle"})
 
     def __init__(self, name: Optional[str] = None):
         super().__init__()
         self.name = name or self.__class__.__name__
+
+    def _stage_allowed(self, context: Context) -> bool:
+        from Agent.CustomerAgent.conversation_memory import get_current_stage
+
+        return get_current_stage(context) in self.allowed_stages
+
+    def can_handle(self, context: Context) -> bool:
+        if not self._stage_allowed(context):
+            return False
+        return self._can_handle_impl(context)
+
+    def _can_handle_impl(self, context: Context) -> bool:
+        return False
 
     async def log_message(self, context: Context, action: str, extra_info: str = ""):
         """统一的日志记录"""

@@ -16,6 +16,7 @@ from Agent.CustomerAgent.tools.get_product_list import get_shop_products, get_pr
 from Agent.CustomerAgent.tools.send_goods_link import send_goods_link
 from config import get_config
 import asyncio
+from contextvars import ContextVar, Token
 from typing import Any, Dict, List, Optional
 from utils.logger_loguru import get_logger
 from pydantic import BaseModel, Field
@@ -38,6 +39,25 @@ _NATURAL_STYLE_CONTEXT = (
     "真实场景要像熟人接力聊天：后续消息默认零寒暄，直奔答案。"
     "篇幅硬约束：单条输出宁可短一半也不要写长；买家连发多条时更要一句点破，不要铺陈。"
 )
+
+_knowledge_retrieval_enabled: ContextVar[bool] = ContextVar(
+    "knowledge_retrieval_enabled", default=True
+)
+
+_RAG_MAX_DOCUMENTS = 3
+
+
+def set_knowledge_retrieval_enabled(enabled: bool) -> Token:
+    return _knowledge_retrieval_enabled.set(bool(enabled))
+
+
+def reset_knowledge_retrieval_enabled(token: Token) -> None:
+    _knowledge_retrieval_enabled.reset(token)
+
+
+def is_knowledge_retrieval_enabled() -> bool:
+    return _knowledge_retrieval_enabled.get()
+
 
 _KNOWLEDGE_GROUNDING: List[str] = [
     "本店主营以知识库检索到的「美甲灯/光疗灯」及其中明确写明的配件为准；不得编造未在检索结果中出现的在售 SKU、库存、价格或规格。",
@@ -73,15 +93,17 @@ def _customer_agno_knowledge_retriever(km: "KnowledgeManager"):
         **kwargs: Any,
     ) -> Optional[List[Dict[str, Any]]]:
         log = get_logger("CustomerAgent")
+        if not is_knowledge_retrieval_enabled():
+            return None
         q = (query or "").strip()
         if not q:
             return None
-        limit = 5
+        limit = _RAG_MAX_DOCUMENTS
         if num_documents is not None:
             try:
                 n = int(num_documents)
                 if n > 0:
-                    limit = n
+                    limit = min(n, _RAG_MAX_DOCUMENTS)
             except (TypeError, ValueError):
                 pass
         try:

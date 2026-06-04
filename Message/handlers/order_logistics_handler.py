@@ -1,7 +1,7 @@
 """
-物流咨询 → 调用开放平台 pdd.logistics.ordertrace.get（改址由 AddressChangeHandler 处理）。
+物流咨询 → 优先 MMS userAllOrder（traceInfoList / 订单状态），开放平台轨迹为可选降级。
 
-文档：https://open.pinduoduo.com/application/document/api?id=pdd.logistics.ordertrace.get
+改址由 AddressChangeHandler 处理。
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ import re
 from typing import Any, Dict, Optional
 
 from bridge.context import Context, ContextType, ChannelType
-from config import config
 
 from .base import BaseHandler
 
@@ -76,10 +75,37 @@ def _extract_order_sn(text: str) -> Optional[str]:
 class OrderLogisticsHandler(BaseHandler):
     """物流咨询查轨迹。"""
 
+    allowed_stages = frozenset({"idle", "logistics"})
+
     def __init__(self):
         super().__init__("OrderLogisticsHandler")
 
-    def can_handle(self, context: Context) -> bool:
+    @staticmethod
+    def _commit_logistics_state(
+        context: Context,
+        metadata: Dict[str, Any],
+        *,
+        order_sn: Optional[str] = None,
+        release_stage: bool = False,
+    ) -> None:
+        from Agent.CustomerAgent.conversation_memory import (
+            commit_handler_session_from_context,
+        )
+
+        slots: Dict[str, str] = {}
+        if order_sn:
+            slots["order_sn"] = order_sn
+        commit_handler_session_from_context(
+            context,
+            metadata,
+            stage="logistics",
+            intent="logistics",
+            slots=slots or None,
+            source_handler="OrderLogisticsHandler",
+            release_stage=release_stage,
+        )
+
+    def _can_handle_impl(self, context: Context) -> bool:
         if context.type != ContextType.TEXT:
             return False
         ch = context.channel_type
@@ -105,35 +131,18 @@ class OrderLogisticsHandler(BaseHandler):
         if not _is_logistics_intent(text):
             return False
 
-        if not config.get("pinduoduo_open.enabled", True):
-            await self._send_reply(
-                shop_id,
-                user_id,
-                from_uid,
-                "亲，物流查询未开启；如需查件请先联系店主配置开放平台，或为您转人工处理。",
-            )
-            return True
-
         order_sn = _extract_order_sn(text)
-        if not order_sn:
-            await self._send_reply(
-                shop_id,
-                user_id,
-                from_uid,
-                "亲，麻烦发一下拼多多订单号（订单详情页可复制，格式类似 250105-xxxxxxxx），"
-                "我这边帮您查物流进度~",
-            )
-            return True
 
         try:
-            from Channel.pinduoduo.utils.API.logistics import (
-                LogisticsManager,
-                format_order_trace_reply,
-            )
+            from Channel.pinduoduo.utils.API.logistics import lookup_order_logistics_reply
 
-            mgr = LogisticsManager(str(shop_id), str(user_id))
-            raw = await asyncio.to_thread(mgr.get_order_trace, order_sn)
-            reply = format_order_trace_reply(order_sn, raw)
+            reply, resolved_sn, need_pick = await asyncio.to_thread(
+                lookup_order_logistics_reply,
+                str(shop_id),
+                str(user_id),
+                str(from_uid),
+                order_sn,
+            )
             await self._send_reply(shop_id, user_id, from_uid, reply)
         except Exception as e:
             self.logger.error(f"物流查询失败: {e}")
@@ -143,6 +152,15 @@ class OrderLogisticsHandler(BaseHandler):
                 from_uid,
                 "亲，物流查询遇到一点问题，请稍后再试或联系人工客服帮您查单。",
             )
+            self._commit_logistics_state(context, metadata, release_stage=True)
+            return True
+
+        self._commit_logistics_state(
+            context,
+            metadata,
+            order_sn=resolved_sn or order_sn,
+            release_stage=not need_pick,
+        )
         return True
 
     async def _send_reply(

@@ -5,6 +5,7 @@ from typing import Dict, Any, FrozenSet
 from bridge.context import Context, ContextType
 from config import config
 from .base import BaseHandler
+from .stage_constants import ALL_HANDLER_STAGES
 from .channel_send import send_text_to_buyer, transfer_to_available_cs_async
 from database.db_manager import db_manager
 from utils.human_transfer_intent import detect_human_transfer_intent
@@ -26,6 +27,8 @@ _DEFAULT_KEYWORDS = frozenset(
 
 class KeywordDetectionHandler(BaseHandler):
     """关键词检测处理器 - 检测转人工关键词并触发转人工流程"""
+
+    allowed_stages = ALL_HANDLER_STAGES
 
     _LOCAL_HUMAN_ASSIST_PHRASES = (
         "转人工",
@@ -78,7 +81,7 @@ class KeywordDetectionHandler(BaseHandler):
         """只读视图（兼容 get_keywords）。"""
         return self._keywords_snapshot
 
-    def can_handle(self, context: Context) -> bool:
+    def _can_handle_impl(self, context: Context) -> bool:
         if context.type != ContextType.TEXT:
             return False
         if not context.content or not isinstance(context.content, str):

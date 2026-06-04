@@ -1,12 +1,19 @@
-"""拼多多物流轨迹查询。
+"""拼多多物流：优先 MMS userAllOrder，开放平台轨迹为可选降级。
 
-文档：https://open.pinduoduo.com/application/document/api?id=pdd.logistics.ordertrace.get
+开放平台文档：https://open.pinduoduo.com/application/document/api?id=pdd.logistics.ordertrace.get
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+from config import config
+
+from .chat_orders import (
+    ChatOrdersAPI,
+    format_logistics_order_pick_prompt,
+    pick_logistics_order,
+)
 from .open_platform_client import OpenPlatformAPI
 
 
@@ -111,3 +118,206 @@ def _summarize_trace_dict(d: Dict[str, Any], depth: int = 0) -> str:
             if inner:
                 parts.append(inner)
     return "\n".join(parts[:12])
+
+
+def open_platform_logistics_ready() -> bool:
+    """开放平台物流降级是否可用（enabled 且密钥齐全）。"""
+    po = config.get("pinduoduo_open") or {}
+    if not isinstance(po, dict):
+        return False
+    if not po.get("enabled", True):
+        return False
+    cid = str(po.get("client_id") or "").strip()
+    secret = str(po.get("client_secret") or "").strip()
+    token = str(po.get("access_token") or "").strip()
+    return bool(cid and secret and token)
+
+
+def extract_mms_trace_list(order: Dict[str, Any]) -> List[Any]:
+    """从 userAllOrder 订单体提取轨迹节点列表。"""
+    if not isinstance(order, dict):
+        return []
+    for key in (
+        "traceInfoList",
+        "trace_info_list",
+        "trackInfoList",
+        "track_info_list",
+    ):
+        val = order.get(key)
+        if isinstance(val, list) and val:
+            return val
+    return []
+
+
+def _format_trace_nodes(traces: List[Any], *, header: str) -> str:
+    lines: List[str] = [header]
+    for item in traces[:30]:
+        if isinstance(item, dict):
+            t = (
+                item.get("time")
+                or item.get("traceTime")
+                or item.get("action_time")
+                or item.get("trace_time")
+                or item.get("statusTime")
+                or ""
+            )
+            desc = (
+                item.get("desc")
+                or item.get("traceDesc")
+                or item.get("action_desc")
+                or item.get("status_desc")
+                or item.get("statusDesc")
+                or item.get("remark")
+                or item.get("context")
+                or item.get("info")
+                or ""
+            )
+            extra = (
+                item.get("shipping_name")
+                or item.get("tracking_number")
+                or item.get("trackingNumber")
+                or ""
+            )
+            seg = " ".join(
+                x for x in (str(t).strip(), str(desc).strip(), str(extra).strip()) if x
+            )
+            if seg:
+                lines.append(f"- {seg}")
+        elif item is not None and str(item).strip():
+            lines.append(f"- {item}")
+    return "\n".join(lines) if len(lines) > 1 else header
+
+
+def _shipping_status_label(order: Dict[str, Any]) -> str:
+    try:
+        status = int(order.get("shippingStatus") or 0)
+    except (TypeError, ValueError):
+        status = 0
+    if status <= 0:
+        return "未发货"
+    return "已发货"
+
+
+def format_mms_order_logistics_reply(order_sn: str, order: Dict[str, Any]) -> str:
+    """将 userAllOrder 单条订单格式化为买家可读物流文案。"""
+    order_sn = (order_sn or "").strip()
+    status_str = str(order.get("orderStatusStr") or "").strip()
+    ship_label = _shipping_status_label(order)
+    tracking = str(order.get("trackingNumber") or order.get("tracking_number") or "").strip()
+    express = str(
+        order.get("shippingName")
+        or order.get("shipping_name")
+        or order.get("logisticsCompany")
+        or order.get("logistics_company")
+        or ""
+    ).strip()
+
+    traces = extract_mms_trace_list(order)
+    if traces:
+        header = f"订单 {order_sn} 物流轨迹："
+        if tracking:
+            header += f"\n运单号：{tracking}"
+        if express:
+            header += f"\n快递公司：{express}"
+        return _format_trace_nodes(traces, header=header)
+
+    lines: List[str] = [f"订单 {order_sn} 物流信息："]
+    if status_str:
+        lines.append(f"- 订单状态：{status_str}")
+    else:
+        lines.append(f"- 发货状态：{ship_label}")
+    if express:
+        lines.append(f"- 快递公司：{express}")
+    if tracking:
+        lines.append(f"- 运单号：{tracking}")
+    elif ship_label == "已发货":
+        lines.append("- 运单号：暂未同步，请稍后在订单详情查看")
+    predict = order.get("trackPredictInfo") or order.get("track_predict_info")
+    if isinstance(predict, dict):
+        pred_text = (
+            predict.get("predictDesc")
+            or predict.get("desc")
+            or predict.get("predict_desc")
+            or ""
+        )
+        if str(pred_text).strip():
+            lines.append(f"- 预计送达：{pred_text}")
+    elif predict and not isinstance(predict, dict):
+        lines.append(f"- 预计送达：{predict}")
+    if len(lines) == 1:
+        lines.append("- 暂未查询到轨迹明细，请在拼多多订单详情查看")
+    return "\n".join(lines)
+
+
+def lookup_order_logistics_reply(
+    shop_id: str,
+    user_id: str,
+    buyer_uid: str,
+    order_sn: Optional[str] = None,
+) -> Tuple[str, Optional[str], bool]:
+    """
+    查物流：按买家 UID 拉 userAllOrder，可自动解析单笔订单；无轨迹时再降级开放平台。
+
+    Returns:
+        (reply, resolved_order_sn, need_pick)
+        need_pick=True 表示需买家补充订单号，会话 stage 宜保持 logistics。
+    """
+    buyer_uid = str(buyer_uid or "").strip()
+    pref_sn = (order_sn or "").strip() or None
+
+    api = ChatOrdersAPI(str(shop_id), str(user_id))
+    api_ok, orders = api.fetch_orders_by_buyer_uid(buyer_uid, page_size=15)
+    if not api_ok:
+        return (
+            "亲，暂时无法查询订单信息，请稍后再试或联系人工客服帮您查单。",
+            None,
+            False,
+        )
+
+    status, resolved_sn, order = pick_logistics_order(orders, pref_sn)
+    if status == "no_orders":
+        return (
+            "亲，暂未查到您名下的近期订单，请确认是否用下单账号咨询，"
+            "或直接发订单号我帮您查物流~",
+            None,
+            False,
+        )
+    if status == "not_found":
+        return (
+            f"亲，未在您的订单列表中找到「{pref_sn}」，"
+            "请核对订单号是否为该账号下的拼多多订单。",
+            None,
+            False,
+        )
+    if status == "need_pick":
+        return format_logistics_order_pick_prompt(orders), None, True
+    if status != "ok" or not resolved_sn or not order:
+        return "亲，暂时无法确定要查询的订单，请发一下订单号~", None, True
+
+    order_sn = resolved_sn
+    mms_reply = format_mms_order_logistics_reply(order_sn, order)
+    if extract_mms_trace_list(order):
+        return mms_reply, order_sn, False
+
+    if open_platform_logistics_ready():
+        mgr = LogisticsManager(str(shop_id), str(user_id))
+        raw = mgr.get_order_trace(order_sn)
+        if _extract_trace_list_from_open_raw(raw):
+            return format_order_trace_reply(order_sn, raw), order_sn, False
+
+    return mms_reply, order_sn, False
+
+
+def _extract_trace_list_from_open_raw(raw: Optional[Dict[str, Any]]) -> List[Any]:
+    if not raw or not isinstance(raw, dict):
+        return []
+    body = raw
+    for key in (
+        "logistics_order_trace_get_response",
+        "order_trace_get_response",
+        "logistics_order_trace_response",
+    ):
+        if key in raw and isinstance(raw[key], dict):
+            body = raw[key]
+            break
+    return _extract_trace_list(body)
