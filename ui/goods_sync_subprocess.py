@@ -22,6 +22,9 @@ class GoodsSyncSubprocessRunner(QObject):
     """通过 QProcess 调用 scripts.sync_goods_to_kb，主界面保持可响应。"""
 
     progress = pyqtSignal(str, int, int)
+    list_ready = pyqtSignal(int)
+    item_synced = pyqtSignal(str, int, int, str)
+    catalog_cleared = pyqtSignal()
     success = pyqtSignal(int)
     failed = pyqtSignal(str)
     finished = pyqtSignal()
@@ -38,7 +41,14 @@ class GoodsSyncSubprocessRunner(QObject):
             and self._proc.state() != QProcess.ProcessState.NotRunning
         )
 
-    def start(self, shop_id: str, user_id: str, *, use_ocr: bool) -> None:
+    def start(
+        self,
+        shop_id: str = "",
+        user_id: str = "",
+        *,
+        use_ocr: bool,
+        sync_all: bool = False,
+    ) -> None:
         if self.is_running():
             return
 
@@ -52,13 +62,11 @@ class GoodsSyncSubprocessRunner(QObject):
         self._proc.setWorkingDirectory(str(get_base_path()))
         self._proc.setProgram(sys.executable)
 
-        args = [
-            "-m",
-            "scripts.sync_goods_to_kb",
-            f"--shop-id={shop_id}",
-            f"--user-id={user_id}",
-            "--emit-progress",
-        ]
+        args = ["-m", "scripts.sync_goods_to_kb", "--emit-progress"]
+        if sync_all:
+            args.append("--all")
+        else:
+            args.extend([f"--shop-id={shop_id}", f"--user-id={user_id}"])
         if not use_ocr:
             args.append("--no-ocr")
         self._proc.setArguments(args)
@@ -124,20 +132,60 @@ class GoodsSyncSubprocessRunner(QObject):
                 self.failed.emit(err_text)
             return
 
+        if payload.get("catalog_cleared"):
+            self.catalog_cleared.emit()
+
+        if payload.get("list_ready"):
+            total = int(payload.get("total_planned") or payload.get("total") or 0)
+            if total > 0:
+                self.list_ready.emit(total)
+
+        if payload.get("item_synced"):
+            self.item_synced.emit(
+                str(payload.get("title") or payload.get("msg") or ""),
+                int(payload.get("cur") or 0),
+                int(payload.get("total") or 0),
+                str(payload.get("goods_id") or ""),
+            )
+
         self.progress.emit(
             str(payload.get("msg") or ""),
             int(payload.get("cur") or 0),
             int(payload.get("total") or 0),
         )
 
+    def _parse_partial_synced_count(self) -> int:
+        """进程被 kill 时从 stdout 进度行恢复已同步数量。"""
+        last = 0
+        for line in self._stdout_buf.splitlines():
+            if _PROGRESS_MARKER not in line:
+                continue
+            try:
+                payload = json.loads(line.split(_PROGRESS_MARKER, 1)[1])
+            except json.JSONDecodeError:
+                continue
+            if payload.get("item_synced"):
+                last = max(last, int(payload.get("cur") or 0))
+        return last
+
     def _on_finished(self, exit_code: int, _status: QProcess.ExitStatus) -> None:
         if not self._handled_done:
-            if exit_code == 0:
+            partial = self._parse_partial_synced_count()
+            if partial > 0:
+                self._handled_done = True
+                logger.warning(
+                    "商品同步子进程异常退出(code=%s)，保留已同步 %s 个",
+                    exit_code,
+                    partial,
+                )
+                self.success.emit(partial)
+            elif exit_code == 0:
                 self.failed.emit("同步进程异常结束，未收到完成信号")
             else:
+                hint = "（可能因取消或内存不足被终止）" if exit_code == 9 else ""
                 tail = self._stdout_buf.strip()[-200:]
                 self.failed.emit(
-                    f"同步进程退出码 {exit_code}"
+                    f"同步进程退出码 {exit_code}{hint}"
                     + (f"\n{tail}" if tail else "")
                 )
         self._proc = None

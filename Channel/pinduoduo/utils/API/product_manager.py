@@ -1,5 +1,6 @@
-from typing import Optional
+from typing import Any, Optional
 
+from config import get_config
 from ..base_request import BaseRequest
 from utils.product_image_urls import collect_product_images
 
@@ -60,24 +61,25 @@ class ProductManager(BaseRequest):
         super().__init__(shop_id=shop_id, user_id=user_id)
         if cookies:
             self.update_cookies(cookies)
+        self._browser_session: Any = None
 
-    def _resolve_mms_uid(self) -> str:
-        """商家后台 recommendGoods 需要的 uid（聊天场景为**买家** UID，非客服账号）。"""
-        for key in ("uid", "USER_ID", "user_id", "api_uid"):
-            val = (self.cookies or {}).get(key)
-            if val is not None and str(val).strip():
-                return str(val).strip()
-        if self.user_id:
-            return str(self.user_id).strip()
-        return ""
+    def attach_browser_session(self, session: Any) -> None:
+        """同步商品时注入 Playwright 会话，复用 anti-content 上下文。"""
+        self._browser_session = session
+
+    def detach_browser_session(self) -> None:
+        self._browser_session = None
+
+    def _use_browser_for_mall_list(self) -> bool:
+        return bool(get_config("knowledge_base.goods_sync_use_browser", True))
 
     def _mall_goods_list_headers(self) -> dict:
         headers = self._mms_browser_headers("https://mms.pinduoduo.com/goods/goods_list")
         headers["priority"] = "u=1, i"
         return headers
 
-    def _fetch_mall_goods_list(self, page: int = 1, size: int = 10) -> Optional[dict]:
-        """商家后台「商品列表」全店在售（用于知识库同步，无需买家 UID）。"""
+    def _fetch_mall_goods_list_http(self, page: int = 1, size: int = 10) -> Optional[dict]:
+        """商家后台 goodsList（裸 HTTP，易被 54001 风控拦截）。"""
         url = "https://mms.pinduoduo.com/vodka/v2/mms/query/display/mall/goodsList"
         data = {
             "page": int(page),
@@ -90,6 +92,45 @@ class ProductManager(BaseRequest):
             "order_by": "created_at:desc,id:desc",
         }
         return self.post(url, json_data=data, headers=self._mall_goods_list_headers())
+
+    def _fetch_mall_goods_list_browser(self, page: int = 1, size: int = 10) -> Optional[dict]:
+        from Channel.pinduoduo.utils.mms_goods_browser import (
+            MmsGoodsBrowserSession,
+            fetch_mall_goods_list_via_browser,
+            is_risk_blocked_response,
+        )
+
+        if self._browser_session is not None:
+            try:
+                return self._browser_session.fetch_goods_list_raw_sync(page, size)
+            except Exception as e:
+                self.logger.error(f"浏览器会话拉取商品列表失败: {e}")
+                return {"success": False, "error_msg": str(e)}
+
+        return fetch_mall_goods_list_via_browser(self, page, size)
+
+    def _fetch_mall_goods_list(self, page: int = 1, size: int = 10) -> Optional[dict]:
+        """商家后台「商品列表」全店在售（优先浏览器上下文）。"""
+        if self._browser_session is not None or self._use_browser_for_mall_list():
+            result = self._fetch_mall_goods_list_browser(page, size)
+            if result and not is_risk_blocked_response(result):
+                return result
+            if self._browser_session is not None:
+                return result
+
+        result = self._fetch_mall_goods_list_http(page, size)
+        if result is None or is_risk_blocked_response(result):
+            from Channel.pinduoduo.utils.mms_goods_browser import (
+                is_risk_blocked_response as _risk,
+            )
+
+            if _risk(result):
+                self.logger.info(
+                    "goodsList HTTP 返回风控 {}，改用浏览器拉取",
+                    (result or {}).get("error_code"),
+                )
+            return self._fetch_mall_goods_list_browser(page, size)
+        return result
 
     def _fetch_chat_recommend_goods(
         self, buyer_uid: str, page: int = 1, size: int = 10
@@ -148,11 +189,19 @@ class ProductManager(BaseRequest):
         error_msg = (
             (result.get("errorMsg") or result.get("error_msg")) if result else None
         ) or "获取商品列表失败"
-        if not buyer and "频繁" in str(error_msg):
-            error_msg = (
-                f"{error_msg}（商家后台商品列表接口限流，请稍后再试「同步商品」）"
+        if not buyer:
+            from Channel.pinduoduo.utils.mms_goods_browser import (
+                is_risk_blocked_response,
+                normalize_risk_error_message,
             )
-        elif not buyer and "bad params" in str(error_msg).lower():
+
+            if is_risk_blocked_response(result):
+                error_msg = normalize_risk_error_message(result)
+            elif "bad params" in str(error_msg).lower():
+                pass
+            elif "频繁" in str(error_msg):
+                error_msg = normalize_risk_error_message(result or {"error_msg": error_msg})
+        if not buyer and "bad params" in str(error_msg).lower():
             error_msg = (
                 "商品列表接口参数无效。全店同步请稍后重试；"
                 "若在对话中查商品，需有买家会话上下文。"
@@ -207,8 +256,28 @@ class ProductManager(BaseRequest):
 
         headers = self._mms_browser_headers("https://mms.pinduoduo.com/chat-merchant/index.html")
 
-        # 发起请求
-        result = self.post(url, json_data=data, headers=headers)
+        result = None
+        if self._browser_session is not None:
+            try:
+                result = self._browser_session.fetch_product_detail_raw_sync(goods_id)
+            except Exception as e:
+                self.logger.warning(f"浏览器拉取商品详情失败 goods_id={goods_id}: {e}")
+
+        if result is None:
+            result = self.post(url, json_data=data, headers=headers)
+
+        if result and result.get("success") is not True:
+            from Channel.pinduoduo.utils.mms_goods_browser import (
+                MmsGoodsBrowserSession,
+                is_risk_blocked_response,
+            )
+
+            if is_risk_blocked_response(result) and self._use_browser_for_mall_list():
+                try:
+                    with MmsGoodsBrowserSession.from_product_manager(self) as session:
+                        result = session.fetch_product_detail_raw_sync(goods_id)
+                except Exception as e:
+                    self.logger.warning(f"详情浏览器兜底失败: {e}")
 
         if result and result.get("success") == True:
             # 解析商品详细信息
@@ -299,6 +368,7 @@ class ProductManager(BaseRequest):
             goods_list = (
                 result_data.get("goods_list")
                 or result_data.get("goodsList")
+                or result_data.get("list")
                 or []
             )
             products = []

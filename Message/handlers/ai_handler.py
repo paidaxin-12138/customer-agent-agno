@@ -41,6 +41,14 @@ class AIReplyHandler(BaseHandler):
 
     allowed_stages = frozenset({"idle", "product_qa", "recommend"})
 
+    def _stage_allowed(self, context: Context) -> bool:
+        from Agent.CustomerAgent.conversation_memory import get_current_stage
+
+        stages = set(self.allowed_stages)
+        if bool(config.get("chat.ai_allow_after_sales_stage", True)):
+            stages.add("after_sales")
+        return get_current_stage(context) in stages
+
     def __init__(self, bot: Bot = None, auto_reply_types: set = None):
         super().__init__("AIReplyHandler")
         if bot is None:

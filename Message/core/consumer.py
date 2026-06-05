@@ -8,6 +8,7 @@ from typing import Dict, List
 
 from utils.buyer_lock_registry import BuyerLockRegistry
 from utils.logger_loguru import get_logger
+from config import get_config
 from bridge.context import Context
 from .queue import queue_manager
 from .handlers import MessageHandler
@@ -49,6 +50,10 @@ class MessageConsumer:
 
         self.running = True
         self.consumer_task = asyncio.create_task(self._consume_loop())
+        if get_config("chat.queue_force_enqueue", False):
+            self.logger.warning(
+                "chat.queue_force_enqueue enabled: full queue will drop oldest messages"
+            )
         self.logger.info(f"Consumer {self.queue_name} started ({self.max_concurrent} workers)")
 
     async def _consume_loop(self):
@@ -126,6 +131,14 @@ class MessageConsumer:
         lock = self._buyer_locks.lock_for(user_key)
         processed = False
         metadata: Dict = {}
+        ctx_type = getattr(wrapper.context.type, "value", wrapper.context.type)
+        self.logger.info(
+            "[DEQUEUE] queue={} msg_id={} type={} user_key={}",
+            self.queue_name,
+            wrapper.message_id,
+            ctx_type,
+            user_key,
+        )
         await lock.acquire()
         try:
             try:
@@ -189,6 +202,25 @@ class MessageConsumer:
                 except Exception as wd_err:
                     self.logger.warning(f"inbound watchdog 启动失败: {wd_err}")
 
+                try:
+                    from utils.inbound_transfer_gate import (
+                        should_block_handler_until_transfer,
+                    )
+
+                    if should_block_handler_until_transfer(
+                        wrapper.context, metadata
+                    ):
+                        self.logger.info(
+                            "[GATE] 接待号未转接入线，跳过责任链 queue={} buyer={}",
+                            self.queue_name,
+                            user_key,
+                        )
+                        processed = True
+                        metadata["inbound_transfer_gated"] = True
+                        return
+                except Exception as gate_err:
+                    self.logger.debug("inbound_transfer_gate: {}", gate_err)
+
                 for handler in self.handlers:
                     try:
                         if handler.can_handle(wrapper.context):
@@ -211,8 +243,12 @@ class MessageConsumer:
                                     if metadata.get("transfer_takeover")
                                     else ""
                                 )
-                                self.logger.debug(
-                                    f"Message {wrapper.message_id} handled by {hname}{extra}"
+                                self.logger.info(
+                                    "[HANDLED] queue={} msg_id={} handled_by={}{}",
+                                    self.queue_name,
+                                    wrapper.message_id,
+                                    hname,
+                                    extra,
                                 )
                                 break
                     except Exception as e:
@@ -273,10 +309,13 @@ class MessageConsumer:
                 self._record_process_failure(metadata, error=e)
         finally:
             lock.release()
+            handled_by = metadata.get("handled_by", "")
             self.logger.info(
-                "Message {} 处理完成 processed={} user_key={}",
+                "[DONE] queue={} msg_id={} processed={} handled_by={} user_key={}",
+                self.queue_name,
                 wrapper.message_id,
                 processed,
+                handled_by or "-",
                 user_key,
             )
 

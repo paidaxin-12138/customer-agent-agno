@@ -94,6 +94,7 @@ class ChatSession(Base):
     task_state_json = Column(Text, nullable=True)
     long_term_summary = Column(Text, nullable=True)
     memory_summary_through_id = Column(Integer, default=0)
+    inbound_transferred_at = Column(DateTime, nullable=True, comment='收到平台 TRANSFER 的时间')
     created_at = Column(DateTime, default=_db_now)
     updated_at = Column(DateTime, default=_db_now, onupdate=_db_now)
 

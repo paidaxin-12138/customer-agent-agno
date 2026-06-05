@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QSizePolicy,
     QProgressBar,
+    QCheckBox,
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QProcess
 from qfluentwidgets import (
@@ -34,6 +35,7 @@ from qfluentwidgets import (
     CaptionLabel,
     InfoBar,
     InfoBarPosition,
+    ComboBox,
 )
 
 if TYPE_CHECKING:
@@ -49,42 +51,144 @@ from .goods_sync_subprocess import GoodsSyncSubprocessRunner
 logger = get_logger(__name__)
 
 
+class GoodsSyncAccountPickerDialog(QDialog):
+    """选择要同步商品的拼多多账号（或全部）。"""
+
+    def __init__(self, accounts: List[dict], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("选择同步账号")
+        self.setFixedSize(460, 260)
+        self._accounts = accounts
+        self._selected: Optional[dict] = None
+
+        from config import config, get_config
+
+        try:
+            config.reload()
+        except Exception:
+            pass
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+
+        hint = QLabel("选择要同步商品的店铺账号：")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.account_combo = ComboBox()
+        self.account_combo.setMinimumWidth(380)
+        if len(accounts) > 1:
+            self.account_combo.addItem(
+                f"全部账号（共 {len(accounts)} 个）",
+                userData={"sync_all": True},
+            )
+        for acc in accounts:
+            label = (
+                f"{acc.get('shop_name') or acc.get('shop_id')} — "
+                f"{acc.get('username') or acc.get('user_id')} "
+                f"({acc.get('shop_id')})"
+            )
+            self.account_combo.addItem(
+                label,
+                userData={
+                    "sync_all": False,
+                    "shop_id": acc.get("shop_id"),
+                    "user_id": acc.get("user_id"),
+                    "shop_name": acc.get("shop_name") or acc.get("shop_id"),
+                },
+            )
+        layout.addWidget(self.account_combo)
+
+        self.ocr_cb = QCheckBox("识别商品图片文字（OCR，明显变慢）")
+        self.ocr_cb.setChecked(
+            bool(get_config("knowledge_base.goods_sync_ocr_enabled", False))
+        )
+        layout.addWidget(self.ocr_cb)
+
+        ocr_hint = CaptionLabel("建议关闭 OCR；中断后可再次同步，已写入的商品会自动跳过。")
+        ocr_hint.setStyleSheet("color: #9EA6B8;")
+        ocr_hint.setWordWrap(True)
+        layout.addWidget(ocr_hint)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = PushButton("取消")
+        ok_btn = PrimaryPushButton("开始同步")
+        cancel_btn.clicked.connect(self.reject)
+        ok_btn.clicked.connect(self._on_ok)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
+
+    def _on_ok(self) -> None:
+        data = self.account_combo.currentData()
+        if not isinstance(data, dict):
+            self.reject()
+            return
+        self._selected = {**data, "use_ocr": self.ocr_cb.isChecked()}
+        self.accept()
+
+    def selection(self) -> Optional[dict]:
+        return self._selected
+
+
 class GoodsSyncCookiePreflightWorker(QThread):
-    """同步前检测商品接口登录态，必要时刷新 Cookie 写入数据库。"""
+    """同步前快速检测 MMS 登录态（getToken，不拉商品列表、不启浏览器）。"""
 
     finished_ok = pyqtSignal()
     finished_fail = pyqtSignal(str)
+
+    PREFLIGHT_TIMEOUT_SEC = 25
 
     def __init__(self, shop_id: str, user_id: str, parent=None):
         super().__init__(parent)
         self.shop_id = shop_id
         self.user_id = user_id
 
-    def run(self) -> None:
+    def _check_login(self) -> tuple[bool, str]:
+        from Channel.pinduoduo.utils.API.get_token import GetToken
+        from scripts.sync_goods_to_kb import _normalize_sync_error_message
+
+        gt = GetToken(self.shop_id, self.user_id)
+        token = gt.get_token()
+        if token:
+            return True, ""
+
+        pm = None
         try:
             from Channel.pinduoduo.utils.API.product_manager import ProductManager
-            from scripts.sync_goods_to_kb import _normalize_sync_error_message
 
             pm = ProductManager(shop_id=self.shop_id, user_id=self.user_id)
-            result = pm.get_product_list(page=1, size=1)
-            if result and result.get("success"):
+            logger.info("getToken 失败，尝试刷新 Cookie…")
+            if pm.force_refresh_cookies() or pm.force_relogin():
+                gt2 = GetToken(self.shop_id, self.user_id)
+                if gt2.get_token():
+                    return True, ""
+        except Exception as e:
+            logger.warning(f"预检刷新 Cookie 失败: {e}")
+
+        return False, _normalize_sync_error_message(
+            "拼多多登录态无效或已过期。请在「用户管理」重新验证登录后再同步商品。"
+        )
+
+    def run(self) -> None:
+        import concurrent.futures
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                fut = pool.submit(self._check_login)
+                ok, err = fut.result(timeout=self.PREFLIGHT_TIMEOUT_SEC)
+            if ok:
                 self.finished_ok.emit()
-                return
-
-            err = str((result or {}).get("error_msg") or (result or {}).get("errorMsg") or "")
-            expired = "会话已过期" in err or (result or {}).get("error_code") == 43001
-            if expired:
-                logger.info("商品接口会话过期，尝试刷新 Cookie…")
-                refreshed = pm.force_refresh_cookies() or pm.force_relogin()
-                if refreshed:
-                    result2 = pm.get_product_list(page=1, size=1)
-                    if result2 and result2.get("success"):
-                        self.finished_ok.emit()
-                        return
-                self.finished_fail.emit(_normalize_sync_error_message(err))
-                return
-
-            self.finished_fail.emit(_normalize_sync_error_message(err or "商品接口不可用"))
+            else:
+                self.finished_fail.emit(err)
+        except concurrent.futures.TimeoutError:
+            logger.warning("商品同步预检超时（{}s）", self.PREFLIGHT_TIMEOUT_SEC)
+            self.finished_fail.emit(
+                "登录态检查超时。请点「取消」关闭对话框后重试；"
+                "若自动回复已在线，可直接再点一次「同步商品」。"
+            )
         except Exception as e:
             logger.error(f"同步前检查登录态失败: {e}")
             self.finished_fail.emit(str(e))
@@ -352,9 +456,17 @@ class LoadDataWorker(QThread):
     finished = pyqtSignal(list)  # 传递加载的文档列表
     failed = pyqtSignal(str)     # 错误消息
 
-    def __init__(self, knowledge_manager: KnowledgeManager):
+    def __init__(
+        self,
+        knowledge_manager: KnowledgeManager,
+        platform_shop_id: Optional[str] = None,
+        *,
+        list_all_shops: bool = False,
+    ):
         super().__init__()
         self.knowledge_manager = knowledge_manager
+        self.platform_shop_id = (platform_shop_id or "").strip() or None
+        self.list_all_shops = bool(list_all_shops)
 
     def run(self):
         """在子线程中运行异步加载"""
@@ -378,11 +490,13 @@ class LoadDataWorker(QThread):
     async def _load_async(self) -> list:
         """异步加载文档数据"""
         from ui.knowledge.data_loader import KnowledgeDataLoader
-        from config import get_config
 
         try:
             loader = KnowledgeDataLoader(self.knowledge_manager)
-            shop_id = (get_config("pinduoduo.shop_id", "") or "").strip() or None
+            if self.list_all_shops or not self.platform_shop_id:
+                shop_id = None
+            else:
+                shop_id = self.platform_shop_id
             docs = loader.load_documents(platform_shop_id=shop_id)
 
             logger.info(f"成功加载 {len(docs)} 个文档")
@@ -437,6 +551,10 @@ class KnowledgeUI(QFrame):
         # 分页相关
         self._current_page = 1  # 当前页码（从1开始）
         self._page_size = 12  # 每页显示数量
+        # 知识库列表按店铺过滤；同步完成后设为刚同步的店铺，避免卡片“消失”
+        self._display_shop_id: Optional[str] = None
+        self._display_shop_all: bool = False
+        self._restore_knowledge_display_shop_filter()
         self._total_pages = 1  # 总页数
 
         # 设置大小策略
@@ -475,6 +593,19 @@ class KnowledgeUI(QFrame):
         title_layout.addWidget(SubtitleLabel("知识库管理"))
         self.status_label = CaptionLabel(f"共 {len(self.docs)} 条记录")
         title_layout.addWidget(self.status_label)
+
+        shop_row = QHBoxLayout()
+        shop_row.setSpacing(8)
+        shop_row.addWidget(CaptionLabel("展示范围:"))
+        self._shop_filter_combo = ComboBox()
+        self._shop_filter_combo.setMinimumWidth(240)
+        self._shop_filter_combo.setToolTip("按店铺筛选知识库卡片；默认展示全部店铺")
+        self._shop_filter_combo.currentIndexChanged.connect(self._on_shop_filter_changed)
+        shop_row.addWidget(self._shop_filter_combo)
+        shop_row.addStretch(1)
+        title_layout.addLayout(shop_row)
+        self._shop_filter_options: list[tuple[str, str, bool]] = []
+        self._populate_shop_filter_combo()
 
         buttons_widget = QWidget()
         buttons_layout = QHBoxLayout(buttons_widget)
@@ -706,6 +837,138 @@ class KnowledgeUI(QFrame):
             if w is not None:
                 w.setParent(None)
 
+    def _restore_knowledge_display_shop_filter(self) -> None:
+        """从 config 恢复上次知识库列表的店铺范围。"""
+        try:
+            from config import get_config
+
+            if bool(get_config("knowledge_base.ui_display_all_shops", False)):
+                self._display_shop_all = True
+                self._display_shop_id = None
+                return
+            sid = str(get_config("knowledge_base.ui_last_shop_id", "") or "").strip()
+            if sid:
+                self._display_shop_id = sid
+                self._display_shop_all = False
+                return
+            self._display_shop_all = True
+            self._display_shop_id = None
+        except Exception as e:
+            logger.debug(f"恢复知识库店铺过滤失败: {e}")
+
+    def _build_shop_filter_options(self) -> list[tuple[str, str, bool]]:
+        """(展示名, shop_id 或 __all__, 是否全部店铺)"""
+        options: list[tuple[str, str, bool]] = [("全部店铺", "__all__", True)]
+        try:
+            from scripts.sync_goods_to_kb import list_pinduoduo_accounts_for_sync
+
+            for acc in list_pinduoduo_accounts_for_sync():
+                sid = str(acc.get("shop_id") or "").strip()
+                if not sid:
+                    continue
+                name = str(acc.get("shop_name") or sid)
+                options.append((f"{name} ({sid})", sid, False))
+        except Exception as e:
+            logger.debug(f"加载店铺筛选列表失败: {e}")
+        return options
+
+    def _populate_shop_filter_combo(self) -> None:
+        combo = getattr(self, "_shop_filter_combo", None)
+        if combo is None:
+            return
+        self._shop_filter_options = self._build_shop_filter_options()
+        combo.blockSignals(True)
+        combo.clear()
+        pick = 0
+        for i, (_label, sid, is_all) in enumerate(self._shop_filter_options):
+            combo.addItem(_label)
+            if is_all and getattr(self, "_display_shop_all", False):
+                pick = i
+            elif (
+                not is_all
+                and sid == str(getattr(self, "_display_shop_id", "") or "").strip()
+            ):
+                pick = i
+        combo.setCurrentIndex(pick)
+        combo.blockSignals(False)
+
+    def _on_shop_filter_changed(self, index: int) -> None:
+        opts = getattr(self, "_shop_filter_options", None) or []
+        if index < 0 or index >= len(opts):
+            return
+        _label, sid, is_all = opts[index]
+        self._display_shop_all = is_all
+        self._display_shop_id = None if is_all else sid
+        self._persist_knowledge_display_shop_filter()
+        self._cache_valid = False
+        self.refresh_data(force_reload=True)
+
+    def _sync_shop_filter_combo_to_display(self) -> None:
+        self._populate_shop_filter_combo()
+
+    def _persist_knowledge_display_shop_filter(self) -> None:
+        """保存知识库列表当前店铺范围，重启后刷新仍正确。"""
+        try:
+            from config import config
+
+            config.set(
+                "knowledge_base.ui_display_all_shops",
+                bool(getattr(self, "_display_shop_all", False)),
+                save=False,
+            )
+            config.set(
+                "knowledge_base.ui_last_shop_id",
+                str(getattr(self, "_display_shop_id", "") or "").strip(),
+                save=True,
+            )
+        except Exception as e:
+            logger.warning(f"保存知识库店铺过滤失败: {e}")
+
+    def _knowledge_list_shop_id(self) -> Optional[str]:
+        """知识库 UI 列表使用的店铺 ID；None 表示展示全部店铺文档。"""
+        if getattr(self, "_display_shop_all", False):
+            return None
+        sid = str(getattr(self, "_display_shop_id", "") or "").strip()
+        return sid or None
+
+    def _knowledge_load_worker(self) -> "LoadDataWorker":
+        """按当前 UI 店铺范围创建加载线程。"""
+        list_all = bool(getattr(self, "_display_shop_all", False))
+        shop_id = None if list_all else self._knowledge_list_shop_id()
+        if not list_all and not shop_id:
+            list_all = True
+        return LoadDataWorker(
+            self.knowledge_manager,
+            platform_shop_id=shop_id,
+            list_all_shops=list_all,
+        )
+
+    def _reload_knowledge_cards(self) -> None:
+        """按当前店铺过滤重新加载知识库卡片（不清空已同步店铺的展示范围）。"""
+        if not self.isVisible() or self.width() <= 0:
+            QTimer.singleShot(100, self._reload_knowledge_cards)
+            return
+        self.clear_grid_layout()
+        try:
+            self._ensure_knowledge_manager()
+            if self.knowledge_manager is None:
+                return
+            try:
+                self.knowledge_manager.reload_documents_from_disk()
+            except Exception as e:
+                logger.warning(f"重载知识库 JSON 失败: {e}")
+            self._show_loading_indicator()
+            worker = getattr(self, "_load_worker", None)
+            if worker is not None and worker.isRunning():
+                worker.wait(2000)
+            self._load_worker = self._knowledge_load_worker()
+            self._load_worker.finished.connect(self._on_data_loaded)
+            self._load_worker.failed.connect(self._on_load_failed)
+            self._load_worker.start()
+        except Exception as e:
+            logger.error(f"重载知识库卡片失败: {e}")
+            self._hide_loading_indicator()
+
     def populate_cards(self) -> None:
         """
         填充知识库卡片到网格布局
@@ -737,7 +1000,7 @@ class KnowledgeUI(QFrame):
             self._show_loading_indicator()
 
             # 启动后台加载
-            self._load_worker = LoadDataWorker(self.knowledge_manager)
+            self._load_worker = self._knowledge_load_worker()
             self._load_worker.finished.connect(self._on_data_loaded)
             self._load_worker.failed.connect(self._on_load_failed)
             self._load_worker.start()
@@ -1016,45 +1279,56 @@ class KnowledgeUI(QFrame):
 
         from scripts.sync_goods_to_kb import (
             validate_pinduoduo_account,
-            resolve_sync_shop_credentials,
+            list_pinduoduo_accounts_for_sync,
         )
 
-        shop_id, user_id = resolve_sync_shop_credentials()
-        if not shop_id or not user_id:
+        accounts = list_pinduoduo_accounts_for_sync()
+        if not accounts:
             QMessageBox.warning(
                 self,
-                "配置不完整",
-                "未找到可用的拼多多账号。\n请先在「用户管理」添加并验证账号，"
-                "或在 config.json 中设置 pinduoduo.shop_id / pinduoduo.user_id。",
+                "无可用账号",
+                "未找到拼多多账号。\n请先在「用户管理」添加并验证账号。",
             )
             return
 
-        login_err = validate_pinduoduo_account(shop_id, user_id)
-        if login_err:
-            QMessageBox.warning(self, "无法同步", login_err)
+        picker = GoodsSyncAccountPickerDialog(accounts, self)
+        if picker.exec() != QDialog.DialogCode.Accepted:
+            return
+        selected = picker.selection()
+        if not selected:
             return
 
-        if not confirm_action(
-            self,
-            "同步商品",
-            "将在独立进程中同步商品（含 OCR 时较慢，但主界面可继续操作）。\n"
-            "可在 config.json 的 knowledge_base.goods_sync_ocr_enabled 关闭 OCR。\n\n"
-            "是否现在开始同步？",
-            confirm_text="开始同步",
-            cancel_text="取消",
-        ):
-            return
+        self._sync_all_accounts = bool(selected.get("sync_all"))
+        if self._sync_all_accounts:
+            self._sync_shop_id = ""
+            self._sync_user_id = ""
+            self._sync_shop_label = f"全部 {len(accounts)} 个账号"
+        else:
+            self._sync_shop_id = str(selected.get("shop_id") or "")
+            self._sync_user_id = str(selected.get("user_id") or "")
+            self._sync_shop_label = str(selected.get("shop_name") or self._sync_shop_id)
+            login_err = validate_pinduoduo_account(self._sync_shop_id, self._sync_user_id)
+            if login_err:
+                QMessageBox.warning(self, "无法同步", login_err)
+                return
 
-        self._sync_shop_id = shop_id
-        self._sync_user_id = user_id
-        from config import get_config
+        from config import config, get_config
 
-        self._sync_use_ocr = bool(get_config("knowledge_base.goods_sync_ocr_enabled", True))
+        self._sync_use_ocr = bool(selected.get("use_ocr", False))
+        try:
+            config.set("knowledge_base.goods_sync_ocr_enabled", self._sync_use_ocr, save=True)
+        except Exception as e:
+            logger.warning(f"保存 OCR 开关到 config 失败: {e}")
 
         # 创建并显示进度对话框
         self._sync_dialog = QDialog(self)
-        self._sync_dialog.setWindowTitle("同步商品")
-        self._sync_dialog.setFixedSize(400, 200)
+        title = "同步商品"
+        if getattr(self, "_sync_shop_label", ""):
+            title = f"同步商品 — {self._sync_shop_label}"
+        self._sync_dialog.setWindowTitle(title)
+        self._sync_dialog.setFixedSize(420, 230)
+        self._sync_total_planned = 0
+        self._sync_known_goods_ids: set[str] = set()
         
         layout = QVBoxLayout(self._sync_dialog)
         layout.setContentsMargins(30, 30, 30, 30)
@@ -1063,7 +1337,13 @@ class KnowledgeUI(QFrame):
         # 进度标签
         self._sync_label = QLabel("正在获取商品列表...")
         self._sync_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._sync_label.setWordWrap(True)
         layout.addWidget(self._sync_label)
+
+        self._sync_count_label = QLabel("已完成 0 / —")
+        self._sync_count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._sync_count_label.setStyleSheet("color: #9EA6B8; font-size: 13px;")
+        layout.addWidget(self._sync_count_label)
         
         # 进度条
         self._sync_progress = QProgressBar()
@@ -1080,23 +1360,65 @@ class KnowledgeUI(QFrame):
         cancel_btn.clicked.connect(self._cancel_goods_sync)
         self._sync_cancel_btn = cancel_btn
 
+        if self._sync_all_accounts:
+            self._on_sync_preflight_ok()
+            return
+
         self._sync_preflight_worker = GoodsSyncCookiePreflightWorker(
             self._sync_shop_id, self._sync_user_id, self
         )
         self._sync_preflight_worker.finished_ok.connect(self._on_sync_preflight_ok)
         self._sync_preflight_worker.finished_fail.connect(self._on_sync_preflight_fail)
         self._sync_preflight_worker.finished.connect(self._on_sync_preflight_finished)
-        self._sync_label.setText("正在检查商品接口登录态…")
+        self._sync_label.setText("正在检查登录态（约几秒）…")
         self._sync_preflight_worker.start()
 
+        preflight_ms = (GoodsSyncCookiePreflightWorker.PREFLIGHT_TIMEOUT_SEC + 5) * 1000
+        self._sync_preflight_timer = QTimer(self)
+        self._sync_preflight_timer.setSingleShot(True)
+
+        def _on_preflight_watchdog() -> None:
+            worker = getattr(self, "_sync_preflight_worker", None)
+            if worker is not None and worker.isRunning():
+                logger.warning("商品同步预检 watchdog 触发，强制结束预检线程")
+                worker.requestInterruption()
+                worker.quit()
+                worker.wait(3000)
+                if worker.isRunning():
+                    worker.terminate()
+                    worker.wait(1000)
+                self._sync_preflight_worker = None
+                if hasattr(self, "_sync_dialog"):
+                    self._sync_dialog.reject()
+                QMessageBox.warning(
+                    self,
+                    "检查超时",
+                    "登录态检查耗时过长已中止。\n请确认自动回复已连接后，再点「同步商品」。",
+                )
+
+        self._sync_preflight_timer.timeout.connect(_on_preflight_watchdog)
+        self._sync_preflight_timer.start(preflight_ms)
+
     def _on_sync_preflight_finished(self) -> None:
+        timer = getattr(self, "_sync_preflight_timer", None)
+        if timer is not None:
+            timer.stop()
         self._sync_preflight_worker = None
 
     def _on_sync_preflight_ok(self) -> None:
         if hasattr(self, "_sync_label"):
             self._sync_label.setText("登录态正常，正在启动同步…")
+        self._during_goods_sync = True
+        self._sync_known_goods_ids = set()
+        self._sync_item_refresh_timer = QTimer(self)
+        self._sync_item_refresh_timer.setSingleShot(True)
+        self._sync_item_refresh_timer.setInterval(150)
+        self._sync_item_refresh_timer.timeout.connect(self._refresh_cards_during_goods_sync)
         self._sync_runner = GoodsSyncSubprocessRunner(self)
         self._sync_runner.progress.connect(self._on_sync_progress)
+        self._sync_runner.list_ready.connect(self._on_sync_list_ready)
+        self._sync_runner.item_synced.connect(self._on_sync_item_synced)
+        self._sync_runner.catalog_cleared.connect(self._on_sync_catalog_cleared)
         self._sync_runner.success.connect(self._on_sync_success)
         self._sync_runner.failed.connect(self._on_sync_failed)
         self._sync_runner.finished.connect(self._on_sync_runner_finished)
@@ -1104,6 +1426,7 @@ class KnowledgeUI(QFrame):
             self._sync_shop_id,
             self._sync_user_id,
             use_ocr=self._sync_use_ocr,
+            sync_all=getattr(self, "_sync_all_accounts", False),
         )
 
     def _on_sync_preflight_fail(self, error: str) -> None:
@@ -1118,11 +1441,22 @@ class KnowledgeUI(QFrame):
         QMessageBox.warning(self, "无法同步商品", f"{error}{extra}")
 
     def _cancel_goods_sync(self) -> None:
+        self._during_goods_sync = False
+        timer = getattr(self, "_sync_item_refresh_timer", None)
+        if timer is not None:
+            timer.stop()
+        timer = getattr(self, "_sync_preflight_timer", None)
+        if timer is not None:
+            timer.stop()
         preflight = getattr(self, "_sync_preflight_worker", None)
         if preflight is not None and preflight.isRunning():
             preflight.requestInterruption()
             preflight.quit()
             preflight.wait(2000)
+            if preflight.isRunning():
+                preflight.terminate()
+                preflight.wait(1000)
+            self._sync_preflight_worker = None
         runner = getattr(self, "_sync_runner", None)
         if runner is not None and runner.is_running():
             runner.cancel()
@@ -1134,36 +1468,227 @@ class KnowledgeUI(QFrame):
     def _on_sync_runner_finished(self) -> None:
         self._sync_runner = None
     
+    def _update_sync_count_label(self, done: int, total: int) -> None:
+        label = getattr(self, "_sync_count_label", None)
+        if label is None:
+            return
+        if total > 0:
+            label.setText(f"已完成 {done} / {total}")
+        else:
+            label.setText(f"已完成 {done} / —")
+
+    def _on_sync_list_ready(self, total: int) -> None:
+        self._sync_total_planned = max(int(total), 0)
+        self._update_sync_count_label(0, self._sync_total_planned)
+        if hasattr(self, "_sync_progress") and self._sync_total_planned > 0:
+            self._sync_progress.setRange(0, self._sync_total_planned)
+            self._sync_progress.setValue(0)
+
     def _on_sync_progress(self, message: str, current: int, total: int) -> None:
         """同步进度更新"""
         if hasattr(self, '_sync_label'):
             self._sync_label.setText(message)
+        if total > 0:
+            self._sync_total_planned = max(self._sync_total_planned, total)
         if hasattr(self, '_sync_progress'):
-            if total > 0:
+            if self._sync_total_planned > 0:
+                self._sync_progress.setRange(0, self._sync_total_planned)
+                self._sync_progress.setValue(min(current, self._sync_total_planned))
+            elif total > 0:
                 self._sync_progress.setRange(0, total)
                 self._sync_progress.setValue(min(current, total))
             else:
                 self._sync_progress.setRange(0, 0)
+        self._update_sync_count_label(current, self._sync_total_planned or total)
+
+    def _on_sync_catalog_cleared(self) -> None:
+        """子进程已清理旧商品知识，从界面移除旧商品卡片。"""
+        self._sync_known_goods_ids = set()
+        self.docs = [
+            d
+            for d in self.docs
+            if (d.metadata or {}).get("source") != "goods_sync"
+        ]
+        self._current_page = 1
+        self._hide_loading_indicator()
+        self._populate_current_page()
+
+    def _append_synced_goods_card(self, goods_id: str) -> bool:
+        gid = str(goods_id or "").strip()
+        if not gid or gid in self._sync_known_goods_ids:
+            return False
+        self._ensure_knowledge_manager()
+        if self.knowledge_manager is None:
+            return False
+        try:
+            self.knowledge_manager.reload_documents_from_disk()
+        except Exception as e:
+            logger.warning(f"同步中重载知识库 JSON 失败: {e}")
+            return False
+
+        shop_id = ""
+        if not getattr(self, "_sync_all_accounts", False):
+            shop_id = str(getattr(self, "_sync_shop_id", "") or "").strip()
+        try:
+            raw_list = self.knowledge_manager.list_documents_for_ui(shop_id or None)
+        except Exception:
+            raw_list = list(self.knowledge_manager.documents)
+
+        doc_dict = next(
+            (
+                d
+                for d in raw_list
+                if str(d.get("inherit_key") or "") == f"goods:{gid}"
+            ),
+            None,
+        )
+        if not doc_dict:
+            return False
+
+        from ui.knowledge.models import SimpleDocument
+
+        simple = SimpleDocument.from_kb_dict(doc_dict, len(self.docs))
+        if any(str(d.id) == str(simple.id) for d in self.docs):
+            self._sync_known_goods_ids.add(gid)
+            return False
+
+        self.docs.insert(0, simple)
+        self._sync_known_goods_ids.add(gid)
+        self._current_page = 1
+        self._hide_loading_indicator()
+        self._populate_current_page()
+        return True
+
+    def _on_sync_item_synced(
+        self, _title: str, synced_count: int, total: int, goods_id: str
+    ) -> None:
+        """每成功同步一个商品，立即在知识库 UI 展示。"""
+        if total > 0:
+            self._sync_total_planned = max(self._sync_total_planned, total)
+        self._update_sync_count_label(synced_count, self._sync_total_planned or total)
+        if hasattr(self, "_sync_progress") and (self._sync_total_planned or total) > 0:
+            cap = self._sync_total_planned or total
+            self._sync_progress.setRange(0, cap)
+            self._sync_progress.setValue(min(synced_count, cap))
+        if hasattr(self, "_sync_label"):
+            self._sync_label.setText(f"已完成 {synced_count}/{self._sync_total_planned or total}，继续同步中…")
+        if not self._append_synced_goods_card(goods_id):
+            self._schedule_sync_cards_refresh()
+
+    def _schedule_sync_cards_refresh(self) -> None:
+        timer = getattr(self, "_sync_item_refresh_timer", None)
+        if timer is not None:
+            timer.start()
+            return
+        QTimer.singleShot(400, self._refresh_cards_during_goods_sync)
+
+    def _refresh_cards_during_goods_sync(self) -> None:
+        if not getattr(self, "_during_goods_sync", False):
+            return
+        worker = getattr(self, "_load_worker", None)
+        if worker is not None and worker.isRunning():
+            self._schedule_sync_cards_refresh()
+            return
+        self._ensure_knowledge_manager()
+        if self.knowledge_manager is None:
+            return
+        try:
+            self.knowledge_manager.reload_documents_from_disk()
+        except Exception as e:
+            logger.warning(f"同步中重载知识库 JSON 失败: {e}")
+        shop_id = None
+        list_all = bool(getattr(self, "_sync_all_accounts", False))
+        if not list_all:
+            shop_id = str(getattr(self, "_sync_shop_id", "") or "").strip() or None
+        self._load_worker = LoadDataWorker(
+            self.knowledge_manager,
+            platform_shop_id=shop_id,
+            list_all_shops=list_all,
+        )
+        self._load_worker.finished.connect(self._on_sync_incremental_data_loaded)
+        self._load_worker.failed.connect(self._on_sync_incremental_load_failed)
+        self._load_worker.start()
+
+    def _on_sync_incremental_data_loaded(self, docs: list) -> None:
+        if not getattr(self, "_during_goods_sync", False):
+            return
+        self.docs = docs
+        self._cached_docs = docs
+        self._cache_valid = True
+        self._current_page = 1
+        self._hide_loading_indicator()
+        self._populate_current_page()
+
+    def _on_sync_incremental_load_failed(self, error: str) -> None:
+        logger.warning(f"同步中刷新知识库卡片失败: {error}")
     
+    def _apply_sync_display_shop_filter(self) -> None:
+        """同步结束后，列表继续展示刚同步的店铺（勿回落到 config 默认店）。"""
+        if getattr(self, "_sync_all_accounts", False):
+            self._display_shop_all = True
+            self._display_shop_id = None
+        else:
+            self._display_shop_all = False
+            self._display_shop_id = str(getattr(self, "_sync_shop_id", "") or "").strip() or None
+        self._persist_knowledge_display_shop_filter()
+        self._sync_shop_filter_combo_to_display()
+
     def _on_sync_success(self, count: int) -> None:
         """同步成功回调"""
+        self._during_goods_sync = False
+        timer = getattr(self, "_sync_item_refresh_timer", None)
+        if timer is not None:
+            timer.stop()
         if hasattr(self, '_sync_dialog'):
             self._sync_dialog.accept()
-        
-        QMessageBox.information(
-            self,
-            "同步完成",
-            f"成功同步 {count} 个商品到知识库！\n\nAI 现在可以查询和推荐这些商品了。",
-        )
 
-        # 子进程已写入磁盘，主进程需重新加载知识库实例
+        planned = int(getattr(self, "_sync_total_planned", 0) or 0)
+        if planned > 0 and count < planned:
+            ocr_hint = ""
+            try:
+                from config import get_config
+
+                if bool(get_config("knowledge_base.goods_sync_ocr_enabled", False)):
+                    ocr_hint = "\n\n若经常中断，建议在「设置」关闭商品同步 OCR。"
+            except Exception:
+                pass
+            msg = (
+                f"本次共同步 {count}/{planned} 个商品（未全部完成）。\n"
+                f"已写入的知识不会丢失；可再次点击「同步商品」继续补齐。"
+                f"{ocr_hint}"
+            )
+            QMessageBox.warning(self, "同步未全部完成", msg)
+        else:
+            QMessageBox.information(
+                self,
+                "同步完成",
+                f"成功同步 {count} 个商品到知识库！\n\nAI 现在可以查询和推荐这些商品了。",
+            )
+
+        self._apply_sync_display_shop_filter()
         self.knowledge_manager = None
-        QTimer.singleShot(300, self.populate_cards)
+        QTimer.singleShot(300, self._reload_knowledge_cards)
     
     def _on_sync_failed(self, error: str) -> None:
         """同步失败回调"""
+        self._during_goods_sync = False
+        timer = getattr(self, "_sync_item_refresh_timer", None)
+        if timer is not None:
+            timer.stop()
         if hasattr(self, '_sync_dialog'):
             self._sync_dialog.reject()
+
+        partial = len(getattr(self, "_sync_known_goods_ids", set()) or [])
+        if partial > 0:
+            self._apply_sync_display_shop_filter()
+            self.knowledge_manager = None
+            QTimer.singleShot(300, self._reload_knowledge_cards)
+            QMessageBox.warning(
+                self,
+                "同步中断",
+                f"同步未完成：{error}\n\n已成功写入 {partial} 个商品，仍可在下方列表查看。",
+            )
+            return
         
         QMessageBox.critical(
             self,
@@ -1294,8 +1819,14 @@ class KnowledgeUI(QFrame):
             if not (self._cached_docs and self._cache_valid and not force_reload):
                 self._show_loading_indicator()
 
-            # 启动后台加载
-            self._load_worker = LoadDataWorker(self.knowledge_manager)
+            if force_reload and self.knowledge_manager is not None:
+                try:
+                    self.knowledge_manager.reload_documents_from_disk()
+                except Exception as e:
+                    logger.warning(f"刷新前重载知识库 JSON 失败: {e}")
+
+            # 启动后台加载（与 populate_cards 一致，保留当前店铺过滤）
+            self._load_worker = self._knowledge_load_worker()
             self._load_worker.finished.connect(self._on_refresh_completed)
             self._load_worker.failed.connect(self._on_refresh_failed)
             self._load_worker.start()

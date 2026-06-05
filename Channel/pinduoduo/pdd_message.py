@@ -212,12 +212,20 @@ class PDDChatMessage(ChatMessage):
             elif user_msg_type == 24:
                 self.user_msg_type,self.content = MessageTypeHandler.handle_transfer(self.msg)
             else:
-                self.user_msg_type = ContextType.SYSTEM_STATUS
-                self.content = f"不支持的消息类型: {user_msg_type}"
+                if self.from_user == "user":
+                    # 转接后买家可能发送平台扩展 type（如 19 卡片等），按文本入队处理
+                    self.user_msg_type, self.content = MessageTypeHandler.handle_text(self.msg)
+                else:
+                    self.user_msg_type = ContextType.SYSTEM_STATUS
+                    self.content = f"不支持的消息类型: {user_msg_type}"
         elif self.msg_type == "auth":
             self.user_msg_type,self.content = MessageTypeHandler.handle_auth(self.msg)
         elif self.msg_type == "mall_system_msg":
             self.user_msg_type,self.content = MessageTypeHandler.handle_mall_system_msg(self.msg)
         else:
-            self.user_msg_type = ContextType.SYSTEM_STATUS
-            self.content = f"不支持的消息类型: {self.msg_type}"
+            if self.from_user == "user":
+                # 部分 WS 帧缺少 response 字段，买家消息仍按文本入队
+                self.user_msg_type, self.content = MessageTypeHandler.handle_text(self.msg)
+            else:
+                self.user_msg_type = ContextType.SYSTEM_STATUS
+                self.content = f"不支持的消息类型: {self.msg_type}"

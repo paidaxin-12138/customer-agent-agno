@@ -32,6 +32,10 @@ def migrate_chat_session_memory_columns(engine: Engine, logger: Any = None) -> i
             alters.append(
                 "ALTER TABLE chat_sessions ADD COLUMN memory_summary_through_id INTEGER DEFAULT 0"
             )
+        if "inbound_transferred_at" not in cols:
+            alters.append(
+                "ALTER TABLE chat_sessions ADD COLUMN inbound_transferred_at DATETIME"
+            )
         for sql in alters:
             conn.execute(sql)
             applied += 1

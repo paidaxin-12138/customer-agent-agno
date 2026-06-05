@@ -62,6 +62,14 @@ class KnowledgeConfig(BaseModel):
         default=2,
         description="OCR/Paddle 占用 CPU 线程上限，避免界面卡死",
     )
+    goods_sync_use_browser: bool = Field(
+        default=True,
+        description="同步商品时用 Playwright 走商家后台页面上下文（绕过 goodsList 54001 风控）",
+    )
+    goods_sync_browser_headless: bool = Field(
+        default=True,
+        description="商品同步 Playwright 是否无头运行",
+    )
 
 class BusinessHoursConfig(BaseModel):
     """营业时间配置模型"""
@@ -133,6 +141,9 @@ class ChatConfig(BaseModel):
     inbound_transfer_force_takeover: bool = True
     inbound_transfer_takeover_ai_mode: bool = True
     inbound_transfer_enqueue_unreplied: bool = True
+    inbound_transfer_gate_until_received: bool = True
+    inbound_transfer_stage: str = "after_sales"
+    ai_allow_after_sales_stage: bool = True
     transfer_auto_rose_enabled: bool = False
     buyer_emotion_alert_enabled: bool = True
     buyer_emotion_escalate_threshold: int = 2
@@ -143,6 +154,13 @@ class ChatConfig(BaseModel):
     ai_unknown_fallback_notice: str = (
         "亲，我暂时还不清楚，您可以描述得更详细些，或者我帮您转人工客服？"
     )
+    queue_force_enqueue: bool = False
+    ui_page_size: int = 50
+    mms_session_sync_enabled: bool = False
+    mms_session_sync_interval_ms: int = 15000
+    mms_session_sync_page_size: int = 50
+    mms_session_sync_browser_headless: bool = True
+    mms_session_sync_enqueue_new: bool = False
     knowledge_retrieval_timeout_sec: float = 5.0
     unhandled_fallback_enabled: bool = True
     unhandled_fallback_notice: str = (
@@ -286,6 +304,8 @@ config_base = {
         "goods_sync_ocr_min_rec_score": 0.45,
         "goods_sync_ocr_det_limit_side_len": 1920,
         "goods_sync_ocr_cpu_threads": 2,
+        "goods_sync_use_browser": True,
+        "goods_sync_browser_headless": True,
     },
     "prompt": {
         "append_natural_style": True,
@@ -311,6 +331,13 @@ config_base = {
         "queue_stats_recent_size": 20,
         "queue_prior_duration_sec": 8,
         "queue_stats_min_samples": 10,
+        "queue_force_enqueue": False,
+        "ui_page_size": 50,
+        "mms_session_sync_enabled": False,
+        "mms_session_sync_interval_ms": 15000,
+        "mms_session_sync_page_size": 50,
+        "mms_session_sync_browser_headless": True,
+        "mms_session_sync_enqueue_new": False,
         "llm_sync_retry_enabled": True,
         "llm_sync_retry_delay_sec": 1.5,
         "after_sales_apply_enabled": True,
@@ -341,6 +368,9 @@ config_base = {
         "inbound_transfer_force_takeover": True,
         "inbound_transfer_takeover_ai_mode": True,
         "inbound_transfer_enqueue_unreplied": True,
+        "inbound_transfer_gate_until_received": True,
+        "inbound_transfer_stage": "after_sales",
+        "ai_allow_after_sales_stage": True,
         "transfer_auto_rose_enabled": False,
         "after_sales_apply_check_orders_by_uid": True,
         "after_sales_apply_no_orders_notice": (

@@ -6,11 +6,11 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QVBoxLayout, QWidget, QLabel,
                             QFormLayout, QGroupBox, QMessageBox, QCheckBox)
 from PyQt6.QtGui import QFont
-from qfluentwidgets import (CardWidget, SubtitleLabel, CaptionLabel, BodyLabel, 
-                           PrimaryPushButton, PushButton, StrongBodyLabel, 
+from qfluentwidgets import (CardWidget, SubtitleLabel, CaptionLabel, BodyLabel,
+                           PrimaryPushButton, PushButton, StrongBodyLabel,
                            LineEdit, ComboBox, ScrollArea, FluentIcon as FIF,
                            InfoBar, InfoBarPosition, TextEdit, PasswordLineEdit,
-                           TimePicker)
+                           TimePicker, SwitchButton)
 from PyQt6.QtCore import QTime
 from utils.logger_loguru import get_logger
 from config import config
@@ -188,6 +188,20 @@ class KnowledgeConfigCard(CardWidget):
 
         layout.addLayout(form_layout)
 
+        ocr_row = QHBoxLayout()
+        ocr_row.setSpacing(12)
+        ocr_text = QVBoxLayout()
+        ocr_title = BodyLabel("商品同步 OCR")
+        ocr_hint = CaptionLabel("识别主图/详情图文字写入知识库（较慢，可关闭以加快同步）")
+        ocr_hint.setStyleSheet("color: #9EA6B8;")
+        ocr_text.addWidget(ocr_title)
+        ocr_text.addWidget(ocr_hint)
+        ocr_row.addLayout(ocr_text, 1)
+        self.goods_sync_ocr_switch = SwitchButton()
+        self.goods_sync_ocr_switch.setChecked(True)
+        ocr_row.addWidget(self.goods_sync_ocr_switch, 0, Qt.AlignmentFlag.AlignRight)
+        layout.addLayout(ocr_row)
+
         # 说明文本
         description_label = CaptionLabel(
             "配置知识库的存储路径。\n"
@@ -200,13 +214,17 @@ class KnowledgeConfigCard(CardWidget):
         """获取配置"""
         return {
             "contents_db_path": self.contents_db_edit.text().strip(),
-            "vector_db_path": self.vector_db_edit.text().strip()
+            "vector_db_path": self.vector_db_edit.text().strip(),
+            "goods_sync_ocr_enabled": self.goods_sync_ocr_switch.isChecked(),
         }
 
     def setConfig(self, config: dict):
         """设置配置"""
         self.contents_db_edit.setText(config.get("contents_db_path", ""))
         self.vector_db_edit.setText(config.get("vector_db_path", ""))
+        self.goods_sync_ocr_switch.setChecked(
+            bool(config.get("goods_sync_ocr_enabled", True))
+        )
 
 
 class PromptConfigCard(CardWidget):
@@ -612,7 +630,10 @@ class SettingUI(QFrame):
                 },
                 "knowledge_base": {
                     "contents_db_path": config.get("knowledge_base.contents_db_path", ""),
-                    "vector_db_path": config.get("knowledge_base.vector_db_path", "")
+                    "vector_db_path": config.get("knowledge_base.vector_db_path", ""),
+                    "goods_sync_ocr_enabled": bool(
+                        config.get("knowledge_base.goods_sync_ocr_enabled", True)
+                    ),
                 },
                 "prompt": {
                     "description": config.get("prompt.description", ""),
@@ -650,7 +671,8 @@ class SettingUI(QFrame):
             },
             "knowledge_base": {
                 "contents_db_path": "",
-                "vector_db_path": ""
+                "vector_db_path": "",
+                "goods_sync_ocr_enabled": True,
             },
             "prompt": {
                 "description": "你是一个专业的电商客服助手，负责为拼多多店铺提供优质的客户服务。请遵循以下原则：\n\n1. 友好专业：始终保持礼貌、耐心和专业的态度\n2. 准确回答：根据客户问题提供准确、有用的信息\n3. 主动服务：主动了解客户需求，提供个性化建议\n4. 及时响应：快速响应客户咨询，提高服务效率\n5. 问题解决：积极帮助客户解决购物和售后问题",
@@ -691,7 +713,8 @@ class SettingUI(QFrame):
             }),
             "knowledge_base": config_data.get("knowledge_base", {
                 "contents_db_path": "",
-                "vector_db_path": ""
+                "vector_db_path": "",
+                "goods_sync_ocr_enabled": True,
             }),
             "prompt": config_data.get("prompt", {
                 "description": "",

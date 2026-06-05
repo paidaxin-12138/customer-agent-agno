@@ -51,7 +51,9 @@ async def test_takeover_enqueues_unreplied(monkeypatch):
             "utils.unreplied_buyer_messages.get_unreplied_buyer_messages",
             return_value=["转接前买家问题"],
         ),
-        patch("Agent.CustomerAgent.conversation_memory.update_session_state"),
+        patch(
+            "Agent.CustomerAgent.conversation_memory.update_session_state"
+        ) as mock_update,
         patch("Message.put_message", put_mock),
     ):
         ok = await apply_inbound_transfer_takeover(
@@ -65,4 +67,8 @@ async def test_takeover_enqueues_unreplied(monkeypatch):
 
     assert ok is True
     mock_db.set_session_ai_mode.assert_called_once_with(9, True)
+    mock_update.assert_called_once()
+    call_kw = mock_update.call_args[1]
+    assert call_kw.get("stage") == "after_sales"
+    assert call_kw.get("intent") == "after_sales"
     put_mock.assert_awaited_once()

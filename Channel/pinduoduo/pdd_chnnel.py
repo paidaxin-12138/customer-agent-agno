@@ -963,6 +963,16 @@ class PDDChannel(Channel):
                     self.logger.debug(f"会话列表登记跳过: {hub_err}")
 
                 # 根据消息类型决定处理方式
+                from_uid = str(getattr(context.kwargs, "from_uid", "") or "")
+                to_uid = str(getattr(context.kwargs, "to_uid", "") or "")
+                from_user = str(getattr(context.kwargs, "from_user", "") or "")
+                if from_user == "user" and to_uid and to_uid != str(user_id):
+                    self.logger.info(
+                        "[TRANSFER/BUYER] 买家消息 to_uid={} 与当前登录 seller_uid={} 不一致（转接后常见），仍入队处理",
+                        to_uid,
+                        user_id,
+                    )
+
                 if self._should_process_immediately(context):
                     # 立即处理的消息类型
                     await self._handle_immediate_message(
@@ -971,8 +981,37 @@ class PDDChannel(Channel):
                     self.logger.debug(f"立即处理消息: {context.type}, ID: {pdd_message.msg_id}")
                 elif self._should_queue_message(context):
                     # 需要放入队列的消息类型
+                    self.logger.info(
+                        "[ENQUEUE] queue={} msg_id={} type={} from_uid={} to_uid={}",
+                        queue_name,
+                        pdd_message.msg_id,
+                        context.type,
+                        from_uid,
+                        to_uid,
+                    )
                     msg_id = await put_message(queue_name, context)
-                    self.logger.debug(f"消息已入队: {queue_name}, ID: {msg_id}, 类型: {context.type}")
+                    self.logger.info(
+                        "[ENQUEUE] 已入队 queue={} msg_id={} wrapper_id={}",
+                        queue_name,
+                        pdd_message.msg_id,
+                        msg_id,
+                    )
+                elif from_user == "user":
+                    # 转接后买家可能发送未映射 type，避免静默丢弃
+                    self.logger.info(
+                        "[ENQUEUE/FORCE] 买家未知类型仍入队 queue={} msg_id={} type={} ws_type={}",
+                        queue_name,
+                        pdd_message.msg_id,
+                        context.type,
+                        msg_type,
+                    )
+                    msg_id = await put_message(queue_name, context)
+                    self.logger.info(
+                        "[ENQUEUE/FORCE] 已入队 queue={} msg_id={} wrapper_id={}",
+                        queue_name,
+                        pdd_message.msg_id,
+                        msg_id,
+                    )
                 else:
                     # 忽略的消息类型
                     self.logger.debug(f"忽略消息: {context.type}, ID: {pdd_message.msg_id}")
@@ -1112,10 +1151,11 @@ class PDDChannel(Channel):
 
         buyer_uid = resolve_buyer_uid_from_transfer(context)
         self.logger.info(
-            "转接消息 shop={}-{} buyer={} content={!r}",
+            "[TRANSFER] shop={}-{} buyer={} queue={} content={!r}",
             shop_id,
             username,
             buyer_uid,
+            queue_name,
             context.content,
         )
         if not buyer_uid:

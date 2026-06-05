@@ -506,6 +506,13 @@ class NailLampKnowledgeManager:
             # 持久化恢复失败不应阻断应用启动
             self.documents = self.documents or []
 
+    def reload_documents_from_disk(self) -> int:
+        """子进程写入 JSON 后，主进程重新加载内存文档供 UI 增量展示。"""
+        with self._global_io_lock:
+            before = len(self.documents)
+            self._load_documents()
+            return len(self.documents) - before
+
     @staticmethod
     def _ensure_doc_created_at(doc: Dict[str, Any]) -> None:
         """为文档打上 created_at，供生命周期向量清理使用。"""
@@ -1636,6 +1643,31 @@ class NailLampKnowledgeManager:
                 row["embedding"] = self._embed_text(content)
         return row
 
+    def upsert_goods_sync_row(self, row: Dict[str, Any]) -> bool:
+        """写入/更新已构建好的商品同步文档行。"""
+        if not row:
+            return False
+        doc_id = str(row.get("id") or "")
+        if not doc_id:
+            return False
+        with self._global_io_lock:
+            updated = False
+            for i, doc in enumerate(self.documents):
+                if str(doc.get("id")) == doc_id:
+                    self.documents[i] = row
+                    updated = True
+                    break
+            if not updated:
+                self.documents.append(row)
+            if self._knowledge_table:
+                try:
+                    self._knowledge_table.delete(f"id = '{doc_id}'")
+                except Exception:
+                    pass
+            self._add_doc_to_lancedb(row)
+            self._save_documents()
+        return True
+
     def upsert_goods_sync_document(
         self,
         *,
@@ -1656,32 +1688,13 @@ class NailLampKnowledgeManager:
         )
         if not row:
             return False
-        doc_id = str(row["id"])
-        with self._global_io_lock:
-            updated = False
-            for i, doc in enumerate(self.documents):
-                if str(doc.get("id")) == doc_id:
-                    self.documents[i] = row
-                    updated = True
-                    break
-            if not updated:
-                self.documents.append(row)
-            if self._knowledge_table:
-                try:
-                    self._knowledge_table.delete(f"id = '{doc_id}'")
-                except Exception:
-                    pass
-            self._add_doc_to_lancedb(row)
-            self._save_documents()
-        return True
+        return self.upsert_goods_sync_row(row)
 
     def bulk_upsert_goods_sync_documents(
         self,
         rows: List[Dict[str, Any]],
     ) -> int:
-        """
-        批量写入商品同步文档（单次落盘 + 向量索引），供后台同步使用，避免每商品写盘卡 UI。
-        """
+        """批量写入商品同步文档（单次落盘 + 向量索引）。"""
         if not rows:
             return 0
         written = 0

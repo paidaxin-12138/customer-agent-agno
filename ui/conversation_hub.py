@@ -6,9 +6,8 @@ from __future__ import annotations
 
 import threading
 import time
-from collections import deque
-from dataclasses import dataclass, field
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -70,12 +69,13 @@ _SKIP_TYPES = frozenset(
 
 @dataclass
 class _ConvState:
+    """会话摘要（不含完整消息列表）。"""
+
     nickname: str = "买家"
     preview: str = ""
     updated_at: float = 0.0
-    messages: Deque[Tuple[str, str, float]] = field(
-        default_factory=lambda: deque(maxlen=300)
-    )
+    unread_count: int = 0
+    session_id: Optional[int] = None
 
 
 class ConversationHub(QObject):
@@ -91,6 +91,64 @@ class ConversationHub(QObject):
         super().__init__(parent)
         self._lock = threading.Lock()
         self._by_account: Dict[str, Dict[str, _ConvState]] = {}
+        self._account_id_by_key: Dict[str, int] = {}
+
+    def sync_latest_conversations(
+        self, account_key: str, account_id: int
+    ) -> List[Dict[str, Any]]:
+        """从 chat_sessions 同步摘要到内存，不加载完整消息。"""
+        from database.db_manager import db_manager
+
+        rows = db_manager.get_chat_session_summaries(account_id, "active")
+        with self._lock:
+            self._account_id_by_key[account_key] = int(account_id)
+            acc = self._by_account.setdefault(account_key, {})
+            synced_uids = set()
+            for s in rows:
+                uid = str(s.get("buyer_uid") or "")
+                if not uid:
+                    continue
+                synced_uids.add(uid)
+                st = acc.get(uid)
+                if st is None:
+                    st = _ConvState()
+                    acc[uid] = st
+                st.nickname = s.get("buyer_nickname") or st.nickname or "买家"
+                st.preview = s.get("last_message") or st.preview
+                st.unread_count = int(s.get("unread_count") or 0)
+                st.session_id = int(s["id"]) if s.get("id") is not None else None
+                t = s.get("last_message_time") or s.get("updated_at")
+                if t is not None:
+                    try:
+                        st.updated_at = float(t.timestamp())
+                    except AttributeError:
+                        st.updated_at = float(t) if t else st.updated_at
+            for uid in list(acc.keys()):
+                if uid not in synced_uids:
+                    del acc[uid]
+        return rows
+
+    def _touch_summary(
+        self,
+        st: _ConvState,
+        *,
+        nickname: str,
+        preview: str,
+        ts: float,
+        role: str,
+        session_id: Optional[int] = None,
+    ) -> None:
+        if nickname:
+            st.nickname = nickname
+        if preview:
+            st.preview = preview[:50] + ("…" if len(preview) > 50 else "")
+        st.updated_at = ts
+        if session_id is not None:
+            st.session_id = session_id
+        if role == "user":
+            st.unread_count = int(st.unread_count or 0) + 1
+        elif role in ("agent", "system"):
+            pass
 
     def record_from_context(
         self,
@@ -200,10 +258,13 @@ class ConversationHub(QObject):
                 if st is None:
                     st = _ConvState(nickname=nickname or "买家")
                     acc[peer_uid] = st
-                st.nickname = nickname or st.nickname
-            st.preview = preview or st.preview
-            st.updated_at = time.time()
-            st.messages.append((role, preview, ts))
+            self._touch_summary(
+                st,
+                nickname=nickname or st.nickname,
+                preview=preview,
+                ts=time.time(),
+                role=role,
+            )
 
         self._emit_hub_updates(account_key, peer_uid, role, preview, ts)
 
@@ -272,8 +333,13 @@ class ConversationHub(QObject):
                 st = _ConvState(nickname=nickname or "买家")
                 acc[peer_uid] = st
             st.preview = raw_preview or st.preview
-            st.updated_at = time.time()
-            st.messages.append(("system", raw_preview, ts))
+            self._touch_summary(
+                st,
+                nickname=nickname or st.nickname,
+                preview=raw_preview,
+                ts=time.time(),
+                role="system",
+            )
         self._emit_hub_updates(account_key, peer_uid, "system", raw_preview, ts)
 
     def record_manual_sent(
@@ -306,12 +372,37 @@ class ConversationHub(QObject):
             if st is None:
                 st = _ConvState(nickname="买家")
                 acc[customer_uid] = st
-            st.preview = _preview_text(text)
-            st.updated_at = ts
-            st.messages.append(("agent", text, ts))
+            st.preview = _preview_text(text, max_len=50)
+            self._touch_summary(
+                st,
+                nickname=st.nickname,
+                preview=text,
+                ts=ts,
+                role="agent",
+            )
         self._emit_hub_updates(account_key, customer_uid, "agent", text, ts)
 
     def get_conversation_rows(self, account_key: str) -> List[Dict[str, Any]]:
+        account_id = self._account_id_by_key.get(account_key)
+        if account_id is not None:
+            rows = self.sync_latest_conversations(account_key, account_id)
+            return [
+                {
+                    "customer_uid": str(s.get("buyer_uid") or ""),
+                    "nickname": s.get("buyer_nickname") or "买家",
+                    "preview": s.get("last_message") or "",
+                    "updated_at": (
+                        float(s["last_message_time"].timestamp())
+                        if s.get("last_message_time") is not None
+                        else float(s["updated_at"].timestamp())
+                        if s.get("updated_at") is not None
+                        else 0.0
+                    ),
+                    "unread_count": int(s.get("unread_count") or 0),
+                    "session_id": s.get("id"),
+                }
+                for s in rows
+            ]
         with self._lock:
             acc = self._by_account.get(account_key, {})
             rows = []
@@ -322,18 +413,16 @@ class ConversationHub(QObject):
                         "nickname": st.nickname,
                         "preview": st.preview,
                         "updated_at": st.updated_at,
+                        "unread_count": st.unread_count,
+                        "session_id": st.session_id,
                     }
                 )
             rows.sort(key=lambda r: r["updated_at"], reverse=True)
             return rows
 
     def get_messages(self, account_key: str, customer_uid: str) -> List[Tuple[str, str, float]]:
-        with self._lock:
-            acc = self._by_account.get(account_key, {})
-            st = acc.get(customer_uid)
-            if not st:
-                return []
-            return list(st.messages)
+        """兼容旧接口：不再缓存完整消息，请从数据库分页加载。"""
+        return []
 
     def clear_conversation(self, account_key: str, customer_uid: str) -> None:
         with self._lock:

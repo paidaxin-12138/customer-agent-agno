@@ -8,6 +8,7 @@ import hashlib
 import time
 from typing import Optional, Dict, Set
 from utils.logger_loguru import get_logger
+from config import get_config
 
 from ..models.queue_models import MessageWrapper, QueueStats, QueueConfig
 from bridge.context import Context
@@ -38,10 +39,6 @@ class SimpleMessageQueue:
         if self._closed:
             raise RuntimeError("Queue is closed")
 
-        if self._queue.full():
-            self._stats.total_enqueued += 1  # 计入统计但拒绝
-            raise RuntimeError("Queue is full")
-
         message_wrapper = MessageWrapper(
             message_id="",  # 将在__post_init__中生成
             context=context,
@@ -53,13 +50,56 @@ class SimpleMessageQueue:
             self.logger.debug(f"Message deduplicated: {message_wrapper.message_id}")
             return message_wrapper.message_id
 
+        force_enqueue = bool(get_config("chat.queue_force_enqueue", False))
+        if self._queue.full():
+            if force_enqueue:
+                dropped = 0
+                while self._queue.full():
+                    try:
+                        self._queue.get_nowait()
+                        dropped += 1
+                        self._stats.dequeue()
+                    except asyncio.QueueEmpty:
+                        break
+                if dropped:
+                    self.logger.warning(
+                        "Queue {} full: dropped {} oldest message(s) to force enqueue",
+                        self.name,
+                        dropped,
+                    )
+            else:
+                self._stats.total_enqueued += 1  # 计入统计但拒绝
+                raise RuntimeError("Queue is full")
+
         try:
             await self._queue.put(message_wrapper)
             self._stats.enqueue()
-            self.logger.debug(f"Message enqueued: {message_wrapper.message_id}")
+            ctx = message_wrapper.context
+            from_uid = ""
+            try:
+                from_uid = str(getattr(getattr(ctx, "kwargs", None), "from_uid", "") or "")
+            except Exception:
+                pass
+            self.logger.info(
+                "[ENQUEUE] queue={} wrapper_id={} type={} from_uid={}",
+                self.name,
+                message_wrapper.message_id,
+                getattr(ctx, "type", "?"),
+                from_uid,
+            )
             return message_wrapper.message_id
 
         except asyncio.QueueFull:
+            if force_enqueue:
+                while self._queue.full():
+                    try:
+                        self._queue.get_nowait()
+                        self._stats.dequeue()
+                    except asyncio.QueueEmpty:
+                        break
+                await self._queue.put(message_wrapper)
+                self._stats.enqueue()
+                return message_wrapper.message_id
             raise RuntimeError("Queue is full")
 
     async def get(self, timeout: Optional[float] = None) -> Optional[MessageWrapper]:

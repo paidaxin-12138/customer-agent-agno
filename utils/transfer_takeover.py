@@ -18,6 +18,15 @@ from utils.logger_loguru import get_logger
 logger = get_logger("TransferTakeover")
 
 
+def _transfer_stage() -> str:
+    from Message.handlers.stage_constants import VALID_SESSION_STAGES
+
+    raw = str(config.get("chat.inbound_transfer_stage", "after_sales") or "after_sales").strip()
+    if raw not in VALID_SESSION_STAGES:
+        return "after_sales"
+    return raw
+
+
 def _takeover_enabled() -> bool:
     return bool(config.get("chat.inbound_transfer_force_takeover", True))
 
@@ -90,7 +99,7 @@ def _build_synthetic_context(
         shop_id=str(shop_id),
         user_id=str(seller_user_id),
         username=str(username),
-        raw_data={"_transfer_takeover": True, "_session_stage": "idle"},
+        raw_data={"_transfer_takeover": True, "_session_stage": _transfer_stage()},
         channel_type=ChannelType.PINDUODUO,
     )
 
@@ -125,26 +134,36 @@ async def apply_inbound_transfer_takeover(
         return False
 
     try:
+        from utils.inbound_transfer_gate import mark_inbound_transferred
+
+        mark_inbound_transferred(sid)
+    except Exception as e:
+        logger.debug("转接接管标记 inbound_transferred: {}", e)
+
+    try:
         from Agent.CustomerAgent.conversation_memory import update_session_state
         from database.db_manager import db_manager
 
         update_session_state(
             sid,
-            stage="idle",
+            stage=_transfer_stage(),
+            intent="after_sales",
             source_handler="InboundTransferTakeover",
         )
         if _takeover_ai_mode():
             db_manager.set_session_ai_mode(sid, True)
             logger.info(
-                "转接接管: session={} buyer={} stage=idle ai_mode=True",
+                "转接接管: session={} buyer={} stage={} ai_mode=True",
                 sid,
                 buyer_uid,
+                _transfer_stage(),
             )
         else:
             logger.info(
-                "转接接管: session={} buyer={} stage=idle ai_mode=unchanged(manual)",
+                "转接接管: session={} buyer={} stage={} ai_mode=unchanged(manual)",
                 sid,
                 buyer_uid,
+                _transfer_stage(),
             )
     except Exception as e:
         logger.warning("转接接管写会话状态失败: {}", e)

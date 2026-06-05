@@ -5,6 +5,9 @@ from utils.logger_loguru import get_logger
 
 logger = get_logger("GetProductListTool")
 
+_MAX_PRODUCT_LIST_PAGES = 20
+_MALL_LIST_PAGE_SIZE = 50
+
 
 def _format_sku_block(sku_list: list) -> str:
     """格式化 SKU 名称 / 价格 / 库存。"""
@@ -45,7 +48,11 @@ def _format_products_output(
         return "未找到商品"
 
     sku_map = sku_by_goods_id or {}
-    output = f"商品列表 (共{total}个商品，第{page}页，含实时 SKU):\n\n"
+    output = f"商品列表 (共{total}个商品"
+    if page == 1 and len(products) >= total:
+        output += "，含实时 SKU):\n\n"
+    else:
+        output += f"，第{page}页，含实时 SKU):\n\n"
 
     for i, product in enumerate(products, 1):
         goods_id = product.get("goods_id", "未知ID")
@@ -83,6 +90,41 @@ def _format_products_output(
     return output
 
 
+def _fetch_mall_products_paginated(
+    product_manager: ProductManager,
+    *,
+    max_pages: int = _MAX_PRODUCT_LIST_PAGES,
+) -> tuple[list, int]:
+    """拉取全店在售商品（多页）；recommendGoods 聊天场景仍用单页。"""
+    from scripts.sync_goods_to_kb import _should_fetch_next_goods_page
+
+    all_products: list = []
+    total = 0
+    page = 1
+    while page <= max_pages:
+        result = product_manager.get_product_list(
+            page=page, size=_MALL_LIST_PAGE_SIZE
+        )
+        if not result.get("success"):
+            if all_products:
+                break
+            return [], int(result.get("total") or 0)
+        batch = result.get("products") or []
+        total = int(result.get("total") or total or len(batch))
+        if not batch:
+            break
+        all_products.extend(batch)
+        if not _should_fetch_next_goods_page(
+            product_list=batch,
+            page_size=_MALL_LIST_PAGE_SIZE,
+            total_api=total,
+            catalog_count=len(all_products),
+        ):
+            break
+        page += 1
+    return all_products, total or len(all_products)
+
+
 @tool(
     name="get_shop_products",
     description="获取店铺在售商品列表（实时 API），含各商品 SKU 名称、价格、库存。无需先同步知识库。",
@@ -108,17 +150,19 @@ def get_shop_products(run_context: RunContext) -> str:
             run_context.dependencies.get("from_uid")
             or run_context.dependencies.get("buyer_uid")
         )
-        result = product_manager.get_product_list(
-            page=1, size=10, buyer_uid=str(buyer_uid).strip() if buyer_uid else None
-        )
-
-        if not result.get("success"):
-            error_msg = result.get("error_msg", "未知错误")
-            logger.error(f"获取商品列表失败: {error_msg}")
-            return f"获取商品列表失败: {error_msg}"
-
-        products = result.get("products", [])
-        total = result.get("total", 0)
+        buyer = str(buyer_uid).strip() if buyer_uid else ""
+        if buyer:
+            result = product_manager.get_product_list(
+                page=1, size=10, buyer_uid=buyer
+            )
+            if not result.get("success"):
+                error_msg = result.get("error_msg", "未知错误")
+                logger.error(f"获取商品列表失败: {error_msg}")
+                return f"获取商品列表失败: {error_msg}"
+            products = result.get("products", [])
+            total = int(result.get("total") or len(products))
+        else:
+            products, total = _fetch_mall_products_paginated(product_manager)
         if not products:
             return f"店铺当前暂无商品 (shop_id: {shop_id})"
 

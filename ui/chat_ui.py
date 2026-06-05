@@ -49,6 +49,7 @@ from qfluentwidgets import (
 
 from database.db_manager import db_manager
 from database.chat_persist import set_active_chat_session
+from config import get_config
 from ui.conversation_hub import get_conversation_hub, make_account_key
 from ui.widgets.account_group_list import AccountGroupList
 from ui.widgets.chat_bubble_widgets import (
@@ -57,10 +58,11 @@ from ui.widgets.chat_bubble_widgets import (
     reflow_message_widgets,
 )
 from ui import apple_ui_tokens as UI
+from utils.chat_time import format_chat_display_relative
 from utils.logger_loguru import get_logger
 
-# 人工协助会话打开时一次性载入历史条数上限
-_CHAT_HISTORY_LIMIT = 100_000
+# 聊天历史分页默认条数（可由 config chat.ui_page_size 覆盖）
+_DEFAULT_PAGE_SIZE = 50
 _MSG_RENDER_BATCH = 4
 _MSG_RENDER_INTERVAL_MS = 60
 _MSG_LOADING_MIN_MS = 1500
@@ -425,9 +427,15 @@ class ChatLiveWidget(QFrame):
         self._hub.message_logged.connect(self._on_hub_message_logged)
 
         from core.chat_sync import ChatSyncService
+        from config import get_config
 
-        self._sync = ChatSyncService(self, interval_ms=10000)
+        try:
+            sync_ms = int(get_config("chat.mms_session_sync_interval_ms", 15000) or 15000)
+        except (TypeError, ValueError):
+            sync_ms = 15000
+        self._sync = ChatSyncService(self, interval_ms=sync_ms)
         self._sync.tick.connect(self._on_sync_tick)
+        self._sync.sync_finished.connect(self._on_mms_sync_finished)
 
         self._build_ui()
         self._apply_stylesheet()
@@ -640,6 +648,17 @@ class ChatLiveWidget(QFrame):
                 background-color: {_C_BORDER};
                 border-left: 3px solid {_C_ACCENT};
             }}
+            QTreeWidget#LiveChatSessionTree::branch {{
+                background: transparent;
+            }}
+            QTreeWidget#LiveChatSessionTree::branch:has-children:!has-siblings:closed,
+            QTreeWidget#LiveChatSessionTree::branch:closed:has-children:has-siblings,
+            QTreeWidget#LiveChatSessionTree::branch:open:has-children:has-siblings,
+            QTreeWidget#LiveChatSessionTree::branch:open:has-children:!has-siblings {{
+                margin: 6px 4px;
+                width: 20px;
+                height: 20px;
+            }}
             QTreeWidget#LiveChatSessionTree::branch:has-siblings:!adjoins-item {{
                 border-image: none;
             }}
@@ -820,7 +839,7 @@ class ChatLiveWidget(QFrame):
         self.session_tree = TreeWidget(self)
         self.session_tree.setObjectName("LiveChatSessionTree")
         self.session_tree.setHeaderHidden(True)
-        self.session_tree.setIndentation(14)
+        self.session_tree.setIndentation(22)
         self.session_tree.setMinimumWidth(280)
         self.session_tree.setAnimated(True)
         self.session_tree.itemClicked.connect(self._on_session_clicked)
@@ -963,6 +982,14 @@ class ChatLiveWidget(QFrame):
         self._msg_loading_total = 0
         self._msg_last_loaded_id = 0
         self._msg_last_loaded_session_id: Optional[int] = None
+        self._msg_page_offset = 0
+        self._msg_has_more_older = False
+        self._msg_loading_older = False
+        self._msg_total_count = 0
+
+        self.msg_scroll.verticalScrollBar().valueChanged.connect(
+            self._on_msg_scroll_value_changed
+        )
 
         input_area = QFrame()
         input_area.setObjectName("LiveChatInputArea")
@@ -1134,12 +1161,28 @@ class ChatLiveWidget(QFrame):
         self.chat_sub.setStyleSheet(f"color: {_C_GREEN}; font-size: 12px;")
         self._update_mode_toggle_buttons()
 
+    def _page_size(self) -> int:
+        try:
+            n = int(get_config("chat.ui_page_size", _DEFAULT_PAGE_SIZE) or _DEFAULT_PAGE_SIZE)
+            return max(1, min(n, 500))
+        except (TypeError, ValueError):
+            return _DEFAULT_PAGE_SIZE
+
     def _initial_load(self):
         self._accounts = db_manager.list_all_accounts_for_chat()
+        for acc in self._accounts:
+            key = make_account_key(
+                acc["channel_name"], acc["platform_shop_id"], acc["username"]
+            )
+            self._hub.sync_latest_conversations(key, int(acc["id"]))
         self.account_list.reload()
         self._refresh_session_trees()
         self._rebuild_quick_replies()
         self._refresh_ws_status_hint()
+        try:
+            self._sync.schedule_sync_all()
+        except Exception as e:
+            self.logger.debug("初始 MMS 会话同步调度失败: {}", e)
 
     def _refresh_ws_status_hint(self) -> None:
         """提示 WebSocket 是否在收消息（与「开始回复」绑定，非仅上线）。"""
@@ -1159,11 +1202,23 @@ class ChatLiveWidget(QFrame):
             if connected:
                 names = "、".join(s.username for s in connected[:3])
                 extra = f" 等{len(connected)}个" if len(connected) > 3 else ""
-                label.setText(
-                    f"消息通道：已连接 {names}{extra}。"
-                    "浏览器可只看不回；勿与软件同一子账号同时在网页「接待」。"
-                    "转接请转到本软件「开始回复」的接待号，将自动截流并由 AI 处理。"
-                )
+                try:
+                    from config import get_config
+
+                    mms_sync = bool(get_config("chat.mms_session_sync_enabled", False))
+                except Exception:
+                    mms_sync = False
+                if mms_sync:
+                    sync_hint = (
+                        "软件会从 MMS 同步会话列表（只读，不改变网页分配）；"
+                        "AI 回复仍依赖 WebSocket。"
+                    )
+                else:
+                    sync_hint = (
+                        "会话列表以 WebSocket 实时推送为准；"
+                        "浏览器与软件同时在线时，网页可能抢 WebSocket（auth fail）。"
+                    )
+                label.setText(f"消息通道：已连接 {names}{extra}。{sync_hint}")
                 label.setStyleSheet("color: #32D74B;")
             elif running > 0:
                 label.setText(
@@ -1179,12 +1234,40 @@ class ChatLiveWidget(QFrame):
         except Exception as e:
             self.logger.debug("WS 状态提示刷新失败: {}", e)
 
+    def _reload_accounts_from_db(self) -> None:
+        """从数据库刷新账号列表，避免「已上线/已连接」仍显示离线。"""
+        self._accounts = db_manager.list_all_accounts_for_chat()
+
+    def _account_status_text(self, acc: Dict[str, Any]) -> str:
+        """展示用接待状态：WebSocket 已连接优先，其次读 DB accounts.status。"""
+        shop_id = str(acc.get("platform_shop_id") or "")
+        user_id = str(acc.get("seller_user_id") or "")
+        try:
+            from core.connection_status import ConnectionState, ConnectionStatusManager
+
+            for st in ConnectionStatusManager().get_all_status():
+                if str(st.shop_id) == shop_id and str(st.user_id) == user_id:
+                    if st.state == ConnectionState.CONNECTED:
+                        return "在线"
+                    if st.state in (ConnectionState.CONNECTING, ConnectionState.RECONNECTING):
+                        return "连接中"
+                    break
+        except Exception as e:
+            self.logger.debug("读取 WS 连接状态失败: {}", e)
+        code = acc.get("status")
+        if code == 1:
+            return "在线"
+        if code == 3:
+            return "离线"
+        if code == 0:
+            return "休息"
+        return "未验证"
+
     def _on_sync_tick(self):
-        """周期同步钩子：预留平台历史拉取，再刷新会话树。"""
+        """周期同步：MMS 会话列表 + 空闲结案 + 刷新会话树。"""
         self._refresh_ws_status_hint()
         try:
-            if self._filter_account_id:
-                self._sync.sync_messages(int(self._filter_account_id))
+            self._sync.schedule_sync_all()
         except Exception as e:
             self.logger.debug(f"同步钩子跳过: {e}")
         try:
@@ -1196,7 +1279,12 @@ class ChatLiveWidget(QFrame):
             self.logger.debug(f"空闲结案扫描: {e}")
         self._refresh_session_trees()
 
+    def _on_mms_sync_finished(self, _count: int) -> None:
+        self._reload_accounts_from_db()
+        self._refresh_session_trees()
+
     def _on_hub_list_changed(self, _account_key: str):
+        self._reload_accounts_from_db()
         self.account_list.reload(self._filter_account_id)
         self._refresh_session_trees()
     
@@ -1440,6 +1528,7 @@ class ChatLiveWidget(QFrame):
         return q in nick or q in prev or q in buid
 
     def _refresh_session_trees(self):
+        self._reload_accounts_from_db()
         keep_sid: Optional[int] = None
         keep_aid: Optional[int] = None
         if self._current:
@@ -1461,8 +1550,7 @@ class ChatLiveWidget(QFrame):
                 s.get("unread_count", 0)
                 for s in db_manager.get_chat_sessions(acc["id"], "active")
             )
-            st = acc.get("status")
-            st_txt = "在线" if st == 1 else ("离线" if st == 3 else "休息")
+            st_txt = self._account_status_text(acc)
             parent = QTreeWidgetItem(
                 [f"{acc.get('shop_name','')} · {acc.get('username','')}  ({st_txt})  未读 {unread}"]
             )
@@ -1471,13 +1559,14 @@ class ChatLiveWidget(QFrame):
                 Qt.ItemDataRole.UserRole,
                 {"type": "account", "account": acc},
             )
+            parent.setSizeHint(0, QSize(0, 44))
             self.session_tree.addTopLevelItem(parent)
             sessions = db_manager.get_chat_sessions(acc["id"], "active")
             for s in sessions:
                 if not self._session_matches_filter(s):
                     continue
                 t = s.get("last_message_time") or s.get("updated_at")
-                ts = t.strftime("%H:%M") if t else ""
+                ts = format_chat_display_relative(t) if t else ""
                 prev = (s.get("last_message") or "")[:48]
                 nick = s.get("buyer_nickname") or "买家"
                 u = s.get("unread_count", 0) or 0
@@ -1837,6 +1926,10 @@ class ChatLiveWidget(QFrame):
             return
         if data.get("type") == "account":
             parent = item
+            if parent.isExpanded():
+                parent.setExpanded(False)
+                return
+            parent.setExpanded(True)
             pick: Optional[QTreeWidgetItem] = None
             best_key: Optional[tuple] = None
             for j in range(parent.childCount()):
@@ -1933,9 +2026,88 @@ class ChatLiveWidget(QFrame):
         self.msg_container.setMinimumHeight(0)
         self._msg_last_loaded_id = 0
         self._msg_last_loaded_session_id = None
+        self._msg_page_offset = 0
+        self._msg_has_more_older = False
+        self._msg_loading_older = False
+        self._msg_total_count = 0
         app = QApplication.instance()
         if app is not None:
             app.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+
+    def _on_msg_scroll_value_changed(self, value: int) -> None:
+        if value > 12:
+            return
+        if getattr(self, "_msg_loading_older", False):
+            return
+        if not getattr(self, "_msg_has_more_older", False):
+            return
+        if getattr(self, "_render_in_progress", False):
+            return
+        if not self._current:
+            return
+        self._load_older_messages()
+
+    def _load_older_messages(self) -> None:
+        if not self._current or self._msg_loading_older or not self._msg_has_more_older:
+            return
+        sid = int(self._current["session_id"])
+        page_size = self._page_size()
+        new_offset = max(0, self._msg_page_offset - page_size)
+        if new_offset >= self._msg_page_offset:
+            self._msg_has_more_older = False
+            return
+        limit = self._msg_page_offset - new_offset
+        rows = db_manager.get_chat_messages_paginated(sid, limit, new_offset)
+        if not rows:
+            self._msg_has_more_older = False
+            return
+        if not self._ensure_message_area():
+            return
+
+        self._msg_loading_older = True
+        bar = self.msg_scroll.verticalScrollBar()
+        before_max = bar.maximum()
+        before_value = bar.value()
+        nick = self._current.get("buyer_nickname") or "买家"
+        buyer_letter = _avatar_letter(nick)
+        list_w = self._message_area_width()
+
+        self.msg_container.setUpdatesEnabled(False)
+        self.msg_scroll.setUpdatesEnabled(False)
+        try:
+            for m in reversed(rows):
+                widget = make_chat_message_widget(
+                    sender_type=m["sender_type"],
+                    content=m.get("content") or "",
+                    timestamp=m.get("sent_at") or m.get("created_at"),
+                    buyer_letter=buyer_letter,
+                    content_type=m.get("content_type"),
+                    image_url=m.get("image_url"),
+                    is_read=bool(m.get("is_read", True)),
+                    list_width=list_w,
+                )
+                self.msg_layout.insertWidget(0, widget)
+        finally:
+            self.msg_container.setUpdatesEnabled(True)
+            self.msg_scroll.setUpdatesEnabled(True)
+
+        self._msg_page_offset = new_offset
+        self._msg_has_more_older = new_offset > 0
+        reflow_message_widgets(self.msg_container, self.msg_layout, list_w)
+        self.msg_container.adjustSize()
+
+        def _restore_scroll() -> None:
+            b = self.msg_scroll.verticalScrollBar()
+            b.setValue(before_value + (b.maximum() - before_max))
+
+        QTimer.singleShot(0, _restore_scroll)
+        self._msg_loading_older = False
+        self.logger.debug(
+            "加载更早消息 {} 条 session={} offset={}",
+            len(rows),
+            sid,
+            new_offset,
+        )
 
     def _scroll_messages_to_bottom(self) -> None:
         if not getattr(self, "msg_scroll", None):
@@ -2027,7 +2199,12 @@ class ChatLiveWidget(QFrame):
         if total <= 0:
             content = f"{nick}：暂无历史消息"
         else:
-            content = f"{nick}：已加载 {total} 条聊天记录"
+            loaded = min(total, self._page_size())
+            grand = int(getattr(self, "_msg_total_count", 0) or total)
+            if grand > loaded:
+                content = f"{nick}：已加载最近 {loaded} 条（共 {grand} 条，上滑加载更多）"
+            else:
+                content = f"{nick}：已加载 {loaded} 条聊天记录"
         InfoBar.success(
             title="加载完成",
             content=content,
@@ -2163,7 +2340,13 @@ class ChatLiveWidget(QFrame):
         self._msg_render_pending = False
         self._render_in_progress = True
 
-        rows = db_manager.get_chat_messages(sid, limit=_CHAT_HISTORY_LIMIT)
+        page_size = self._page_size()
+        total = db_manager.get_chat_message_count(sid)
+        offset = max(0, total - page_size)
+        rows = db_manager.get_chat_messages_paginated(sid, min(page_size, total), offset)
+        self._msg_page_offset = offset
+        self._msg_has_more_older = offset > 0
+        self._msg_total_count = total
         nick = self._current.get("buyer_nickname") or "买家"
         buyer_letter = _avatar_letter(nick)
 

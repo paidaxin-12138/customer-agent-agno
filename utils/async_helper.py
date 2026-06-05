@@ -4,7 +4,7 @@
 """
 import asyncio
 import concurrent.futures
-from typing import Any, Coroutine, TypeVar
+from typing import Any, Coroutine, Optional, TypeVar
 import logging
 
 logger = logging.getLogger(__name__)

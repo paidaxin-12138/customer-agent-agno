@@ -170,8 +170,7 @@ def persist_inbound_transfer_from_context(
     message_id: Optional[str],
     ts: float,
 ) -> None:
-    """外部/售前转接进线：系统提示 + 会话置 active，可选默认人工模式。"""
-    from config import config
+    """外部/售前转接进线：系统提示 + 标记已转接（截流由 apply_inbound_transfer_takeover 执行）。"""
     from database.db_manager import db_manager
 
     acc = db_manager.get_account(channel_name, platform_shop_id, seller_user_id)
@@ -202,12 +201,11 @@ def persist_inbound_transfer_from_context(
         sent_at=sent,
     )
     try:
-        from utils.transfer_takeover import inbound_transfer_initial_ai_mode
+        from utils.inbound_transfer_gate import mark_inbound_transferred
 
-        db_manager.set_session_ai_mode(sid, inbound_transfer_initial_ai_mode())
-    except Exception:
-        if bool(config.get("chat.inbound_transfer_default_manual", True)):
-            db_manager.set_session_ai_mode(sid, False)
+        mark_inbound_transferred(sid)
+    except Exception as e:
+        _log.debug("转接标记 inbound_transferred 失败: {}", e)
 
 
 def persist_seller_mall_cs_from_context(

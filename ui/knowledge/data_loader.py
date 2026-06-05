@@ -42,20 +42,32 @@ class KnowledgeDataLoader:
         """
         try:
             docs: List[SimpleDocument] = []
+            list_for_ui_used = False
 
             # 优先从本地知识库 JSON（完整元数据：import_format、display_payload 等）
             list_for_ui = getattr(self.knowledge_manager, "list_documents_for_ui", None)
-            if callable(list_for_ui) and (platform_shop_id or "").strip():
+            if callable(list_for_ui):
                 try:
-                    raw_list = list_for_ui((platform_shop_id or "").strip())
+                    sid = (platform_shop_id or "").strip() or None
+                    raw_list = list_for_ui(sid)
+                    list_for_ui_used = True
+                    docs = [
+                        SimpleDocument.from_kb_dict(d, i)
+                        for i, d in enumerate(raw_list or [])
+                    ]
+                    logger.info(
+                        f"从 list_documents_for_ui 加载了 {len(docs)} 个文档"
+                    )
                 except Exception as e:
                     logger.warning(f"list_documents_for_ui 加载失败: {e}")
-                    raw_list = []
-            else:
-                raw_list = None
+
+            if list_for_ui_used:
+                if limit and len(docs) > limit:
+                    docs = docs[:limit]
+                return docs
 
             getter = getattr(self.knowledge_manager, "get_all_documents", None)
-            if raw_list is None and callable(getter):
+            if not docs and callable(getter):
                 try:
                     raw_list = getter()
                     if isinstance(raw_list, list) and raw_list:

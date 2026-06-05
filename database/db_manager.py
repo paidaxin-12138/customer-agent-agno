@@ -1026,15 +1026,53 @@ class DatabaseManager:
         finally:
             session.close()
 
-    def get_chat_sessions(
+    @staticmethod
+    def _truncate_session_preview(text: Optional[str], max_len: int = 50) -> str:
+        s = (text or "").replace("\n", " ").strip()
+        if len(s) <= max_len:
+            return s
+        return s[: max_len - 1] + "…"
+
+    def _count_unread_buyer_messages_bulk(
+        self, session_ids: List[int]
+    ) -> Dict[int, int]:
+        if not session_ids:
+            return {}
+        db = self.get_session()
+        try:
+            rows = (
+                db.query(ChatMessage.session_id, func.count(ChatMessage.id))
+                .filter(
+                    ChatMessage.session_id.in_(session_ids),
+                    ChatMessage.is_read == False,  # noqa: E712
+                    ChatMessage.sender_type == "customer",
+                )
+                .group_by(ChatMessage.session_id)
+                .all()
+            )
+            return {int(sid): int(cnt) for sid, cnt in rows}
+        except SQLAlchemyError as e:
+            self.logger.error(f"_count_unread_buyer_messages_bulk 失败: {e}")
+            return {}
+        finally:
+            db.close()
+
+    def count_unread_buyer_messages(self, session_id: int) -> int:
+        """实时统计买家未读消息数。"""
+        return self._count_unread_buyer_messages_bulk([session_id]).get(session_id, 0)
+
+    def get_chat_session_summaries(
         self, account_id: Optional[int] = None, status: str = "active"
     ) -> List[Dict[str, Any]]:
+        """会话列表摘要：不含完整消息，未读数实时计算。"""
         session = self.get_session()
         try:
             q = session.query(ChatSession).filter(ChatSession.status == status)
             if account_id is not None:
                 q = q.filter(ChatSession.account_id == account_id)
             q = q.order_by(desc(ChatSession.updated_at))
+            rows = q.all()
+            unread_map = self._count_unread_buyer_messages_bulk([s.id for s in rows])
             return [
                 {
                     "id": s.id,
@@ -1046,18 +1084,23 @@ class DatabaseManager:
                     "avatar_url": s.avatar_url,
                     "status": s.status,
                     "ai_mode": bool(s.ai_mode),
-                    "last_message": s.last_message,
+                    "last_message": self._truncate_session_preview(s.last_message),
                     "last_message_time": s.last_message_time,
-                    "unread_count": s.unread_count or 0,
+                    "unread_count": unread_map.get(s.id, 0),
                     "updated_at": s.updated_at,
                 }
-                for s in q.all()
+                for s in rows
             ]
         except SQLAlchemyError as e:
-            self.logger.error(f"get_chat_sessions 失败: {e}")
+            self.logger.error(f"get_chat_session_summaries 失败: {e}")
             return []
         finally:
             session.close()
+
+    def get_chat_sessions(
+        self, account_id: Optional[int] = None, status: str = "active"
+    ) -> List[Dict[str, Any]]:
+        return self.get_chat_session_summaries(account_id, status)
 
     def get_chat_session_by_buyer(
         self, account_id: int, buyer_uid: str, status: str = "active"
@@ -1074,6 +1117,7 @@ class DatabaseManager:
             s = session.query(ChatSession).filter(ChatSession.id == session_id).first()
             if not s:
                 return None
+            unread = self.count_unread_buyer_messages(s.id)
             return {
                 "id": s.id,
                 "account_id": s.account_id,
@@ -1084,9 +1128,9 @@ class DatabaseManager:
                 "avatar_url": s.avatar_url,
                 "status": s.status,
                 "ai_mode": bool(s.ai_mode),
-                "last_message": s.last_message,
+                "last_message": self._truncate_session_preview(s.last_message),
                 "last_message_time": s.last_message_time,
-                "unread_count": s.unread_count or 0,
+                "unread_count": unread,
                 "updated_at": s.updated_at,
             }
         except SQLAlchemyError as e:
@@ -1132,7 +1176,7 @@ class DatabaseManager:
                 buyer_nickname=buyer_nickname or "买家",
                 avatar_url=avatar_url,
                 status="active",
-                ai_mode=True,
+                ai_mode=self._default_ai_mode_for_account(account_id),
                 unread_count=0,
                 created_at=now,
                 updated_at=now,
@@ -1267,6 +1311,45 @@ class DatabaseManager:
         finally:
             session.close()
 
+    @staticmethod
+    def _default_ai_mode_for_account(account_id: int) -> bool:
+        try:
+            from utils.inbound_transfer_gate import default_ai_mode_for_new_session
+
+            return default_ai_mode_for_new_session(int(account_id))
+        except Exception:
+            return True
+
+    def mark_chat_session_inbound_transferred(self, session_id: int) -> bool:
+        session = self.get_session()
+        try:
+            s = session.query(ChatSession).filter(ChatSession.id == session_id).first()
+            if not s:
+                return False
+            if s.inbound_transferred_at is not None:
+                return True
+            s.inbound_transferred_at = now_for_db()
+            s.updated_at = now_for_db()
+            session.commit()
+            return True
+        except SQLAlchemyError as e:
+            session.rollback()
+            self.logger.error(f"mark_chat_session_inbound_transferred 失败: {e}")
+            return False
+        finally:
+            session.close()
+
+    def is_chat_session_inbound_transferred(self, session_id: int) -> bool:
+        session = self.get_session()
+        try:
+            s = session.query(ChatSession).filter(ChatSession.id == session_id).first()
+            return bool(s and s.inbound_transferred_at is not None)
+        except SQLAlchemyError as e:
+            self.logger.error(f"is_chat_session_inbound_transferred 失败: {e}")
+            return False
+        finally:
+            session.close()
+
     def get_session_memory(self, session_id: int) -> Dict[str, Any]:
         """读取会话三层记忆持久化字段。"""
         session = self.get_session()
@@ -1372,6 +1455,27 @@ class DatabaseManager:
             return None
         finally:
             session.close()
+
+    def get_chat_message_count(self, session_id: int) -> int:
+        session = self.get_session()
+        try:
+            return (
+                session.query(func.count(ChatMessage.id))
+                .filter(ChatMessage.session_id == session_id)
+                .scalar()
+                or 0
+            )
+        except SQLAlchemyError as e:
+            self.logger.error(f"get_chat_message_count 失败: {e}")
+            return 0
+        finally:
+            session.close()
+
+    def get_chat_messages_paginated(
+        self, session_id: int, limit: int, offset: int
+    ) -> List[Dict[str, Any]]:
+        """按 created_at 升序分页返回消息。"""
+        return self.get_chat_messages(session_id, limit=limit, offset=offset)
 
     def get_chat_messages(
         self, session_id: int, limit: int = 200, offset: int = 0
@@ -1517,8 +1621,13 @@ class DatabaseManager:
         session = self.get_session()
         try:
             v = (
-                session.query(func.coalesce(func.sum(ChatSession.unread_count), 0))
-                .filter(ChatSession.status == "active")
+                session.query(func.count(ChatMessage.id))
+                .join(ChatSession, ChatMessage.session_id == ChatSession.id)
+                .filter(
+                    ChatSession.status == "active",
+                    ChatMessage.is_read == False,  # noqa: E712
+                    ChatMessage.sender_type == "customer",
+                )
                 .scalar()
             )
             return int(v or 0)
