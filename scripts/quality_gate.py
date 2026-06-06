@@ -77,7 +77,7 @@ def main() -> int:
             "ui/Knowledge_ui.py",
             "ui/main_ui.py",
             "Message/handlers/ai_handler.py",
-            "Channel/pinduoduo/pdd_chnnel.py",
+            "Channel/pinduoduo/pdd_channel.py",
         ],
         "Compile critical modules",
     )

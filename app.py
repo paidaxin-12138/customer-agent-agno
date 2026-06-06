@@ -62,7 +62,7 @@ except Exception as _cfg_err:
 # ============================================================================
 
 from ui.theme import apply_theme, BG_PRIMARY
-from utils.runtime_path import get_app_icon_path
+from utils.runtime_path import get_app_icon_path, keep_macos_bundle_dock_icon
 
 
 def _setup_boot_log():
@@ -109,11 +109,13 @@ def _preload_numpy_safely_on_macos() -> None:
 
 # 设置 Playwright 浏览器路径（支持打包后的 exe）
 def get_project_root():
-    """获取项目根目录（支持 PyInstaller 打包后的 exe）"""
-    import sys
-    if getattr(sys, 'frozen', False):
-        # PyInstaller 打包后的 exe
-        return Path(sys._MEIPASS).parent
+    """获取项目根目录（开发）或用户数据目录（打包后）。"""
+    if getattr(sys, "frozen", False):
+        from utils.runtime_path import get_user_data_dir
+
+        root = get_user_data_dir()
+        root.mkdir(parents=True, exist_ok=True)
+        return root
     return Path(__file__).resolve().parent
 
 def setup_playwright_browsers_path():
@@ -152,9 +154,10 @@ def main():
 
     get_human_assist_bus()  # 确保总线对象驻留 GUI 主线程
     app.setApplicationName("Agent-Customer")
-    _icon_path = get_app_icon_path()
-    if _icon_path.exists():
-        app.setWindowIcon(QIcon(str(_icon_path)))
+    if not keep_macos_bundle_dock_icon():
+        _icon_path = get_app_icon_path()
+        if _icon_path.exists():
+            app.setWindowIcon(QIcon(str(_icon_path)))
     boot_logger.info("QApplication initialized.")
     
     # 加载 .env（供 config.get 环境变量覆盖）

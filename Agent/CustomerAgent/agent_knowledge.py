@@ -1,5 +1,5 @@
 """
-美甲灯客服 AI 知识库集成模块（门面）。
+电商客服 AI 知识库门面。
 实现已拆分至 knowledge_storage / knowledge_indexer / knowledge_retriever。
 """
 
@@ -28,6 +28,7 @@ __all__ = [
     "NailLampKnowledgeManager",
     "get_current_platform_shop_id",
     "get_knowledge_manager",
+    "get_knowledge_response",
     "get_nail_lamp_response",
     "knowledge_manager",
     "reset_platform_shop_context",
@@ -35,22 +36,20 @@ __all__ = [
 ]
 
 
-class NailLampKnowledgeManager(
+class KnowledgeManager(
     KnowledgeRetrieverMixin, KnowledgeIndexerMixin, KnowledgeStorageMixin
 ):
-    """美甲灯知识库管理器 - 优化检索召回率"""
+    """店铺知识库管理器（向量检索 + 本地 JSON/LanceDB）。"""
 
     def __init__(self):
-        # 向后兼容属性（UI 代码期望的属性）
-        self.knowledge = {}  # 兼容旧 UI 代码
-        self.documents = []  # 文档列表
-        self.logger = get_logger("NailLampKnowledgeManager")
+        self.knowledge = {}
+        self.documents = []
+        self.logger = get_logger("KnowledgeManager")
         self._config = Config()
         self._embedder_client = self._init_embedder_client()
         self._embedder_model = (get_config("embedder.model_name", "") or "").strip()
         self._store_file = get_temp_path() / "knowledge_docs.json"
-        
-        # LanceDB 向量数据库
+
         self._lancedb_path = get_temp_path() / "lancedb"
         self._lancedb_path.mkdir(parents=True, exist_ok=True)
         self._db = None
@@ -61,24 +60,27 @@ class NailLampKnowledgeManager(
             self._config
         )
 
-        # 索引在后台线程加载，避免阻塞 UI 启动（见 _start_store_init_async）
         self._store_initialized = False
         self._store_init_started = False
         self._store_init_event = threading.Event()
         self._store_init_lock = threading.Lock()
 
 
-_manager_instance: Optional[NailLampKnowledgeManager] = None
+# 历史类名兼容（旧代码 / 脚本仍可能引用）
+NailLampKnowledgeManager = KnowledgeManager
+LanceDBKnowledgeManager = KnowledgeManager
+
+_manager_instance: Optional[KnowledgeManager] = None
 _manager_lock = threading.Lock()
 
 
-def get_knowledge_manager() -> NailLampKnowledgeManager:
+def get_knowledge_manager() -> KnowledgeManager:
     """延迟初始化知识库，避免 import 时阻塞 LanceDB/embedding。"""
     global _manager_instance
     if _manager_instance is None:
         with _manager_lock:
             if _manager_instance is None:
-                _manager_instance = NailLampKnowledgeManager()
+                _manager_instance = KnowledgeManager()
                 _manager_instance._start_store_init_async()
     return _manager_instance
 
@@ -95,21 +97,10 @@ class _LazyKnowledgeManagerProxy:
 
 knowledge_manager = _LazyKnowledgeManagerProxy()
 
-# 向后兼容 - 旧代码使用的类名
-KnowledgeManager = NailLampKnowledgeManager
-LanceDBKnowledgeManager = NailLampKnowledgeManager
 
-
-def get_nail_lamp_response(user_message: str, context: Optional[Dict] = None) -> str:
-    """
-    获取美甲灯客服回复
-    
-    Args:
-        user_message: 用户消息
-        context: 对话上下文（可选）
-    
-    Returns:
-        客服回复
-    """
-    # 使用知识库管理器生成回复
+def get_knowledge_response(user_message: str, context: Optional[Dict] = None) -> str:
+    """根据用户消息与可选上下文生成知识库回复。"""
     return knowledge_manager.answer_question(user_message)
+
+
+get_nail_lamp_response = get_knowledge_response

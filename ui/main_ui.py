@@ -28,7 +28,7 @@ from ui.macos_fonts import MacOSFonts, MacOSSpacing
 from ui.macos_window_chrome import apply_dark_titlebar_chrome, use_unified_dark_titlebar
 from utils.dialogs import confirm_action
 from utils.logger_loguru import get_logger
-from utils.runtime_path import get_app_icon_path
+from utils.runtime_path import get_app_icon_path, keep_macos_bundle_dock_icon
 
 logger = get_logger("MainWindow")
 
@@ -85,9 +85,10 @@ class MainWindow(FluentWindow):
         
         # 窗口基本设置
         self.setWindowTitle('拼多多 AI 客服助手')
-        _icon = get_app_icon_path()
-        if _icon.exists():
-            self.setWindowIcon(QIcon(str(_icon)))
+        if not keep_macos_bundle_dock_icon():
+            _icon = get_app_icon_path()
+            if _icon.exists():
+                self.setWindowIcon(QIcon(str(_icon)))
         self.setMinimumSize(1200, 800)
         self.resize(1400, 900)
         if sys.platform == "darwin":
@@ -306,6 +307,23 @@ class MainWindow(FluentWindow):
             position=NavigationItemPosition.BOTTOM
         )
     
+    def _ensure_nav_fallback_views(self, message: str = "界面加载失败，请重启应用") -> None:
+        """视图加载失败时为所有导航项提供占位页，避免 initNavigation 收到 None。"""
+        fallbacks = (
+            ("monitor_view", message),
+            ("live_chat_view", "实时聊天加载失败"),
+            ("ops_dashboard_view", "后台看板加载失败"),
+            ("knowledge_view", "知识库加载失败"),
+            ("keyword_manager_view", "关键词管理加载失败"),
+            ("user_manager_view", "账号管理加载失败"),
+            ("log_view", "日志界面加载失败"),
+            ("settingInterface", "设置界面加载失败"),
+            ("ai_test_view", "AI 测试加载失败"),
+        )
+        for attr, text in fallbacks:
+            if getattr(self, attr, None) is None:
+                setattr(self, attr, Widget(text, self))
+
     def lazy_load_views(self):
         """延迟加载各个视图，提高启动速度"""
         t0 = time.perf_counter()
@@ -314,14 +332,10 @@ class MainWindow(FluentWindow):
         except Exception as e:
             logger.exception(f"延迟加载视图失败: {e}")
             self.notify_user("界面加载失败", "部分功能不可用，请查看日志或重启应用。")
-            if self.monitor_view is None:
-                self.monitor_view = Widget("界面加载失败，请重启应用", self)
-            if self.live_chat_view is None:
-                self.live_chat_view = Widget("实时聊天加载失败", self)
-            if self.ops_dashboard_view is None:
-                self.ops_dashboard_view = Widget("后台看板加载失败", self)
+            self._ensure_nav_fallback_views()
             try:
                 self.initNavigation()
+                self._configure_navigation()
             except Exception as e2:
                 logger.error(f"导航初始化失败: {e2}")
         logger.info(f"延迟视图初始化耗时：{time.perf_counter() - t0:.2f}s")

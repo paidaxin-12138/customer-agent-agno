@@ -2,7 +2,7 @@
 连接状态管理 - 独立模块
 
 职责：维护所有 PDDChannel 实例的连接状态。
-从 Channel/pinduoduo/pdd_chnnel.py 中提取出来，
+从 `Channel/pinduoduo/pdd_channel.py` 相关逻辑中提取出来，
 明确其跨实例共享状态的职责边界。
 """
 

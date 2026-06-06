@@ -123,8 +123,25 @@ python app.py
 
 ## 打包
 
-- Windows 可执行文件：在 Windows 上执行 `python scripts/build_win_exe.py`（详见 `scripts/` 内说明）。
-- 通用构建：`python scripts/build_exe.py`。
+- **macOS `.app`**（本机已构建可直接试跑）：
+
+```bash
+uv run python scripts/build_mac_app.py --clean
+open dist/AgentCustomer.app
+```
+
+  输出：`dist/AgentCustomer.app`（约 1.2GB，含 PyQt6 / Playwright 等）。用户数据在 `~/Library/Application Support/AgentCustomer/`。首次拼多多登录仍需本机安装 Playwright 浏览器（见 `dist/README-mac.txt`）。
+
+- **Windows 发布目录**（须在 Windows 本机构建）：
+
+```bash
+uv run python scripts/build_win_exe.py --clean
+# 运行: dist\AgentCustomer\AgentCustomer.exe
+```
+
+  输出：`dist/AgentCustomer/`（onedir，含 `AgentCustomer.exe` 与依赖）。用户数据在 `%LOCALAPPDATA%\AgentCustomer\`。Playwright 需本机执行 `uv run playwright install chromium`（见 `dist/README-win.txt`）。
+
+- 通用构建（历史脚本）：`python scripts/build_exe.py`。
 
 ---
 

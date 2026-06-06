@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 )
 from qfluentwidgets import CaptionLabel, PushButton, SubtitleLabel
 
-from database.ops_repository import get_ops_repository
+from database.ops_repository import get_ops_repository, OPS_SESSION_LIST_LIMIT
 from ui.dashboard_page import DashboardOverviewPage
 from ui.ops_dashboard.table_panel import OpsTablePanel
 from utils.logger_loguru import get_logger
@@ -328,7 +328,9 @@ class OpsDashboardUI(QFrame):
         self._load_security()
 
     def _load_sessions(self) -> None:
-        self.sessions_panel.set_rows(self._repo.list_sessions())
+        self.sessions_panel.set_rows(
+            self._repo.list_sessions(limit=OPS_SESSION_LIST_LIMIT)
+        )
 
     def _load_traces(self) -> None:
         self._trace_cache = self._repo.list_traces()

@@ -17,8 +17,15 @@ _CONFIGURED = False
 
 
 def _logs_dir() -> Path:
-    root = Path(__file__).resolve().parents[1]
-    d = root / "logs"
+    try:
+        from utils.runtime_path import get_user_data_dir, is_frozen
+
+        if is_frozen():
+            d = get_user_data_dir() / "logs"
+        else:
+            d = Path(__file__).resolve().parents[1] / "logs"
+    except Exception:
+        d = Path(__file__).resolve().parents[1] / "logs"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

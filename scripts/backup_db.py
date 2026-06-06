@@ -16,15 +16,18 @@ if str(ROOT) not in sys.path:
 
 
 def resolve_db_path() -> Path:
+    from utils.runtime_path import get_database_path, is_frozen, resolve_writable_path
+
     try:
         from config import config
 
         raw = config.get("db_path") or config.get("production.db_path")
         if raw:
-            p = Path(str(raw))
-            return p if p.is_absolute() else (ROOT / p).resolve()
+            return resolve_writable_path(raw)
     except Exception:
         pass
+    if is_frozen():
+        return get_database_path()
     for candidate in (
         ROOT / "data" / "customer_agent.db",
         ROOT / "temp" / "customer.db",

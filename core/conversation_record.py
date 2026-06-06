@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 from bridge.context import Context
+from utils.best_effort import run_best_effort
+from utils.logger_loguru import get_logger
+
+_log = get_logger("ConversationRecord")
 
 
 def record_inbound_from_context(
@@ -11,10 +15,17 @@ def record_inbound_from_context(
     username: str,
     context: Context,
 ) -> None:
-    from ui.conversation_hub import get_conversation_hub
+    def _do() -> None:
+        from ui.conversation_hub import get_conversation_hub
 
-    get_conversation_hub().record_from_context(
-        channel_name, shop_id, user_id, username, context
+        get_conversation_hub().record_from_context(
+            channel_name, shop_id, user_id, username, context
+        )
+
+    run_best_effort(
+        f"Hub.record_inbound shop={shop_id} user={user_id}",
+        _do,
+        logger=_log,
     )
 
 
@@ -25,8 +36,15 @@ def record_platform_civility_from_context(
     username: str,
     context: Context,
 ) -> None:
-    from ui.conversation_hub import get_conversation_hub
+    def _do() -> None:
+        from ui.conversation_hub import get_conversation_hub
 
-    get_conversation_hub().record_platform_civility_from_context(
-        channel_name, shop_id, user_id, username, context
+        get_conversation_hub().record_platform_civility_from_context(
+            channel_name, shop_id, user_id, username, context
+        )
+
+    run_best_effort(
+        f"Hub.record_civility shop={shop_id} user={user_id}",
+        _do,
+        logger=_log,
     )

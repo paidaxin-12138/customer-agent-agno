@@ -330,12 +330,15 @@ def configure_standard_services(config_instance: Any = None) -> 'DIContainer':
 
     # 2. DatabaseManager
     if not container.is_registered(DatabaseManager):
+        from utils.runtime_path import resolve_writable_path
+
         db_path = "./temp/customer.db"
         if config_instance is not None:
             db_path = config_instance.get("db_path", db_path) or db_path
+        resolved_db_path = str(resolve_writable_path(db_path))
         container.register_singleton(
             DatabaseManager,
-            factory=lambda: DatabaseManager(db_path=db_path)
+            factory=lambda p=resolved_db_path: DatabaseManager(db_path=p)
         )
 
     # 注：QueueManager、MessageConsumerManager、CacheManager

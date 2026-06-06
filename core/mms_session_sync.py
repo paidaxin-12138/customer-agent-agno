@@ -313,15 +313,21 @@ def sync_mms_sessions_for_account(
             )
 
     if synced:
-        try:
+        from utils.best_effort import run_best_effort
+
+        def _refresh_hub() -> None:
             from ui.conversation_hub import get_conversation_hub, make_account_key
 
             key = make_account_key(channel_name, shop_id, username)
             hub = get_conversation_hub()
             hub.sync_latest_conversations(key, account_id_int)
             hub.list_changed.emit(key)
-        except Exception as e:
-            _log.debug("Hub 刷新失败: {}", e)
+
+        run_best_effort(
+            f"MMS Hub 刷新 account={account_id_int}",
+            _refresh_hub,
+            logger=_log,
+        )
 
         _log.info(
             "MMS 会话同步完成: {} (shop={} 条数={})",

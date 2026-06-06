@@ -22,8 +22,13 @@ def create_icns_from_png(png_path, output_path):
     iconset_dir = Path("/tmp/app_icon.iconset")
     iconset_dir.mkdir(exist_ok=True)
     
-    # 打开原始图标
+    # 打开原始图标（历史上可能是 JPEG 误命名为 .png）
     img = Image.open(png_path)
+    if getattr(img, "format", None) != "PNG":
+        img = img.convert("RGBA")
+        img.save(png_path, format="PNG")
+        print(f"已规范为 PNG：{png_path}")
+        img = Image.open(png_path)
     
     # 生成各种尺寸的图标
     sizes = [
@@ -100,8 +105,8 @@ if __name__ == "__main__":
     print(f"📍 找到图标：{png_path}")
     
     # 输出路径
-    output_path = Path("启动 AI 客服.app/Contents/Resources/app_icon.icns")
-    output_path.parent.mkdir(exist_ok=True)
+    output_path = Path("icon/app_icon.icns")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     
     # 创建图标
     create_icns_from_png(png_path, output_path)

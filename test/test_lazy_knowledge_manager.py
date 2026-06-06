@@ -9,7 +9,7 @@ def test_knowledge_manager_lazy_singleton():
     mock_mgr = MagicMock()
     mock_mgr.get_content_count.return_value = 7
 
-    with patch.object(ak, "NailLampKnowledgeManager", return_value=mock_mgr) as cls:
+    with patch.object(ak, "KnowledgeManager", return_value=mock_mgr) as cls:
         assert ak.knowledge_manager.get_content_count() == 7
         assert ak.knowledge_manager.get_content_count() == 7
         cls.assert_called_once()

@@ -12,6 +12,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QScrollArea, QVBoxLayout, QWidget
 
 from database.db_manager import db_manager
+from database.ops_repository import OPS_SESSION_LIST_LIMIT
 from ui.ops_dashboard.dashboard_widgets import (
     IntentHeatmapCard,
     KpiRow,
@@ -64,13 +65,13 @@ class DashboardOverviewPage(QFrame):
 
   def refresh(self) -> None:
     try:
-      sessions = self._repo.list_sessions(limit=500)
-      transferred = sum(1 for s in sessions if s.get("transferred_to_human"))
+      sessions = self._repo.list_sessions(limit=OPS_SESSION_LIST_LIMIT)
+      active = sum(1 for s in sessions if (s.get("status") or "active") == "active")
       resolved = sum(1 for s in sessions if s.get("is_resolved"))
-      active = len(sessions) - resolved
-      costs = self._repo.list_cost_logs(limit=200)
-      total_cost = sum(float(c.get("cost_usd") or 0) for c in costs)
-      low_conf = len(self._repo.list_low_confidence(limit=500))
+      transferred = sum(1 for s in sessions if s.get("transferred_to_human"))
+      cost_summary = self._repo.cost_summary()
+      total_cost = float(cost_summary.get("total_cost_usd") or 0)
+      low_conf = len(self._repo.list_low_confidence(limit=OPS_SESSION_LIST_LIMIT))
 
       self._kpi_row.set_kpis([
         ("活跃会话", str(active), f"总计 {len(sessions)}", True),

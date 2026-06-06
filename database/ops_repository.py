@@ -28,6 +28,8 @@ from utils.logger_loguru import get_logger
 
 logger = get_logger("OpsRepository")
 
+OPS_SESSION_LIST_LIMIT = 500
+
 
 def _row_to_dict(obj, fields: List[str]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
@@ -37,6 +39,24 @@ def _row_to_dict(obj, fields: List[str]) -> Dict[str, Any]:
             v = format_display_datetime(v)
         out[f] = v
     return out
+
+
+def _intent_from_chat_session(cs: ChatSession) -> str:
+    """从 chat_sessions 提取意图；task_state_json 为权威来源。"""
+    raw = getattr(cs, "task_state_json", None)
+    if raw:
+        try:
+            data = json.loads(raw)
+            for key in ("intent", "last_intent"):
+                val = str(data.get(key) or "").strip()
+                if val and val != "general":
+                    return val
+        except (json.JSONDecodeError, TypeError):
+            pass
+    legacy = getattr(cs, "last_intent", None)
+    if legacy:
+        return str(legacy).strip()
+    return ""
 
 
 class OpsRepository:
@@ -91,8 +111,10 @@ class OpsRepository:
                 seller_uid = acc.user_id if acc else ""
                 channel = "pinduoduo"
                 user_label = cs.buyer_nickname or cs.buyer_uid or ""
-                transferred = cs.status == "transferred" or not bool(cs.ai_mode)
-                intent = getattr(cs, "last_intent", None) or ""
+                transferred = cs.status == "transferred"
+                intent = _intent_from_chat_session(cs)
+                if not intent and existing and existing.intent:
+                    intent = existing.intent
                 sk = f"pinduoduo:{cs.platform_shop_id}:{seller_uid}:{cs.buyer_uid}"
                 payload = dict(
                     session_key=sk,

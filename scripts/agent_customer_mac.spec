@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec — Windows onedir 发布包。用法: pyinstaller scripts/agent_customer.spec"""
+"""PyInstaller spec — macOS .app  bundle。用法: pyinstaller scripts/agent_customer_mac.spec"""
 
 import sys
 from pathlib import Path
@@ -11,7 +11,8 @@ if "__file__" in globals():
 else:
     PROJECT_ROOT = Path.cwd()
 
-ICON_FILE = str(PROJECT_ROOT / "icon" / "icon.ico")
+ICNS_PATH = PROJECT_ROOT / "icon" / "app_icon.icns"
+ICON_FILE = str(ICNS_PATH) if ICNS_PATH.is_file() else None
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
@@ -86,7 +87,6 @@ a = Analysis(
         "httpcore",
         "certifi",
         "charset_normalizer",
-        "requests",
         "dotenv",
         "cryptography",
         "alembic",
@@ -98,7 +98,6 @@ a = Analysis(
         "core.production_services",
         "database.db_manager",
         "database.models",
-        "database.ops_repository",
         "bridge.context",
         "bridge.reply",
         "Message.core.queue",
@@ -116,7 +115,6 @@ a = Analysis(
         "Channel.pinduoduo.ws_inbound_pipeline",
         "Channel.pinduoduo.ws_lifecycle",
         "ui.main_ui",
-        "ui.ops_dashboard.ops_dashboard_ui",
         "ui.theme",
         "ui.dark_theme_loader",
         "utils.logger_loguru",
@@ -147,18 +145,10 @@ exe = EXE(
     upx=False,
     console=False,
     disable_windowed_traceback=False,
-    argv_emulation=False,
+    argv_emulation=True,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=ICON_FILE,
-    version="",
-    description="拼多多 AI 客服助手",
-    product_name="AgentCustomer",
-    product_version="1.1.0",
-    company_name="",
-    legal_copyright="",
-    uac_admin=False,
 )
 
 coll = COLLECT(
@@ -169,4 +159,21 @@ coll = COLLECT(
     strip=False,
     upx=False,
     name="AgentCustomer",
+)
+
+app = BUNDLE(
+    coll,
+    name="AgentCustomer.app",
+    icon=ICON_FILE,
+    bundle_identifier="com.agentcustomer.app",
+    info_plist={
+        "NSPrincipalClass": "NSApplication",
+        "NSHighResolutionCapable": True,
+        "CFBundleName": "AgentCustomer",
+        "CFBundleDisplayName": "拼多多 AI 客服",
+        "CFBundleIconFile": "app_icon",
+        "CFBundleShortVersionString": "1.1.0",
+        "CFBundleVersion": "1.1.0",
+        "LSMinimumSystemVersion": "11.0",
+    },
 )

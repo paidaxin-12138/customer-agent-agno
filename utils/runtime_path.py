@@ -19,19 +19,44 @@ def is_frozen() -> bool:
     return getattr(sys, 'frozen', False)
 
 
+_APP_SUPPORT_NAME = "AgentCustomer"
+
+
+def get_user_data_dir() -> Path:
+    """打包后用户可写目录（配置、数据库、日志、Playwright 浏览器等）。"""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / _APP_SUPPORT_NAME
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            return Path(local) / _APP_SUPPORT_NAME
+        return Path.home() / "AppData" / "Local" / _APP_SUPPORT_NAME
+    return Path.home() / f".{_APP_SUPPORT_NAME.lower()}"
+
+
 def get_base_path() -> Path:
     """
     获取应用程序的基础路径
 
     Returns:
-        Path: 开发环境下返回项目根目录，打包环境下返回可执行文件所在目录
+        Path: 开发环境为项目根；打包后为用户可写数据目录
     """
     if is_frozen():
-        # PyInstaller 打包后的路径
-        return Path(sys.executable).parent
-    else:
-        # 开发环境下的路径
-        return Path(__file__).resolve().parents[1]
+        base = get_user_data_dir()
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+    return Path(__file__).resolve().parents[1]
+
+
+def resolve_writable_path(path: Union[str, Path]) -> Path:
+    """
+    将配置中的相对路径解析为可写绝对路径。
+    开发环境相对项目根；打包后相对 Application Support，避免写入 .app 只读目录。
+    """
+    p = Path(path)
+    if p.is_absolute():
+        return p
+    return (get_base_path() / p).resolve()
 
 
 def get_resource_path(relative_path: Union[str, Path]) -> Path:
@@ -67,16 +92,44 @@ def get_resource_path(relative_path: Union[str, Path]) -> Path:
     return base_path / relative_path
 
 
-def get_app_icon_path() -> Path:
-    """
-    应用窗口 / Dock 图标路径。
-    优先 PNG（清晰度高），其次 ICO（Windows 打包常用）。
-    """
-    for rel in ("icon/app_icon.png", "icon/icon.ico"):
+def _macos_bundle_resources_dir() -> Path | None:
+    """macOS .app 的 Contents/Resources（PyInstaller 资源与 icns 所在目录）。"""
+    if not is_frozen() or sys.platform != "darwin":
+        return None
+    exe = Path(sys.executable).resolve()
+    # .../AgentCustomer.app/Contents/MacOS/AgentCustomer
+    if exe.parent.name == "MacOS" and exe.parent.parent.name == "Contents":
+        return exe.parent.parent / "Resources"
+    return None
+
+
+def get_qt_icon_path() -> Path:
+    """Qt 窗口/托盘图标：优先 PNG（.icns 在部分 Qt 版本下显示异常）。"""
+    resources = _macos_bundle_resources_dir()
+    if resources is not None:
+        for name in ("icon/app_icon.png", "app_icon.icns", "icon/icon.ico"):
+            p = resources / name
+            if p.is_file():
+                return p
+    for rel in ("icon/app_icon.png", "icon/icon.ico", "icon/app_icon.icns"):
         p = get_resource_path(rel)
-        if p.exists():
+        if p.is_file():
             return p
     return get_resource_path("icon/icon.ico")
+
+
+def get_app_icon_path() -> Path:
+    """兼容旧调用；Qt 场景请用 get_qt_icon_path()。"""
+    return get_qt_icon_path()
+
+
+def keep_macos_bundle_dock_icon() -> bool:
+    """
+    macOS .app 启动时系统先显示 bundle 圆角图标；
+    Qt 的 setWindowIcon 会覆盖 Dock，加载失败时变成便签纸默认图标。
+    打包环境下应保留 Info.plist / app_icon.icns，不由 Qt 改 Dock。
+    """
+    return sys.platform == "darwin" and is_frozen()
 
 
 def get_temp_path(subpath: Union[str, Path] = "") -> Path:
@@ -146,13 +199,17 @@ def get_log_path() -> Path:
     Returns:
         Path: 日志文件的绝对路径
     """
-    log_dir = ensure_temp_dir("logs")
+    if is_frozen():
+        log_dir = get_user_data_dir() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        log_dir = ensure_temp_dir("logs")
     return log_dir / "app.log"
 
 
-def get_database_path(db_name: str = "agent.db") -> Path:
+def get_database_path(db_name: str = "customer_agent.db") -> Path:
     """
-    获取数据库文件路径
+    获取默认 SQLite 数据库路径（与 config_base db_path 一致）。
 
     Args:
         db_name: 数据库文件名
@@ -160,8 +217,7 @@ def get_database_path(db_name: str = "agent.db") -> Path:
     Returns:
         Path: 数据库文件的绝对路径
     """
-    db_dir = ensure_temp_dir()
-    return db_dir / db_name
+    return resolve_writable_path(Path("data") / db_name)
 
 
 def get_vector_db_path() -> Path:

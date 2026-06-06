@@ -117,12 +117,14 @@ class ChatStoreMixin:
         return self._count_unread_buyer_messages_bulk([session_id]).get(session_id, 0)
 
     def get_chat_session_summaries(
-        self, account_id: Optional[int] = None, status: str = "active"
+        self, account_id: Optional[int] = None, status: Optional[str] = "active"
     ) -> List[Dict[str, Any]]:
-        """会话列表摘要：不含完整消息，未读数实时计算。"""
+        """会话列表摘要：不含完整消息，未读数实时计算。status=None 表示不限状态。"""
         session = self.get_session()
         try:
-            q = session.query(ChatSession).filter(ChatSession.status == status)
+            q = session.query(ChatSession)
+            if status is not None:
+                q = q.filter(ChatSession.status == status)
             if account_id is not None:
                 q = q.filter(ChatSession.account_id == account_id)
             q = q.order_by(desc(ChatSession.updated_at))

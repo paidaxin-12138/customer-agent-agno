@@ -77,7 +77,7 @@ def _excel_display_payload_json(path: Path) -> Optional[str]:
             sheets.append(_tabular_sheet_payload(df, str(sheet_name)))
         return json.dumps({"type": "excel", "sheets": sheets}, ensure_ascii=False)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-        get_logger("NailLampKnowledgeManager").debug("Excel 展示载荷解析失败: {}", exc)
+        get_logger("KnowledgeManager").debug("Excel 展示载荷解析失败: {}", exc)
         return None
 
 
@@ -90,7 +90,7 @@ def _csv_display_payload_json(content: str, label: str) -> Optional[str]:
         sheet = _tabular_sheet_payload(df, label)
         return json.dumps({"type": "csv", "sheets": [sheet]}, ensure_ascii=False)
     except (ValueError, KeyError, json.JSONDecodeError) as exc:
-        get_logger("NailLampKnowledgeManager").debug("CSV 展示载荷解析失败: {}", exc)
+        get_logger("KnowledgeManager").debug("CSV 展示载荷解析失败: {}", exc)
         return None
 
 

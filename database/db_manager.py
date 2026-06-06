@@ -45,8 +45,11 @@ class DatabaseManager(ChatStoreMixin):
         """
         if self._initialized:
             return
-            
-        db_file = Path(db_path)
+
+        from utils.runtime_path import resolve_writable_path
+
+        db_file = resolve_writable_path(db_path)
+        resolved_db_path = str(db_file)
         from utils.private_paths import ensure_private_dir, ensure_private_file
 
         if db_file.parent and str(db_file.parent) not in (".", ""):
@@ -54,7 +57,7 @@ class DatabaseManager(ChatStoreMixin):
 
         # 创建数据库引擎（WAL + 多线程 asyncio.to_thread 安全）
         self.engine = create_engine(
-            f"sqlite:///{db_path}",
+            f"sqlite:///{resolved_db_path}",
             connect_args={"check_same_thread": False, "timeout": 10.0},
         )
         with self.engine.connect() as conn:

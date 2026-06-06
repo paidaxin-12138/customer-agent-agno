@@ -8,7 +8,7 @@
 
 - **桌面 UI**：PyQt6 + PyQt-Fluent-Widgets，入口 `app.py` → `ui/main_ui.py`。
 - **AI**：Agno + OpenAI 兼容 LLM；知识库门面 `Agent/CustomerAgent/agent_knowledge.py`，实现拆分为 `knowledge_storage.py`（LanceDB/JSON）、`knowledge_indexer.py`（建索引）、`knowledge_retriever.py`（检索）。架构图见 `docs/architecture.md`。
-- **拼多多**：推荐入口 `Channel/pinduoduo/pdd_channel.py`（`PDDChannel`）；WebSocket 实现拆分为 `ws_*` 模块（`ws_account` 启停会话、`ws_inbound_pipeline` 入站、`ws_lifecycle` 清理等），历史文件 `pdd_chnnel.py` 仍保留拼写兼容。出站 HTTP 见 `utils/API/send_message.py`（`mms.pinduoduo.com`）；开放平台封装见 `utils/API/open_platform_client.py`，物流见 `utils/API/logistics.py`。
+- **拼多多**：推荐入口 `Channel/pinduoduo/pdd_channel.py`（`PDDChannel`）；WebSocket 实现拆分为 `ws_*` 模块（`ws_account` 启停会话、`ws_inbound_pipeline` 入站、`ws_lifecycle` 清理等）。出站 HTTP 见 `utils/API/send_message.py`（`mms.pinduoduo.com`）；开放平台封装见 `utils/API/open_platform_client.py`，物流见 `utils/API/logistics.py`。
 - **消息链**：`handler_chain()` 顺序为：**AddressChangeHandler** → **OrderLogisticsHandler** → **ImageVideoHumanHandler** → **AfterSalesApplyHandler** → **BuyerEmotionHandler** → **KeywordDetectionHandler** → **AIReplyHandler** → **CatchAllHandler**（未回复由 Consumer + `fallback_reply` 安抚）。出站文本统一 `Message/handlers/channel_send.py`。
 - **阶段常量**：`core/session_stages.py`（中性包，避免 Agent ↔ Message 循环依赖）。
 - **会话状态**：SQLite（`chat_sessions` / `chat_messages`）为权威；UI Hub 经 `database/session_store.py` 刷新摘要与未读。
@@ -78,8 +78,7 @@ uv run python -m pytest test/
 
 | 文件 | 说明 |
 |------|------|
-| `pdd_channel.py` | **推荐入口**：`PDDChannel`、全局连接查询 re-export |
-| `pdd_chnnel.py` | `PDDChannel` 实现（历史拼写，薄壳） |
+| `pdd_channel.py` | **推荐入口**：`PDDChannel`、连接状态 re-export |
 | `ws_account.py` | 单账号启停、建连、上线、会话循环 |
 | `ws_inbound_pipeline.py` | 入站预处理、路由、入队 |
 | `ws_immediate_handlers.py` | AUTH / 转接 / 快捷退款卡等立即处理 |

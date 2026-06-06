@@ -43,7 +43,9 @@ def preprocess_inbound_context(
             redact_log_payload(str(context.content or "")),
         )
 
-    try:
+    from utils.best_effort import run_best_effort
+
+    def _emit_buyer_left() -> None:
         from core.human_assist_bus import (
             emit_buyer_conversation_ended,
             text_suggests_buyer_left,
@@ -60,10 +62,10 @@ def preprocess_inbound_context(
                     str(username),
                     str(buid),
                 )
-    except Exception as exc:
-        log.debug(f"买家离开检测/emit 跳过: {exc}")
 
-    try:
+    run_best_effort("买家离开检测", _emit_buyer_left, logger=log)
+
+    def _record_hub() -> None:
         from core.conversation_record import (
             record_inbound_from_context,
             record_platform_civility_from_context,
@@ -77,8 +79,8 @@ def preprocess_inbound_context(
             record_inbound_from_context(
                 channel_name, shop_id, user_id, username, context
             )
-    except Exception as hub_err:
-        log.debug(f"会话列表登记跳过: {hub_err}")
+
+    run_best_effort("Hub 会话登记", _record_hub, logger=log)
 
 
 def log_transfer_buyer_mismatch(
