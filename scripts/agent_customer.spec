@@ -163,7 +163,6 @@ a = Analysis(
         "Channel.pinduoduo.utils.API.product_manager",
         "Channel.pinduoduo.utils.API.get_user_info",
         "utils.logger_loguru",
-        "utils.logger_config",
         "utils.resource_manager",
         "utils.path_utils",
         "utils.runtime_path",
@@ -180,11 +179,6 @@ a = Analysis(
         "pydantic.tools",
         "pydantic.utils",
         "pydantic.validators",
-        # === rich (for volcengine) ===
-        "rich",
-        "rich.console",
-        "rich.table",
-        "rich.progress",
         # === 避免 importlib 静默失败 ===
         "importlib",
         "importlib.util",

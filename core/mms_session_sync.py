@@ -168,14 +168,17 @@ def _should_enqueue_polled_item(
     session_id: int,
     item: Dict[str, Any],
     existed_before: bool,
+    reconnect_boost: bool = False,
 ) -> bool:
     msg_id = str(item.get("msg_id") or "")
     if not msg_id or str(item.get("sender_role") or "") != "customer":
         return False
+    unread = int(item.get("unread_hint") or 0)
     prev = _last_msg_id_by_session.get(session_id)
     if prev is None:
         _last_msg_id_by_session[session_id] = msg_id
-        unread = int(item.get("unread_hint") or 0)
+        if reconnect_boost:
+            return unread > 0
         return unread > 0 and not existed_before
     if prev == msg_id:
         return False
@@ -196,7 +199,9 @@ def _enqueue_new_buyer_message(
     if context is None:
         return
 
-    queue_name = f"pdd_{shop_id}"
+    from Channel.pinduoduo.ws_config import queue_name_for_shop
+
+    queue_name = queue_name_for_shop(str(shop_id))
 
     async def _put() -> None:
         from Message import put_message
@@ -221,7 +226,9 @@ def _enqueue_new_buyer_message(
         _log.debug("MMS 轮询入队失败 buyer={}: {}", item.get("buyer_uid"), e)
 
 
-def sync_mms_sessions_for_account(account_id: int) -> int:
+def sync_mms_sessions_for_account(
+    account_id: int, *, reconnect_boost: bool = False
+) -> int:
     """
     拉取 MMS 会话列表并写入本地库。
 
@@ -289,6 +296,7 @@ def sync_mms_sessions_for_account(account_id: int) -> int:
                 session_id=sid,
                 item=item,
                 existed_before=existed_before,
+                reconnect_boost=reconnect_boost,
             ):
                 _enqueue_new_buyer_message(
                     item=item,

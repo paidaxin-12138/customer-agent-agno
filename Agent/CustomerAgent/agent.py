@@ -6,8 +6,9 @@ from bridge.context import Context, ContextType
 from bridge.reply import Reply, ReplyType
 from agno.models.openai import OpenAILike
 from agno.db.sqlite import SqliteDb
-from Agent.CustomerAgent.agent_knowledge_lancedb import (
-    LanceDBKnowledgeManager as KnowledgeManager,
+from Agent.CustomerAgent.agent_knowledge import (
+    KnowledgeManager,
+    get_knowledge_manager,
     reset_platform_shop_context,
     set_platform_shop_context,
 )
@@ -148,20 +149,20 @@ def _customer_agno_knowledge_retriever(km: "KnowledgeManager"):
                     return None
             else:
                 hits = km.search_knowledge(q, top_k=limit)
-        except Exception as e:
+        except (ImportError, AttributeError, RuntimeError, TimeoutError, OSError) as e:
             log.warning(f"knowledge_retriever 检索失败: {e}")
             return None
         if not hits:
             try:
                 from core.ops_telemetry import set_recall_results
                 set_recall_results([])
-            except Exception:
+            except ImportError:
                 pass
             return None
         try:
             from core.ops_telemetry import set_recall_results
             set_recall_results(hits)
-        except Exception:
+        except ImportError:
             pass
         out: List[Dict[str, Any]] = []
         for r in hits:
@@ -207,7 +208,7 @@ class CustomerAgent(Bot):
                 knowledge_manager = container.get(KnowledgeManager)
             except ValueError:
                 # 容器中未注册时直接创建
-                knowledge_manager = KnowledgeManager()
+                knowledge_manager = get_knowledge_manager()
         self.knowledge_manager = knowledge_manager
         self._agent: Optional[Agent] = None  # 延迟初始化
         self.logger = get_logger("CustomerAgent")
@@ -326,18 +327,21 @@ class CustomerAgent(Bot):
                 "shop_id": str(context.kwargs.shop_id),
                 "user_id": str(context.kwargs.user_id),
                 "from_uid": str(context.kwargs.from_uid),
+                "buyer_message": str(query or "").strip(),
             }
             # 知识检索按拼多多店铺 ID 隔离（与 platform_shop_id 字段对齐）
             shop_scope = str(context.kwargs.shop_id or "").strip() or None
             tok = set_platform_shop_context(shop_scope)
             try:
-                ar_input = self._build_input_with_transcript(query, context)
+                ar_input = await asyncio.to_thread(
+                    self._build_input_with_transcript, query, context
+                )
                 try:
                     from core.ops_telemetry import enrich_from_agent_input
 
                     tlines = ar_input.count("\n") if ar_input else 0
                     enrich_from_agent_input(query, ar_input, transcript_lines=tlines)
-                except Exception:
+                except ImportError:
                     pass
                 # v2：链路内同步重试由 AIReplyHandler 负责；此处单次 arun
                 response: RunOutput = await self._agent.arun(
@@ -356,7 +360,7 @@ class CustomerAgent(Bot):
                         response,
                         model_name=str(get_config("llm.model_name", "") or ""),
                     )
-                except Exception:
+                except ImportError:
                     pass
                 return Reply(ReplyType.TEXT, response.content)
             finally:

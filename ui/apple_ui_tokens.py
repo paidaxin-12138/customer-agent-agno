@@ -1,41 +1,65 @@
 """
-Apple 深色 UI 常量（与「Qt Apple Style UI Design Skill」一致）
+统一深色 SaaS UI 色板（现代后台看板）
 
-原则：大方、简洁、自然；主背景柔和，次级面略提亮，系统蓝作强调，细边框分隔。
+全应用唯一色板；dark_theme.qss / theme.py / 各页面均引用此处。
 """
 
-# 字体（与规范一致，跨平台降级）
+# 字体（Inter 优先，跨平台降级）
 FONT_FAMILY_CSS = (
-    '"SF Pro Text", "PingFang SC", "Helvetica Neue", "Segoe UI", '
+    '"Inter", "SF Pro Text", "PingFang SC", "Helvetica Neue", "Segoe UI", '
     '"Roboto", "Microsoft YaHei", sans-serif'
 )
 
 # 背景层级
-BG_PRIMARY = "#1C1C1E"  # 主窗口
-BG_SECONDARY = "#2C2C2E"  # 卡片 / 侧栏 / 分组
-BG_TERTIARY = "#3A3A3C"  # hover / 选中底
+BG_PRIMARY = "#131315"
+BG_SECONDARY = "#1b1b1d"
+BG_TERTIARY = "#1f1f21"
+BG_ELEVATED = "#2a2a2c"
+BG_HOVER = "#353437"
 
-# 文本
-TEXT_PRIMARY = "#FFFFFF"
-TEXT_SECONDARY = "#98989D"
-TEXT_TERTIARY = "#636366"
+# 玻璃面板（与卡片统一为同一层级色，避免多层色块）
+GLASS_PANEL = "#1f1f21"
+GLASS_PANEL_SOLID = BG_TERTIARY
 
-# 强调与按钮（系统蓝）
-ACCENT = "#0A84FF"
-ACCENT_HOVER = "#0055CC"
-ACCENT_PRESSED = "#004499"
+# 文字
+TEXT_PRIMARY = "#e4e2e4"
+TEXT_SECONDARY = "#c0c6d6"
+TEXT_TERTIARY = "#98989d"
+TEXT_MUTED = "rgba(255, 255, 255, 0.5)"
+TEXT_PLACEHOLDER = "rgba(255, 255, 255, 0.5)"
 
-# 边框 / 分隔（极浅）
-BORDER = "rgba(84,84,88,0.35)"
-BORDER_LIGHT = "rgba(84,84,88,0.22)"
+# 强调色（小面积：文字、链接、Tab 下划线）
+ACCENT = "#9bb8f0"
+ACCENT_SECONDARY = "#b0aff0"
+ACCENT_HOVER = "#aac7ff"
+ACCENT_PRESSED = "#7a9ee6"
+
+# 强调色（大面积：气泡、按钮底 — 避免 #aac7ff 整块刺眼）
+ACCENT_SURFACE = "rgba(155, 184, 240, 0.14)"
+ACCENT_SURFACE_HOVER = "rgba(155, 184, 240, 0.22)"
+ACCENT_SURFACE_BORDER = "rgba(155, 184, 240, 0.32)"
+ACCENT_FILL = "#3d4f66"
+ACCENT_FILL_HOVER = "#4a5d78"
 
 # 状态
-SUCCESS = "#32D74B"
-ERROR = "#FF453A"
-WARNING = "#FFD60A"
+SUCCESS = "#47e266"
+ERROR = "#ffb4ab"
+WARNING = "#ffd60a"
+INFO = ACCENT
 
-# 圆角（8～12px）
-RADIUS_SM = "6px"
-RADIUS_MD = "8px"
-RADIUS_LG = "10px"
-RADIUS_XL = "12px"
+# 边框
+BORDER = "rgba(255, 255, 255, 0.08)"
+BORDER_LIGHT = "rgba(255, 255, 255, 0.05)"
+BORDER_PANEL = "rgba(255, 255, 255, 0.1)"
+BORDER_FOCUS = ACCENT
+GRID_LINE = "rgba(255, 255, 255, 0.05)"
+
+# 圆角
+RADIUS_SM = "8px"
+RADIUS_MD = "16px"
+RADIUS_LG = "24px"
+RADIUS_PILL = "9999px"
+
+# 布局
+NAV_WIDTH = 280
+TOP_BAR_HEIGHT = 64

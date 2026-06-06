@@ -19,7 +19,7 @@ from utils.human_escalation_comfort import (
 )
 
 from .base import BaseHandler
-from .stage_constants import ALL_HANDLER_STAGES
+from core.session_stages import ALL_HANDLER_STAGES
 from .channel_send import transfer_to_available_cs_async
 from .order_logistics_handler import _kw
 
@@ -112,4 +112,5 @@ class BuyerEmotionHandler(BaseHandler):
             "情绪波动预警",
             f"count={count}/{threshold} text={text[:80]}",
         )
-        return True
+        # 未达转人工阈值：仅弹窗预警，不阻断 AI / 后续 Handler
+        return False

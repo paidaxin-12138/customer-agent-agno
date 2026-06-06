@@ -10,7 +10,7 @@ from bridge.context import Context, ContextType
 from config import config
 
 from .base import BaseHandler
-from .stage_constants import ALL_HANDLER_STAGES
+from core.session_stages import ALL_HANDLER_STAGES
 
 _DEFAULT_BUYER_NOTICE = (
     "亲亲，图片和视频需要人工客服打开才能看清，这边已经帮您备注给同事啦，"

@@ -132,30 +132,43 @@ python app.py
 
 ```bash
 uv sync --group dev
-uv run python -m pytest test/
+uv run python -m pytest test/          # 默认不跑覆盖率，适合本地快速验证
+uv run python -m pytest test/test_ui_smoke.py -v   # 单文件子集
 ```
 
-覆盖率（核心包）：终端摘要 + HTML 报告可输出到 `htmlcov/`（见下方命令；`htmlcov/` 已加入 `.gitignore`）。
+**覆盖率（与 CI 一致）**：统计 `Message` / `bridge` / `core` / `database` / `utils`；`ui`、`Channel`、`Agent` 等见 `pyproject.toml` 的 `omit` 列表。门禁 **≥ 65%** 仅在 CI 启用。
 
 ```bash
-uv run python -m pytest test/ \
-  --cov=utils --cov=database --cov=Message --cov=bridge --cov=core \
-  --cov-report=term-missing --cov-report=html
+QT_QPA_PLATFORM=offscreen uv run python -m pytest test/ -q \
+  --cov=Message --cov=bridge --cov=core --cov=database --cov=utils \
+  --cov-report=term-missing:skip-covered --cov-fail-under=65
 ```
 
-- 内部 HTTP / 开放平台 / WebSocket 索引见 **[API.md](API.md)**  
-- 常见启动、登录、配置错误见 **[ERRORS.md](ERRORS.md)**  
-- **代码与架构说明**（模块职责、消息流、处理器链、扩展方式）见 **[docs/代码架构说明.md](docs/代码架构说明.md)**
+可选 HTML 报告：`--cov-report=html`（输出到 `htmlcov/`，已 `.gitignore`）。
+
+性能基线（非门禁）：`uv run python -m pytest test/test_concurrency_benchmark.py -m perf -s`（写入 `logs/perf_baseline.json`）
+
+- **架构图（Mermaid）**：数据流与模块依赖见 **[docs/architecture.md](docs/architecture.md)**
+- **生产部署**（PM2 / systemd / 健康检查）见 **[docs/生产部署说明.md](docs/生产部署说明.md)**
 
 （集成与手工验证仍建议保留。）
+
+---
+
+## 已知限制
+
+- **拼多多专用**：WebSocket + 商家后台 Cookie 为当前唯一完整接入渠道；开放平台仅覆盖物流等部分 API。
+- **Cookie / Playwright**：登录态会过期，需重新登录或刷新 Cookie；无人值守环境要配合健康检查与告警。
+- **历史消息**：断线重连后不一定能补齐全部 MMS 历史，以本地 SQLite 与 Hub 为准。
+- **知识库**：向量检索依赖 embedder 配置；大文件首次导入与全量同步可能占用数秒 CPU/网络。
+- **桌面单进程**：适合单店/少量账号；大规模多租户需自行拆分服务。
+- **测试范围**：`pytest` 覆盖消息链与核心工具；完整 UI 流程仍需人工点验。
 
 ---
 
 ## 贡献
 
 欢迎针对**本仓库当前代码树**提交 Issue 与 Pull Request（说明环境、复现步骤或变更意图）。我们承认 **[L1S0NE](https://github.com/L1S0NE)** 的历史贡献；若变更涉及与上游共用的代码片段，请保留合理署名并遵守相应许可。
-
-完整流程（Fork、分支、推送、PR）见 **[CONTRIBUTING.md](CONTRIBUTING.md)**。
 
 ---
 

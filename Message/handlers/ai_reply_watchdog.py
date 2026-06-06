@@ -45,8 +45,12 @@ def _watchdog_enabled() -> bool:
 
 
 def _escalate_after_sec() -> float:
+    """优先 ai_watchdog_escalate_sec；未配置时兼容旧键 ai_watchdog_retry_sec。"""
+    raw = config.get("chat.ai_watchdog_escalate_sec")
+    if raw is None or str(raw).strip() == "":
+        raw = config.get("chat.ai_watchdog_retry_sec", 150)
     try:
-        v = float(config.get("chat.ai_watchdog_escalate_sec", 150))
+        v = float(raw if raw is not None else 150)
         return max(30.0, min(v, 3600.0))
     except (TypeError, ValueError):
         return 150.0
@@ -152,6 +156,10 @@ def notify_outbound_reply(
     epoch = _epoch.get(session_key, 0)
     if epoch > 0:
         mark_delivered(session_key, epoch)
+        _turn_store.pop(session_key, None)
+        old_task = _tasks.pop(session_key, None)
+        if old_task is not None and not old_task.done():
+            old_task.cancel()
         logger.debug("watchdog 已标记已回复: session={} epoch={}", session_key, epoch)
 
 
@@ -312,3 +320,19 @@ def schedule_watchdog(
         "question": q[:4000],
     }
     schedule_inbound_watchdog(session_key, epoch)
+
+
+async def cancel_all_watchdogs() -> None:
+    """应用退出时取消全部在途 watchdog 任务。"""
+    async with _lock:
+        tasks = list(_tasks.values())
+        _tasks.clear()
+        _turn_store.clear()
+        _epoch.clear()
+        _replied_epoch.clear()
+        _escalated_epoch.clear()
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)

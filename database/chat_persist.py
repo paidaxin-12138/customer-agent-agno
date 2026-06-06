@@ -1,6 +1,7 @@
 """
 将进线 / 人工 / AI 消息写入 chat_sessions / chat_messages，并维护未读数。
-与 ui.conversation_hub 并行：hub 负责内存与 UI 信号，本模块负责 SQLite。
+
+会话摘要与未读数以 SQLite 为准；UI 索引通过 ``database.session_store.sync_hub_session`` 刷新。
 """
 from __future__ import annotations
 
@@ -30,6 +31,73 @@ def set_active_chat_session(account_id: Optional[int], buyer_uid: Optional[str])
 def is_active_chat(account_id: int, buyer_uid: str) -> bool:
     with _active_lock:
         return _active == (account_id, str(buyer_uid))
+
+
+def _preview_for_hub(text: str) -> str:
+    t = str(text or "")
+    return t[:50] + ("…" if len(t) > 50 else "")
+
+
+def _sync_hub_after_outbound(
+    channel_name: str,
+    platform_shop_id: str,
+    seller_user_id: str,
+    login_username: str,
+    buyer_uid: str,
+    text: str,
+    *,
+    role: str,
+) -> None:
+    """出站消息落库后刷新 Hub（AI / 人工等不经 record_from_context 的路径）。"""
+    try:
+        from ui.conversation_hub import get_conversation_hub
+
+        get_conversation_hub().notify_persisted_message(
+            channel_name,
+            platform_shop_id,
+            seller_user_id,
+            login_username,
+            buyer_uid,
+            _preview_for_hub(text),
+            role=role,
+        )
+    except Exception as exc:
+        _log.debug("hub sync 跳过 role={}: {}", role, exc)
+
+
+def _normalize_message_id(message_id: Optional[str]) -> Optional[str]:
+    if message_id is None or message_id == "":
+        return None
+    return message_id
+
+
+def _sent_at_from_ts(ts: float):
+    return naive_shanghai_from_unix_ts(ts) if ts else shanghai_naive_now()
+
+
+def _ensure_chat_session(
+    channel_name: str,
+    platform_shop_id: str,
+    seller_user_id: str,
+    login_username: str,
+    buyer_uid: str,
+    buyer_nickname: str = "买家",
+) -> tuple[Optional[int], Optional[int]]:
+    """解析账号并 get_or_create 会话，返回 (account_id, session_id)。"""
+    from database.db_manager import db_manager
+
+    acc = db_manager.get_account(channel_name, platform_shop_id, seller_user_id)
+    if not acc or not acc.get("id"):
+        return None, None
+    account_id = int(acc["id"])
+    sid = db_manager.get_or_create_chat_session(
+        account_id=account_id,
+        platform_shop_id=platform_shop_id,
+        account_name=login_username,
+        buyer_uid=buyer_uid,
+        buyer_nickname=buyer_nickname or "买家",
+    )
+    return account_id, sid
 
 
 def split_chat_body_for_storage(context: Any, preview: str) -> Tuple[str, str, Optional[str]]:
@@ -81,25 +149,22 @@ def persist_customer_from_context(
     message_id: Optional[str],
     ts: float,
     context: Optional[Any] = None,
-) -> None:
+) -> Optional[int]:
+    account_id, sid = _ensure_chat_session(
+        channel_name,
+        platform_shop_id,
+        seller_user_id,
+        login_username,
+        buyer_uid,
+        buyer_nickname,
+    )
+    if account_id is None or sid is None:
+        return None
     from database.db_manager import db_manager
 
-    acc = db_manager.get_account(channel_name, platform_shop_id, seller_user_id)
-    if not acc or not acc.get("id"):
-        return
-    account_id = int(acc["id"])
-    sid = db_manager.get_or_create_chat_session(
-        account_id=account_id,
-        platform_shop_id=platform_shop_id,
-        account_name=login_username,
-        buyer_uid=buyer_uid,
-        buyer_nickname=buyer_nickname or "买家",
-    )
-    st = naive_shanghai_from_unix_ts(ts) if ts else shanghai_naive_now()
+    st = _sent_at_from_ts(ts)
     inc = not is_active_chat(account_id, buyer_uid)
-    mid = message_id if message_id else None
-    if mid == "":
-        mid = None
+    mid = _normalize_message_id(message_id)
     if context is not None:
         ct, row_content, img = split_chat_body_for_storage(context, preview)
     else:
@@ -115,6 +180,7 @@ def persist_customer_from_context(
         increment_unread=inc,
         sent_at=st,
     )
+    return sid
 
 
 def persist_platform_civility_from_context(
@@ -127,25 +193,22 @@ def persist_platform_civility_from_context(
     preview: str,
     message_id: Optional[str],
     ts: float,
-) -> None:
+) -> Optional[int]:
     """平台自动文明提示：sender_type=system，不计为有效出站回复。"""
+    account_id, sid = _ensure_chat_session(
+        channel_name,
+        platform_shop_id,
+        seller_user_id,
+        login_username,
+        buyer_uid,
+        buyer_nickname,
+    )
+    if account_id is None or sid is None:
+        return None
     from database.db_manager import db_manager
 
-    acc = db_manager.get_account(channel_name, platform_shop_id, seller_user_id)
-    if not acc or not acc.get("id"):
-        return
-    account_id = int(acc["id"])
-    sid = db_manager.get_or_create_chat_session(
-        account_id=account_id,
-        platform_shop_id=platform_shop_id,
-        account_name=login_username,
-        buyer_uid=buyer_uid,
-        buyer_nickname=buyer_nickname or "买家",
-    )
-    sent = naive_shanghai_from_unix_ts(ts) if ts else shanghai_naive_now()
-    mid = message_id if message_id else None
-    if mid == "":
-        mid = None
+    sent = _sent_at_from_ts(ts)
+    mid = _normalize_message_id(message_id)
     db_manager.add_chat_message(
         session_id=sid,
         account_id=account_id,
@@ -157,6 +220,7 @@ def persist_platform_civility_from_context(
         increment_unread=False,
         sent_at=sent,
     )
+    return sid
 
 
 def persist_inbound_transfer_from_context(
@@ -169,25 +233,22 @@ def persist_inbound_transfer_from_context(
     preview: str,
     message_id: Optional[str],
     ts: float,
-) -> None:
+) -> Optional[int]:
     """外部/售前转接进线：系统提示 + 标记已转接（截流由 apply_inbound_transfer_takeover 执行）。"""
+    account_id, sid = _ensure_chat_session(
+        channel_name,
+        platform_shop_id,
+        seller_user_id,
+        login_username,
+        buyer_uid,
+        buyer_nickname,
+    )
+    if account_id is None or sid is None:
+        return None
     from database.db_manager import db_manager
 
-    acc = db_manager.get_account(channel_name, platform_shop_id, seller_user_id)
-    if not acc or not acc.get("id"):
-        return
-    account_id = int(acc["id"])
-    sid = db_manager.get_or_create_chat_session(
-        account_id=account_id,
-        platform_shop_id=platform_shop_id,
-        account_name=login_username,
-        buyer_uid=buyer_uid,
-        buyer_nickname=buyer_nickname or "买家",
-    )
-    sent = naive_shanghai_from_unix_ts(ts) if ts else shanghai_naive_now()
-    mid = message_id if message_id else None
-    if mid == "":
-        mid = None
+    sent = _sent_at_from_ts(ts)
+    mid = _normalize_message_id(message_id)
     inc = not is_active_chat(account_id, buyer_uid)
     db_manager.add_chat_message(
         session_id=sid,
@@ -206,6 +267,7 @@ def persist_inbound_transfer_from_context(
         mark_inbound_transferred(sid)
     except Exception as e:
         _log.debug("转接标记 inbound_transferred 失败: {}", e)
+    return sid
 
 
 def persist_seller_mall_cs_from_context(
@@ -219,12 +281,12 @@ def persist_seller_mall_cs_from_context(
     preview: str,
     message_id: Optional[str],
     ts: float,
-) -> None:
+) -> Optional[int]:
     """手机端 / 其他客户端以 mall_cs 身份发送的消息，写入 human 侧记录。"""
     from utils.platform_system_msg import is_platform_civility_message
 
     if is_platform_civility_message(context):
-        persist_platform_civility_from_context(
+        return persist_platform_civility_from_context(
             channel_name,
             platform_shop_id,
             seller_user_id,
@@ -235,24 +297,20 @@ def persist_seller_mall_cs_from_context(
             message_id,
             ts,
         )
-        return
+    account_id, sid = _ensure_chat_session(
+        channel_name,
+        platform_shop_id,
+        seller_user_id,
+        login_username,
+        buyer_uid,
+        buyer_nickname,
+    )
+    if account_id is None or sid is None:
+        return None
     from database.db_manager import db_manager
 
-    acc = db_manager.get_account(channel_name, platform_shop_id, seller_user_id)
-    if not acc or not acc.get("id"):
-        return
-    account_id = int(acc["id"])
-    sid = db_manager.get_or_create_chat_session(
-        account_id=account_id,
-        platform_shop_id=platform_shop_id,
-        account_name=login_username,
-        buyer_uid=buyer_uid,
-        buyer_nickname=buyer_nickname or "买家",
-    )
-    sent = naive_shanghai_from_unix_ts(ts) if ts else shanghai_naive_now()
-    mid = message_id if message_id else None
-    if mid == "":
-        mid = None
+    sent = _sent_at_from_ts(ts)
+    mid = _normalize_message_id(message_id)
     ct, row_content, img = split_chat_body_for_storage(context, preview)
     db_manager.add_chat_message(
         session_id=sid,
@@ -265,6 +323,7 @@ def persist_seller_mall_cs_from_context(
         increment_unread=False,
         sent_at=sent,
     )
+    return sid
 
 
 def persist_human_message(
@@ -274,20 +333,18 @@ def persist_human_message(
     login_username: str,
     buyer_uid: str,
     text: str,
-) -> None:
+) -> Optional[int]:
+    account_id, sid = _ensure_chat_session(
+        channel_name,
+        platform_shop_id,
+        seller_user_id,
+        login_username,
+        buyer_uid,
+    )
+    if account_id is None or sid is None:
+        return None
     from database.db_manager import db_manager
 
-    acc = db_manager.get_account(channel_name, platform_shop_id, seller_user_id)
-    if not acc or not acc.get("id"):
-        return
-    account_id = int(acc["id"])
-    sid = db_manager.get_or_create_chat_session(
-        account_id=account_id,
-        platform_shop_id=platform_shop_id,
-        account_name=login_username,
-        buyer_uid=buyer_uid,
-        buyer_nickname="买家",
-    )
     db_manager.add_chat_message(
         session_id=sid,
         account_id=account_id,
@@ -297,6 +354,16 @@ def persist_human_message(
         increment_unread=False,
         sent_at=shanghai_naive_now(),
     )
+    _sync_hub_after_outbound(
+        channel_name,
+        platform_shop_id,
+        seller_user_id,
+        login_username,
+        buyer_uid,
+        text,
+        role="agent",
+    )
+    return sid
 
 
 def persist_escalation_system_note(payload: dict, note: str) -> None:
@@ -312,7 +379,9 @@ def persist_escalation_system_note(payload: dict, note: str) -> None:
             buyer_uid=str(payload["buyer_uid"]),
             buyer_nickname=str(payload.get("buyer_nickname") or "买家"),
         )
-        db_manager.set_session_ai_mode(sid, False)
+        from database.session_store import set_ai_mode
+
+        set_ai_mode(sid, False)
         db_manager.add_chat_message(
             session_id=sid,
             account_id=aid,
@@ -333,20 +402,18 @@ def persist_ai_message(
     login_username: str,
     buyer_uid: str,
     text: str,
-) -> None:
+) -> Optional[int]:
+    account_id, sid = _ensure_chat_session(
+        channel_name,
+        platform_shop_id,
+        seller_user_id,
+        login_username,
+        buyer_uid,
+    )
+    if account_id is None or sid is None:
+        return None
     from database.db_manager import db_manager
 
-    acc = db_manager.get_account(channel_name, platform_shop_id, seller_user_id)
-    if not acc or not acc.get("id"):
-        return
-    account_id = int(acc["id"])
-    sid = db_manager.get_or_create_chat_session(
-        account_id=account_id,
-        platform_shop_id=platform_shop_id,
-        account_name=login_username,
-        buyer_uid=buyer_uid,
-        buyer_nickname="买家",
-    )
     db_manager.add_chat_message(
         session_id=sid,
         account_id=account_id,
@@ -356,3 +423,13 @@ def persist_ai_message(
         increment_unread=False,
         sent_at=shanghai_naive_now(),
     )
+    _sync_hub_after_outbound(
+        channel_name,
+        platform_shop_id,
+        seller_user_id,
+        login_username,
+        buyer_uid,
+        text,
+        role="ai",
+    )
+    return sid

@@ -21,6 +21,21 @@ from agno.db.sqlite import SqliteDb
 from utils.logger_loguru import get_logger
 
 
+def _load_dotenv_early() -> None:
+    """在读取 config.json 之前加载 .env，供 get_config 环境变量覆盖。"""
+    try:
+        from dotenv import load_dotenv
+
+        env_path = Path(__file__).resolve().parent / ".env"
+        if env_path.is_file():
+            load_dotenv(env_path, override=False)
+    except Exception as e:
+        get_logger("config").debug(".env 早期加载跳过: {}", e)
+
+
+_load_dotenv_early()
+
+
 class ModelType(str, Enum):
     """模型类型枚举"""
     OPENAI = "openai"
@@ -114,6 +129,10 @@ class ChatConfig(BaseModel):
     ws_message_max_concurrent: int = 16
     ai_watchdog_enabled: bool = True
     ai_watchdog_escalate_sec: int = 150
+    ai_watchdog_retry_sec: Optional[int] = None
+    image_video_forward_human: bool = True
+    image_video_buyer_notice: str = ""
+    after_sales_apply_return_refund_hours: Optional[float] = None
     queue_degrade_enabled: bool = True
     queue_degrade_threshold_sec: float = 120
     queue_degrade_emit_assist: bool = True
@@ -156,11 +175,17 @@ class ChatConfig(BaseModel):
     )
     queue_force_enqueue: bool = False
     ui_page_size: int = 50
+    message_write_batch_enabled: bool = True
+    message_write_batch_interval_sec: float = 0.5
+    message_write_batch_size: int = 10
     mms_session_sync_enabled: bool = False
     mms_session_sync_interval_ms: int = 15000
     mms_session_sync_page_size: int = 50
     mms_session_sync_browser_headless: bool = True
     mms_session_sync_enqueue_new: bool = False
+    ws_reconnect_reconcile_enabled: bool = True
+    ws_reconnect_enqueue_unreplied: bool = True
+    ws_reconnect_reconcile_cooldown_sec: int = 120
     knowledge_retrieval_timeout_sec: float = 5.0
     unhandled_fallback_enabled: bool = True
     unhandled_fallback_notice: str = (
@@ -172,7 +197,7 @@ class ChatConfig(BaseModel):
     )
     ai_mode_check_retries: int = 3
     ai_mode_check_retry_delay_sec: float = 0.12
-    ai_mode_check_fail_open: bool = True
+    ai_mode_check_fail_open: bool = False
     ws_auto_reconnect_enabled: bool = True
     ws_reconnect_delay_sec: float = 5.0
     ws_reconnect_max_attempts: int = 0
@@ -196,6 +221,7 @@ class ProductionConfig(BaseModel):
     health_enabled: bool = True
     health_host: str = "127.0.0.1"
     health_port: int = 8080
+    health_token: str = ""
     backup_enabled: bool = True
     backup_hour: int = 2
     backup_minute: int = 0
@@ -247,6 +273,19 @@ class ConfigModel(BaseModel):
     )
 
 
+def _known_section_keys(section: str, base: Dict[str, Any]) -> set:
+    """合并 config_base 与 Pydantic 模型字段，减少误报未知键。"""
+    known = set((base.get(section) or {}).keys())
+    model_map = {
+        "chat": ChatConfig,
+        "pinduoduo_open": PinduoduoOpenConfig,
+    }
+    model_cls = model_map.get(section)
+    if model_cls is not None:
+        known |= set(model_cls.model_fields.keys())
+    return known
+
+
 def warn_unknown_config_keys(
     config_data: Dict[str, Any],
     defaults: Optional[Dict[str, Any]] = None,
@@ -258,8 +297,7 @@ def warn_unknown_config_keys(
         block = config_data.get(section)
         if not isinstance(block, dict):
             continue
-        known = set((base.get(section) or {}).keys())
-        unknown = set(block.keys()) - known
+        unknown = set(block.keys()) - _known_section_keys(section, base)
         if unknown:
             log.warning(
                 "config.json 的 [{}] 含未知键（可能是拼写错误）: {}",
@@ -319,7 +357,11 @@ config_base = {
         "ws_message_max_concurrent": 16,
         "ai_watchdog_enabled": True,
         "ai_watchdog_escalate_sec": 150,
+        "ai_watchdog_retry_sec": None,
         "ai_watchdog_escalate_notice": "不好意思亲亲，让你久等了",
+        "image_video_forward_human": True,
+        "image_video_buyer_notice": "",
+        "after_sales_apply_return_refund_hours": None,
         "queue_degrade_enabled": True,
         "queue_degrade_threshold_sec": 120,
         "queue_degrade_notice": (
@@ -333,11 +375,17 @@ config_base = {
         "queue_stats_min_samples": 10,
         "queue_force_enqueue": False,
         "ui_page_size": 50,
+        "message_write_batch_enabled": True,
+        "message_write_batch_interval_sec": 0.5,
+        "message_write_batch_size": 10,
         "mms_session_sync_enabled": False,
         "mms_session_sync_interval_ms": 15000,
         "mms_session_sync_page_size": 50,
         "mms_session_sync_browser_headless": True,
         "mms_session_sync_enqueue_new": False,
+        "ws_reconnect_reconcile_enabled": True,
+        "ws_reconnect_enqueue_unreplied": True,
+        "ws_reconnect_reconcile_cooldown_sec": 120,
         "llm_sync_retry_enabled": True,
         "llm_sync_retry_delay_sec": 1.5,
         "after_sales_apply_enabled": True,
@@ -495,7 +543,7 @@ config_base = {
         ),
         "ai_mode_check_retries": 3,
         "ai_mode_check_retry_delay_sec": 0.12,
-        "ai_mode_check_fail_open": True,
+        "ai_mode_check_fail_open": False,
         "ws_auto_reconnect_enabled": True,
         "ws_reconnect_delay_sec": 5.0,
         "ws_reconnect_max_attempts": 0,
@@ -522,6 +570,7 @@ config_base = {
         "health_enabled": True,
         "health_host": "127.0.0.1",
         "health_port": 8080,
+        "health_token": "",
         "backup_enabled": True,
         "backup_hour": 2,
         "backup_minute": 0,
@@ -872,6 +921,7 @@ _CONFIG_ENV_ALIASES = {
     "pinduoduo_open.client_id": "PDD_OPEN_CLIENT_ID",
     "pinduoduo_open.client_secret": "PDD_OPEN_CLIENT_SECRET",
     "pinduoduo_open.access_token": "PDD_OPEN_ACCESS_TOKEN",
+    "production.health_token": "HEALTH_CHECK_TOKEN",
 }
 
 

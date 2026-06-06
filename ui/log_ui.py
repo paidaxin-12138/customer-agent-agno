@@ -29,11 +29,9 @@ class LogHandler:
     """兼容性LogHandler类 - 实际使用UILogHandler"""
 
     def __init__(self, signal_emitter):
-        # 使用新的UILogHandler
-        self.ui_handler = UILogHandler()
-        # 连接信号
-        self.ui_handler.log_received.connect(signal_emitter.log_received)
         self.signal_emitter = signal_emitter
+        self.ui_handler = UILogHandler(signal_emitter)
+        self.ui_handler.log_received.connect(signal_emitter.log_received)
         self._installed = False
         self.level = "DEBUG"  # 默认级别
 
@@ -80,20 +78,21 @@ class UILogManager:
         return cls._instance
 
     def add_handler(self, handler):
-        """添加UI处理器"""
+        """添加 UI 处理器（全局仅保留一个 loguru sink）。"""
+        for existing in list(self._handlers):
+            if existing is not handler:
+                self.remove_handler(existing)
+        if handler in self._handlers:
+            return
         self._handlers.append(handler)
-
-        # 使用新的安装方法
-        if hasattr(handler, 'install'):
+        if hasattr(handler, "install"):
             handler.install()
 
     def remove_handler(self, handler):
-        """移除UI处理器"""
+        """移除 UI 处理器并卸载 loguru sink。"""
         if handler in self._handlers:
             self._handlers.remove(handler)
-
-        # 使用新的卸载方法
-        if hasattr(handler, 'uninstall'):
+        if hasattr(handler, "uninstall"):
             handler.uninstall()
 
 
@@ -318,36 +317,7 @@ class LogTableView(QTableView):
         self.setColumnWidth(3, 200)  # 文件
         # 消息列自动拉伸
 
-        # 设置样式 - Apple 深色模式统一配色
-        self.setStyleSheet("""
-            QTableView {
-                background-color: #1E1E1E;
-                alternate-background-color: #1E1E1E;
-                color: #FFFFFF;
-                gridline-color: #3A3A3C;
-                border: 1px solid #3A3A3C;
-                border-radius: 12px;
-                selection-background-color: #007AFF33;
-                selection-color: #FFFFFF;
-            }
-            QTableView::item {
-                padding: 4px;
-                border: none;
-            }
-            QTableView::item:selected {
-                background-color: #007AFF33;
-                color: #FFFFFF;
-            }
-            QHeaderView::section {
-                background-color: #2C2C2E;
-                color: #8E8E93;
-                padding: 8px;
-                border: none;
-                border-right: 1px solid #3A3A3C;
-                border-bottom: 1px solid #3A3A3C;
-                font-weight: bold;
-            }
-        """)
+        # 样式由全局 theme + ModulePanel 外框统一控制
 
     def set_highlight(self, text: str):
         """设置搜索高亮"""
@@ -357,11 +327,12 @@ class LogTableView(QTableView):
             self.viewport().update()
 
 
-class LogDisplayWidget(QWidget):
-    """日志显示组件容器"""
+class LogDisplayWidget(QFrame):
+    """日志显示组件容器（ModulePanel 外框）"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("ModulePanel")
         self._setup_ui()
         # 保存所有日志记录
         self.all_logs = []
@@ -369,7 +340,8 @@ class LogDisplayWidget(QWidget):
     def _setup_ui(self):
         """设置UI"""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(0)
 
         # 创建表格视图
         self.log_table = LogTableView()
@@ -575,14 +547,14 @@ class LogUI(QFrame):
         content_widget = QWidget()
         content_layout = QHBoxLayout(content_widget)
         content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(20)
+        content_layout.setSpacing(16)
         
         # 左侧控制面板
         left_panel = QWidget()
         left_panel.setFixedWidth(280)
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(12)
+        left_layout.setSpacing(16)
         
         # 过滤控件
         self.filter_widget = LogFilterWidget()

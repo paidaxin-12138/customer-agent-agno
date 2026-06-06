@@ -35,6 +35,14 @@ class LogoLoaderThread(QThread):
             self.logo_loaded.emit(QPixmap())
             return
         try:
+            from utils.url_fetch_guard import is_url_safe_to_fetch
+
+            ok, reason = is_url_safe_to_fetch(self.url, purpose="pdd_asset")
+            if not ok:
+                logger.warning("店铺 Logo URL 被拒绝: url={} reason={}", self.url, reason)
+                self.logo_loaded.emit(QPixmap())
+                return
+
             import aiohttp
 
             async def fetch_image():

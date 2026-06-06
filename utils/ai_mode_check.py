@@ -37,19 +37,20 @@ def _check_once(
     user_id: str,
     buyer_uid: str,
 ) -> Optional[bool]:
-    """
-    查询 ai_mode；返回 None 表示无法判定（缺账号/会话），由调用方决定默认。
-    返回 True/False 为明确结果。
-    """
-    from database.db_manager import db_manager
+    from database.session_store import resolve_session_id, load_session_summary
 
-    acc = db_manager.get_account(channel_name, shop_id, user_id)
-    if not acc or not acc.get("id"):
+    sid = resolve_session_id(
+        channel_name=channel_name,
+        shop_id=shop_id,
+        seller_user_id=user_id,
+        buyer_uid=buyer_uid,
+    )
+    if sid is None:
         return None
-    sess = db_manager.get_chat_session_by_buyer(int(acc["id"]), buyer_uid, "active")
-    if not sess:
+    summary = load_session_summary(sid)
+    if summary is None:
         return None
-    return bool(sess.get("ai_mode", True))
+    return summary.ai_mode
 
 
 def is_ai_mode_enabled(context: Context, metadata: Dict[str, Any]) -> bool:
@@ -57,6 +58,9 @@ def is_ai_mode_enabled(context: Context, metadata: Dict[str, Any]) -> bool:
     是否允许 AI 回复。缺字段时默认 True；DB 连续失败时按配置 fail_open 或关闭。
     """
     global _fail_count, _recover_count
+
+    if metadata.get("ai_mode") is not None and metadata.get("session_id") is not None:
+        return bool(metadata["ai_mode"])
 
     channel_name = str(metadata.get("channel_name") or "pinduoduo")
     shop_id = str(metadata.get("shop_id") or "")

@@ -18,5 +18,35 @@ class BuyerLockRegistry:
         lock = asyncio.Lock()
         self._locks[user_key] = lock
         while len(self._locks) > self._max_keys:
-            self._locks.popitem(last=False)
+            evicted = False
+            for key, existing in list(self._locks.items()):
+                if key == user_key:
+                    continue
+                if existing.locked():
+                    continue
+                self._locks.pop(key, None)
+                evicted = True
+                break
+            if not evicted:
+                break
         return lock
+
+    def prune_idle(self) -> int:
+        """淘汰未持有的锁条目，返回移除数量。"""
+        removed = 0
+        while len(self._locks) > self._max_keys:
+            evicted = False
+            for key, existing in list(self._locks.items()):
+                if existing.locked():
+                    continue
+                self._locks.pop(key, None)
+                removed += 1
+                evicted = True
+                break
+            if not evicted:
+                break
+        return removed
+
+    def clear(self) -> None:
+        """退出时释放全部买家锁引用。"""
+        self._locks.clear()

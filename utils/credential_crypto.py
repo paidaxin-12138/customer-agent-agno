@@ -126,6 +126,17 @@ def encrypt_field(plain: Optional[str]) -> Optional[str]:
         return plain
     f = _get_fernet()
     if f is None:
+        import os
+
+        if os.getenv("ALLOW_PLAINTEXT_CREDENTIALS", "").strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+        ):
+            raise RuntimeError(
+                "未安装 cryptography，拒绝明文存储凭据；请执行 uv add cryptography "
+                "或设置 ALLOW_PLAINTEXT_CREDENTIALS=1（仅限本地调试）"
+            )
         return plain
     token = f.encrypt(plain.encode("utf-8")).decode("ascii")
     return f"{_ENC_PREFIX}{token}"

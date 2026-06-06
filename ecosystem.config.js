@@ -20,6 +20,9 @@ module.exports = {
       max_restarts: 50,
       min_uptime: "10s",
       restart_delay: 5000,
+      max_memory_restart: "2G",
+      // 就绪探针（建议 cron / 外部监控）:
+      // curl -sf http://127.0.0.1:8080/ready || pm2 restart customer-agent
       watch: false,
       merge_logs: true,
       out_file: "logs/out.log",

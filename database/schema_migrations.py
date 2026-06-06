@@ -152,6 +152,33 @@ def migrate_utc_timestamps_to_shanghai(engine: Engine, logger: Any = None) -> in
     return n
 
 
+def migrate_chat_messages_unread_index(engine: Engine, logger: Any = None) -> int:
+    """未读统计复合索引，加速 _count_unread_buyer_messages_bulk。"""
+    path = _db_path(engine)
+    if not path:
+        return 0
+    conn = sqlite3.connect(path)
+    try:
+        cur = conn.execute("PRAGMA index_list(chat_messages)")
+        names = {row[1] for row in cur.fetchall()}
+        if "idx_chat_messages_unread" in names:
+            return 0
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_messages_unread "
+            "ON chat_messages (session_id, sender_type, is_read)"
+        )
+        conn.commit()
+        if logger:
+            logger.info("chat_messages 未读复合索引已创建")
+        return 1
+    except Exception as e:
+        if logger:
+            logger.warning(f"chat_messages 索引迁移失败: {e}")
+        return 0
+    finally:
+        conn.close()
+
+
 def apply_legacy_migrations(engine: Engine, logger: Any = None) -> int:
     """幂等执行全部遗留补丁，返回大致变更计数。"""
     total = 0
@@ -159,4 +186,5 @@ def apply_legacy_migrations(engine: Engine, logger: Any = None) -> int:
     total += migrate_merchant_refund_apply_columns(engine, logger)
     total += migrate_ops_schema(engine, logger)
     total += migrate_utc_timestamps_to_shanghai(engine, logger)
+    total += migrate_chat_messages_unread_index(engine, logger)
     return total

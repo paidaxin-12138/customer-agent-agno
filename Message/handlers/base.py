@@ -17,9 +17,9 @@ class BaseHandler(MessageHandler):
         self.name = name or self.__class__.__name__
 
     def _stage_allowed(self, context: Context) -> bool:
-        from Agent.CustomerAgent.conversation_memory import get_current_stage
+        from Message.core.handlers import stage_allowed_for_context
 
-        return get_current_stage(context) in self.allowed_stages
+        return stage_allowed_for_context(context, self.allowed_stages)
 
     def can_handle(self, context: Context) -> bool:
         if not self._stage_allowed(context):
@@ -61,7 +61,7 @@ class BaseHandler(MessageHandler):
     ) -> bool:
         from .channel_send import send_text_to_buyer
 
-        return await send_text_to_buyer(
+        ok = await send_text_to_buyer(
             shop_id,
             user_id,
             from_uid,
@@ -69,3 +69,21 @@ class BaseHandler(MessageHandler):
             context=context,
             metadata=metadata,
         )
+        if ok and context is not None and metadata is not None:
+            try:
+                from Agent.CustomerAgent.conversation_memory import (
+                    append_handler_turn_summary,
+                    resolve_session_id,
+                )
+
+                sid = resolve_session_id(context, metadata)
+                if sid is not None:
+                    buyer = context.content if isinstance(context.content, str) else str(
+                        context.content or ""
+                    )
+                    append_handler_turn_summary(
+                        sid, buyer_text=buyer, agent_text=text
+                    )
+            except Exception as e:
+                self.logger.debug("append_handler_turn_summary: {}", e)
+        return ok

@@ -11,6 +11,8 @@ from qfluentwidgets import (CardWidget, SubtitleLabel, CaptionLabel, BodyLabel,
 from database.db_manager import db_manager
 from Channel.pinduoduo.pdd_login import login_pdd
 from utils.logger_loguru import get_logger
+from ui import apple_ui_tokens as T
+from ui.card_action_button import setup_card_action_button
 from utils.dialogs import confirm_action
 from ui.logo_loader_thread import LogoLoaderThread
 import requests
@@ -83,7 +85,7 @@ class AccountCard(CardWidget):
     def setupUI(self):
         """设置卡片UI"""
         # 设置卡片样式
-        self.setFixedHeight(120)
+        self.setFixedHeight(132)
         # 主布局
         layout = QHBoxLayout(self)
         layout.setContentsMargins(20, 15, 20, 15)
@@ -108,7 +110,7 @@ class AccountCard(CardWidget):
         self.logo_label = QLabel()
         self.logo_label.setFixedSize(65, 65)
         self.logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.logo_label.setStyleSheet("border-radius: 30px; border: 1px solid #2A3140; background-color: #1B1F2A;")
+        self.logo_label.setStyleSheet(f"border-radius: 30px; border: 1px solid {T.BG_TERTIARY}; background-color: {T.BG_SECONDARY};")
         self.logo_label.setText("加载中...")
         return self.logo_label
     
@@ -213,17 +215,15 @@ class AccountCard(CardWidget):
         # 验证按钮
         self.verify_btn = PushButton("验证")
         self.verify_btn.setIcon(FIF.SYNC)
-        self.verify_btn.setFixedSize(100, 32)
-        
-        # 编辑按钮
+        setup_card_action_button(self.verify_btn, width=88)
+
         self.edit_btn = PushButton("编辑")
         self.edit_btn.setIcon(FIF.EDIT)
-        self.edit_btn.setFixedSize(100, 32)
-       
-        # 删除按钮
+        setup_card_action_button(self.edit_btn, width=88)
+
         self.delete_btn = PushButton("删除")
         self.delete_btn.setIcon(FIF.DELETE)
-        self.delete_btn.setFixedSize(100, 32)
+        setup_card_action_button(self.delete_btn, width=88, role="danger")
 
         buttons_layout.addWidget(self.verify_btn)
         buttons_layout.addWidget(self.edit_btn)

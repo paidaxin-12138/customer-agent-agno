@@ -45,7 +45,8 @@ RUN mkdir -p /app/data /app/logs /app/backup /app/temp
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD curl -sf http://127.0.0.1:8080/health || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+  CMD curl -sf http://127.0.0.1:8080/ready || exit 1
 
-CMD ["sh", "-c", "uv run python -m alembic -c alembic.ini upgrade head 2>/dev/null || true; exec xvfb-run -a uv run python app.py"]
+# /ready：WS + consumer + handler 链就绪；/health 仅进程存活（无鉴权）
+CMD ["sh", "-c", "uv run python -m alembic -c alembic.ini upgrade head && exec xvfb-run -a uv run python app.py"]

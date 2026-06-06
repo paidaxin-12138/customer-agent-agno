@@ -18,13 +18,53 @@ _FOLLOW_UP_MARKERS = (
     "有货",
     "规格",
     "颜色",
+    "哪款",
+    "有没有",
+    "白色",
+    "黑色",
 )
+
+# 含以下词时不再视为商品追问（避免「价格不合适要退款」误开 RAG）
+_FOLLOW_UP_BLOCKERS = (
+    "退款",
+    "退货",
+    "换货",
+    "售后",
+    "投诉",
+    "物流",
+    "快递",
+    "发货",
+    "改址",
+    "改地址",
+    "收货地址",
+    "转人工",
+    "人工客服",
+)
+
+
+def resolve_retrieval_intent(
+    *,
+    guessed_intent: str,
+    task_intent: str | None,
+) -> str:
+    """合并本轮猜测与持久化 intent，避免 idle 下 task 仍为 product 时漏 RAG。"""
+    guessed = (guessed_intent or "general").strip() or "general"
+    persisted = (task_intent or "").strip()
+    if guessed in PRODUCT_INTENTS:
+        return guessed
+    if persisted in PRODUCT_INTENTS and guessed in ("general", "chat", ""):
+        return persisted
+    if persisted and persisted not in NO_RAG_INTENTS and guessed == "general":
+        return persisted
+    return guessed
 
 
 def _is_follow_up_product_question(last_intent: str | None, text: str) -> bool:
     if last_intent not in PRODUCT_INTENTS:
         return False
     t = text or ""
+    if any(b in t for b in _FOLLOW_UP_BLOCKERS):
+        return False
     return any(m in t for m in _FOLLOW_UP_MARKERS)
 
 

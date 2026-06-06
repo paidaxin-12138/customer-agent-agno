@@ -219,5 +219,7 @@ class SendMessage(BaseRequest):
         
         result = self.post(url, json_data=data)
         if result:
-            self.logger.debug(f"转移会话成功: {result}")
+            from utils.log_redact import redact_log_payload
+
+            self.logger.debug("转移会话成功: {}", redact_log_payload(result))
             return result

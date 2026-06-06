@@ -56,7 +56,7 @@ async def test_emotion_handler_first_alert_only_popup():
     ) as mock_comfort:
         ok = await handler.handle(ctx, meta)
 
-    assert ok is True
+    assert ok is False
     mock_emit.assert_called_once()
     assert mock_emit.call_args.args[0] == "buyer_emotion_alert"
     mock_comfort.assert_not_awaited()

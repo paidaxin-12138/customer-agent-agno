@@ -1,12 +1,20 @@
+from agno.run import RunContext
 from agno.tools import tool
 from Channel.pinduoduo.utils.API.send_message import SendMessage
+from utils.agent_tool_guard import bind_tool_session_params, validate_shop_goods_id
 from utils.logger_loguru import get_logger
 
 logger = get_logger("SendGoodsLinkTool")
 
 
 @tool(name="send_goods_link", description="向用户发送商品卡片链接，用于客服主动推荐商品。")
-def send_goods_link(recipient_uid: str, goods_id: int, shop_id: str, user_id: str) -> str:
+def send_goods_link(
+    run_context: RunContext,
+    recipient_uid: str,
+    goods_id: int,
+    shop_id: str,
+    user_id: str,
+) -> str:
     """
     向用户发送商品卡片链接。
 
@@ -20,6 +28,14 @@ def send_goods_link(recipient_uid: str, goods_id: int, shop_id: str, user_id: st
         str: 发送结果，成功返回 True，失败返回错误信息
     """
     try:
+        deps = getattr(run_context, "dependencies", None) or {}
+        shop_id, user_id, recipient_uid, bind_err = bind_tool_session_params(
+            deps, shop_id=shop_id, user_id=user_id, recipient_uid=recipient_uid
+        )
+        if bind_err:
+            logger.info("send_goods_link 会话绑定失败: {}", bind_err)
+            return f"发送失败：{bind_err}"
+
         try:
             from core.ops_telemetry import record_tool_call
 
@@ -29,8 +45,13 @@ def send_goods_link(recipient_uid: str, goods_id: int, shop_id: str, user_id: st
             )
         except Exception:
             pass
-        if not all([recipient_uid, goods_id, shop_id, user_id]):
-            return f"发送失败：缺少必要的参数 (recipient_uid={recipient_uid}, goods_id={goods_id}, shop_id={shop_id}, user_id={user_id})"
+        if not goods_id:
+            return "发送失败：缺少 goods_id"
+
+        valid, verify_msg = validate_shop_goods_id(shop_id, user_id, goods_id)
+        if not valid:
+            logger.info("send_goods_link 商品校验未通过 goods_id={}: {}", goods_id, verify_msg)
+            return f"发送失败：{verify_msg}"
 
         sender = SendMessage(shop_id, user_id)
         result = sender.send_mallGoodsCard(recipient_uid, goods_id, biz_type=2)

@@ -4,14 +4,11 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
-import time
 from typing import Any, Dict, List, Optional
 
-from PyQt6.QtCore import QEvent, QEventLoop, Qt, QThread, pyqtSignal, QTimer, QSize
+from PyQt6.QtCore import QEvent, Qt, QThread, QTimer, QSize
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import (
-    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -23,15 +20,6 @@ from PyQt6.QtWidgets import (
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
-    QFileDialog,
-    QInputDialog,
-    QDialog,
-    QDialogButtonBox,
-    QFormLayout,
-    QSpinBox,
-    QGridLayout,
-    QPushButton,
-    QScrollArea,
     QProgressBar,
 )
 
@@ -52,361 +40,31 @@ from database.chat_persist import set_active_chat_session
 from config import get_config
 from ui.conversation_hub import get_conversation_hub, make_account_key
 from ui.widgets.account_group_list import AccountGroupList
-from ui.widgets.chat_bubble_widgets import (
-    ChatMessageBubbleWidget,
-    make_chat_message_widget,
-    reflow_message_widgets,
+from ui.widgets.chat_message_list_view import ChatMessageListView
+from ui.chat.attachment_mixin import ChatAttachmentMixin
+from ui.chat.message_list_mixin import ChatMessageListMixin
+from ui.chat.send_workers import (
+    AddressChangeExecuteThread,
+    SendHumanMessageThread,
 )
-from ui import apple_ui_tokens as UI
-from utils.chat_time import format_chat_display_relative
+from ui.chat.session_tree import (
+    format_account_tree_label,
+    format_session_tree_label,
+    session_matches_filter,
+    session_sort_key,
+)
 from utils.logger_loguru import get_logger
 
-# 聊天历史分页默认条数（可由 config chat.ui_page_size 覆盖）
-_DEFAULT_PAGE_SIZE = 50
-_MSG_RENDER_BATCH = 4
-_MSG_RENDER_INTERVAL_MS = 60
-_MSG_LOADING_MIN_MS = 1500
-
-# 与 apple_ui_tokens / Apple 深色规范一致（聊天区 HTML 与顶栏）
-_C_BG = UI.BG_PRIMARY
-_C_CHAT_BG = _C_BG  # 实时聊天区与主窗口背景一致 #1C1C1E
-_C_PANEL = UI.BG_SECONDARY
-_C_CARD = UI.BG_SECONDARY
-_C_BORDER = UI.BORDER
-_C_TEXT = UI.TEXT_PRIMARY
-_C_MUTED = UI.TEXT_SECONDARY
-_C_DIM = UI.TEXT_TERTIARY
-_C_ACCENT = UI.ACCENT
-_C_LOADING = "#7A909F"  # 加载态：比主 accent 更柔和的蓝灰
-_C_GREEN = UI.SUCCESS
-_C_AI_BUBBLE = "#1D2D46"
-_C_MSG_BODY = "#E6EAF2"
-
-# 气泡常量定义
-_B_BUBBLE_RADIUS = "18px"
-_B_BUBBLE_TAIL_RADIUS = "8px"
-_B_SYSTEM_RADIUS = "14px"
-_C_BUBBLE_FRAME_SELF = "#2C2C2E"
-_C_SYSTEM_BG = "#2C2C2E"
-_C_SYSTEM_TEXT = "#98989D"
-_C_TIME_TEXT = "#E5E5EA"
-# 输入区底为 _C_PANEL；快捷语 / 工具条 / 输入框用略亮一层，避免与背景「糊成一片」
-_C_CHROME_BG = UI.BG_TERTIARY
-_C_CHROME_HOVER = "#48484A"
-_C_CHROME_BORDER = "rgba(255, 255, 255, 0.22)"
-_C_CHROME_PRESSED = "#3D3D40"
+from ui.chat import tokens as T
+from ui.chat.styles import (
+    action_button_outline_style,
+    build_live_chat_stylesheet,
+    mode_toggle_button_styles,
+)
+from ui.chat.dialogs import avatar_letter
 
 
-class SendHumanMessageThread(QThread):
-    finished_with_result = pyqtSignal(bool, str)
-
-    def __init__(self, shop_id: str, user_id: str, recipient_uid: str, text: str):
-        super().__init__()
-        self.shop_id = shop_id
-        self.user_id = user_id
-        self.recipient_uid = recipient_uid
-        self.text = text
-
-    def run(self):
-        try:
-            from Channel.pinduoduo.utils.API.send_message import SendMessage
-
-            sender = SendMessage(self.shop_id, self.user_id)
-            result = sender.send_text(self.recipient_uid, self.text)
-            if isinstance(result, dict) and result.get("success"):
-                self.finished_with_result.emit(True, "")
-                return
-            if isinstance(result, str) and result:
-                self.finished_with_result.emit(False, result)
-                return
-            self.finished_with_result.emit(False, "发送失败")
-        except Exception as e:
-            self.finished_with_result.emit(False, str(e))
-
-
-class SendImageMessageThread(QThread):
-    finished_with_result = pyqtSignal(bool, str)
-
-    def __init__(self, shop_id: str, user_id: str, recipient_uid: str, image_url: str):
-        super().__init__()
-        self.shop_id = shop_id
-        self.user_id = user_id
-        self.recipient_uid = recipient_uid
-        self.image_url = image_url
-
-    def run(self):
-        try:
-            from Channel.pinduoduo.utils.API.send_message import SendMessage
-
-            sender = SendMessage(self.shop_id, self.user_id)
-            result = sender.send_image(self.recipient_uid, self.image_url)
-            if isinstance(result, dict) and result.get("success"):
-                self.finished_with_result.emit(True, "")
-                return
-            err = ""
-            if isinstance(result, dict):
-                err = str(result.get("error_msg") or result.get("error") or "")
-            self.finished_with_result.emit(False, err or "图片发送失败")
-        except Exception as e:
-            self.finished_with_result.emit(False, str(e))
-
-
-class SendGoodsCardThread(QThread):
-    finished_with_result = pyqtSignal(bool, str)
-
-    def __init__(self, shop_id: str, user_id: str, recipient_uid: str, goods_id: int):
-        super().__init__()
-        self.shop_id = shop_id
-        self.user_id = user_id
-        self.recipient_uid = recipient_uid
-        self.goods_id = goods_id
-
-    def run(self):
-        try:
-            from Channel.pinduoduo.utils.API.send_message import SendMessage
-
-            sender = SendMessage(self.shop_id, self.user_id)
-            result = sender.send_mallGoodsCard(self.recipient_uid, self.goods_id, biz_type=2)
-            if isinstance(result, dict) and result.get("success"):
-                self.finished_with_result.emit(True, "")
-                return
-            err = ""
-            if isinstance(result, dict):
-                err = str(result.get("error_msg") or result.get("error") or "")
-            self.finished_with_result.emit(False, err or "商品卡发送失败")
-        except Exception as e:
-            self.finished_with_result.emit(False, str(e))
-
-
-class AddressChangeExecuteThread(QThread):
-    finished_with_result = pyqtSignal(bool, str, str)
-
-    def __init__(self, payload: dict):
-        super().__init__()
-        self.payload = payload
-
-    def run(self):
-        try:
-            from utils.merchant_address_change_record import execute_address_change
-            from Channel.pinduoduo.utils.API.send_message import SendMessage
-
-            result = execute_address_change(self.payload)
-            ok = bool(result.get("success"))
-            msg = str(result.get("message") or "")
-            shop_id = str(
-                self.payload.get("platform_shop_id")
-                or self.payload.get("shop_id")
-                or ""
-            )
-            user_id = str(self.payload.get("seller_user_id") or "")
-            buyer_uid = str(self.payload.get("buyer_uid") or "")
-            if msg and shop_id and user_id and buyer_uid:
-                sender = SendMessage(shop_id, user_id)
-                send_result = sender.send_text(buyer_uid, msg)
-                if isinstance(send_result, dict) and not send_result.get("success"):
-                    err = str(send_result.get("error_msg") or "话术发送失败")
-                    self.finished_with_result.emit(False, msg, err)
-                    return
-            api_err = str(result.get("api_error") or "")
-            self.finished_with_result.emit(ok, msg, api_err)
-        except Exception as e:
-            self.finished_with_result.emit(False, "", str(e))
-
-
-def _avatar_letter(name: str, fallback: str = "?") -> str:
-    s = (name or "").strip()
-    if not s:
-        return fallback
-    return s[0].upper() if s.isascii() and len(s) == 1 else s[0]
-
-
-class GoodsIdInputDialog(QDialog):
-    """商品 ID 输入对话框（支持 12 位，禁止粘贴）"""
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("发送商品卡")
-        self.setFixedSize(400, 200)
-        
-        # 布局
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(30, 30, 30, 30)
-        layout.setSpacing(15)
-        
-        # 说明文字
-        info_label = QLabel("请输入商品 ID（goods_id）\n支持 12 位数字，禁止粘贴")
-        info_label.setStyleSheet("color: #8E8E93; font-size: 13px;")
-        layout.addWidget(info_label)
-        
-        # 输入框
-        self.input = QLineEdit()
-        self.input.setPlaceholderText("请输入 12 位商品 ID")
-        self.input.setMaxLength(12)  # 最多 12 位
-        self.input.setStyleSheet("""
-            QLineEdit {
-                padding: 10px;
-                font-size: 16px;
-                border: 2px solid #007AFF;
-                border-radius: 8px;
-            }
-            QLineEdit:focus {
-                border: 2px solid #0055CC;
-            }
-        """)
-        # 禁用粘贴
-        self.input.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
-        layout.addWidget(self.input)
-        
-        # 按钮
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-    
-    def get_goods_id(self) -> int:
-        """获取输入的商品 ID"""
-        text = self.input.text().strip()
-        try:
-            return int(text)
-        except (ValueError, TypeError):
-            return 0
-
-
-class EmojiPickerDialog(QDialog):
-    """图片网格表情选择器（深色主题）。"""
-
-    _DIALOG_STYLE = f"""
-        QDialog {{
-            background-color: {UI.BG_PRIMARY};
-        }}
-        QLabel {{
-            color: {UI.TEXT_SECONDARY};
-            background: transparent;
-        }}
-        QScrollArea {{
-            background-color: {UI.BG_SECONDARY};
-            border: 1px solid {UI.BORDER};
-            border-radius: 10px;
-        }}
-        QWidget#EmojiPickerGrid {{
-            background-color: {UI.BG_SECONDARY};
-        }}
-    """
-
-    _EMOJI_BTN_STYLE = f"""
-        QPushButton {{
-            font-size: 28px;
-            background-color: transparent;
-            border: 2px solid transparent;
-            border-radius: 8px;
-        }}
-        QPushButton:hover {{
-            background-color: {UI.BG_TERTIARY};
-            border: 2px solid {UI.ACCENT};
-        }}
-        QPushButton:pressed {{
-            background-color: {UI.ACCENT_PRESSED};
-        }}
-    """
-
-    _FAV_BTN_STYLE = f"""
-        QPushButton {{
-            font-size: 24px;
-            background-color: transparent;
-            border: none;
-            border-radius: 6px;
-        }}
-        QPushButton:hover {{
-            background-color: {UI.BG_TERTIARY};
-        }}
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("选择表情")
-        self.setFixedSize(520, 420)
-        self.setStyleSheet(self._DIALOG_STYLE)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(10)
-
-        scroll = ScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-        emoji_widget = QWidget()
-        emoji_widget.setObjectName("EmojiPickerGrid")
-        emoji_layout = QGridLayout(emoji_widget)
-        emoji_layout.setContentsMargins(10, 10, 10, 10)
-        emoji_layout.setSpacing(8)
-
-        raw_emojis = [
-            "😊", "😂", "😍", "", "😘", "😜", "😝", "😛",
-            "😅", "😆", "😁", "🙂", "🙃", "😉", "😌", "",
-            "😒", "😞", "😔", "😟", "😕", "🙁", "☹️", "😣",
-            "😖", "😫", "😩", "😤", "😠", "😡", "😶", "😐",
-            "😑", "😬", "🙄", "😯", "😦", "😧", "😨", "😰",
-            "😥", "😓", "🤗", "🤔", "🤐", "🤓", "", "😝",
-            "🤑", "🤒", "🤕", "😷", "🤢", "", "🤧", "😇",
-            "🤠", "🤡", "", "🤫", "🤭", "🧐", "", "😈",
-            "👍", "👎", "👌", "✌️", "🤞", "🤟", "🤘", "👋",
-            "👏", "", "💪", "🤝", "❤️", "💔", "💕", "💖",
-            "🎉", "✨", "🔥", "🌟", "💯", "💐", "🌹", "🎁",
-        ]
-        self.emojis = [e for e in raw_emojis if e]
-
-        row = 0
-        col = 0
-        cols_per_row = 8
-
-        for emoji in self.emojis:
-            btn = QPushButton(emoji)
-            btn.setFixedSize(44, 44)
-            btn.setStyleSheet(self._EMOJI_BTN_STYLE)
-            btn.clicked.connect(lambda checked, e=emoji: self._on_emoji_selected(e))
-            emoji_layout.addWidget(btn, row, col)
-
-            col += 1
-            if col >= cols_per_row:
-                col = 0
-                row += 1
-
-        scroll.setWidget(emoji_widget)
-        layout.addWidget(scroll)
-
-        favorites_layout = QHBoxLayout()
-        favorites_layout.setSpacing(8)
-
-        fav_label = QLabel("常用")
-        fav_label.setStyleSheet(f"font-size: 12px; color: {UI.TEXT_SECONDARY};")
-        favorites_layout.addWidget(fav_label)
-
-        for fav in ["😊", "😂", "❤️", "👍", "🎉", "🔥"]:
-            btn = QPushButton(fav)
-            btn.setFixedSize(36, 36)
-            btn.setStyleSheet(self._FAV_BTN_STYLE)
-            btn.clicked.connect(lambda checked, e=fav: self._on_emoji_selected(e))
-            favorites_layout.addWidget(btn)
-
-        favorites_layout.addStretch()
-        layout.addLayout(favorites_layout)
-    
-    def _on_emoji_selected(self, emoji: str):
-        """表情被选中"""
-        self.selected_emoji = emoji
-        self.accept()
-    
-    def exec(self) -> str:
-        """执行对话框并返回选中的表情"""
-        self.selected_emoji = None
-        super().exec()
-        return self.selected_emoji
-
-
-class ChatLiveWidget(QFrame):
+class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
     """主导航「实时聊天」页面主体。"""
 
     def __init__(self, parent=None):
@@ -467,57 +125,6 @@ class ChatLiveWidget(QFrame):
         self._reflow_timer.setSingleShot(True)
         self._reflow_timer.timeout.connect(self._reflow_message_list)
 
-    def _layout_alive(self, layout: Any) -> bool:
-        if layout is None:
-            return False
-        try:
-            layout.count()
-            return True
-        except RuntimeError:
-            return False
-
-    def _ensure_message_area(self) -> bool:
-        scroll = getattr(self, "msg_scroll", None)
-        if scroll is None:
-            return False
-        container = getattr(self, "msg_container", None)
-        layout = getattr(self, "msg_layout", None)
-        try:
-            ok = (
-                container is not None
-                and self._layout_alive(layout)
-                and scroll.widget() is container
-            )
-        except RuntimeError:
-            ok = False
-        if ok:
-            return True
-        self.logger.warning("消息区 layout 失效，正在重建")
-        self.msg_container = QWidget()
-        self.msg_container.setObjectName("LiveChatMsgList")
-        self.msg_container.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self.msg_container.setAutoFillBackground(False)
-        self.msg_layout = QVBoxLayout(self.msg_container)
-        self.msg_layout.setContentsMargins(0, 8, 0, 8)
-        self.msg_layout.setSpacing(6)
-        scroll.setWidget(self.msg_container)
-        return True
-
-    def _message_area_width(self) -> int:
-        if getattr(self, "msg_scroll", None):
-            return max(self.msg_scroll.viewport().width(), 320)
-        return 320
-
-    def _message_widget_count(self) -> int:
-        if not getattr(self, "msg_layout", None):
-            return 0
-        n = 0
-        for i in range(self.msg_layout.count()):
-            w = self.msg_layout.itemAt(i).widget()
-            if w is not None:
-                n += 1
-        return n
-
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._schedule_message_list_reflow()
@@ -526,17 +133,6 @@ class ChatLiveWidget(QFrame):
         super().changeEvent(event)
         if event.type() == QEvent.Type.FontChange:
             self._schedule_message_list_reflow()
-
-    def _schedule_message_list_reflow(self) -> None:
-        if self._message_widget_count() > 0:
-            self._reflow_timer.start(16)
-
-    def _reflow_message_list(self) -> None:
-        if not getattr(self, "msg_layout", None) or self._message_widget_count() == 0:
-            return
-        reflow_message_widgets(self.msg_container, self.msg_layout, self._message_area_width())
-        self.msg_scroll.viewport().update()
-        QTimer.singleShot(0, self._scroll_messages_to_bottom)
 
     def eventFilter(self, obj, event):
         # 监控输入框的所有活动（按键、鼠标点击、焦点变化、文本变化等）
@@ -581,202 +177,7 @@ class ChatLiveWidget(QFrame):
         super().closeEvent(event)
 
     def _apply_stylesheet(self) -> None:
-        self.setStyleSheet(
-            f"""
-            #LiveChatRoot {{
-                background-color: {_C_BG};
-                border: none;
-            }}
-            #LiveChatSessionPanel {{
-                background-color: {_C_PANEL};
-                border: none;
-            }}
-            #LiveChatSessionHeader {{
-                background-color: {_C_PANEL};
-                border-bottom: 1px solid {_C_BORDER};
-            }}
-            #LiveChatSessionSearch {{
-                background-color: {_C_CARD};
-                border: 1px solid {_C_BORDER};
-                border-radius: 12px;
-                padding: 8px 12px;
-                color: {_C_TEXT};
-                font-size: 14px;
-            }}
-            #LiveChatSessionSearch:focus {{
-                border: 1px solid {_C_ACCENT};
-            }}
-            #LiveChatAccountList {{
-                background-color: {_C_BG};
-                color: {_C_MUTED};
-                border: none;
-                border-right: 1px solid {_C_BORDER};
-                font-size: 13px;
-                outline: none;
-            }}
-            #LiveChatAccountList::item {{
-                padding: 12px 14px;
-                border-radius: 10px;
-                margin: 2px 6px;
-                color: {_C_MUTED};
-            }}
-            #LiveChatAccountList::item:hover {{
-                background-color: {_C_CARD};
-                color: {_C_TEXT};
-            }}
-            #LiveChatAccountList::item:selected {{
-                background-color: {_C_CARD};
-                color: {_C_ACCENT};
-                font-weight: 500;
-            }}
-            QTreeWidget#LiveChatSessionTree {{
-                background-color: {_C_PANEL};
-                color: {_C_TEXT};
-                border: none;
-                outline: none;
-                font-size: 13px;
-            }}
-            QTreeWidget#LiveChatSessionTree::item {{
-                padding: 8px 6px;
-                border-radius: 10px;
-                min-height: 36px;
-            }}
-            QTreeWidget#LiveChatSessionTree::item:hover {{
-                background-color: #23293A;
-            }}
-            QTreeWidget#LiveChatSessionTree::item:selected {{
-                background-color: {_C_BORDER};
-                border-left: 3px solid {_C_ACCENT};
-            }}
-            QTreeWidget#LiveChatSessionTree::branch {{
-                background: transparent;
-            }}
-            QTreeWidget#LiveChatSessionTree::branch:has-children:!has-siblings:closed,
-            QTreeWidget#LiveChatSessionTree::branch:closed:has-children:has-siblings,
-            QTreeWidget#LiveChatSessionTree::branch:open:has-children:has-siblings,
-            QTreeWidget#LiveChatSessionTree::branch:open:has-children:!has-siblings {{
-                margin: 6px 4px;
-                width: 20px;
-                height: 20px;
-            }}
-            QTreeWidget#LiveChatSessionTree::branch:has-siblings:!adjoins-item {{
-                border-image: none;
-            }}
-            
-            #LiveChatRightPanel {{
-                background-color: {_C_CHAT_BG};
-                border: none;
-            }}
-            #LiveChatTopBar {{
-                background-color: {_C_CHAT_BG};
-                border-bottom: 1px solid {_C_BORDER};
-            }}
-            #LiveChatAvatar {{
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #FF6B6B, stop:1 #FF8E8E);
-                color: #FFFFFF;
-                font-weight: bold;
-                font-size: 16px;
-                border-radius: 12px;
-                min-width: 40px;
-                max-width: 40px;
-                min-height: 40px;
-                max-height: 40px;
-            }}
-            #LiveChatNameLabel {{
-                color: {_C_TEXT};
-                font-size: 16px;
-                font-weight: 600;
-            }}
-            #LiveChatSubLabel {{
-                font-size: 12px;
-            }}
-            QListWidget#LiveChatMsgList {{
-                background-color: {_C_CHAT_BG};
-                border: none;
-                outline: none;
-                padding: 8px 0;
-            }}
-            ScrollArea#LiveChatMsgScroll {{
-                background-color: {_C_CHAT_BG};
-                border: none;
-            }}
-            QWidget#LiveChatMsgList {{
-                background-color: {_C_CHAT_BG};
-            }}
-            #LiveChatInputArea {{
-                background-color: {_C_CHAT_BG};
-                border: none;
-            }}
-            #LiveChatInput {{
-                background-color: {_C_CHROME_BG};
-                border: 1px solid {_C_CHROME_BORDER};
-                border-radius: 12px;
-                padding: 12px;
-                color: {_C_TEXT};
-                font-size: 14px;
-                outline: none;
-            }}
-            #LiveChatInput:focus {{
-                border: 1px solid {_C_ACCENT};
-            }}
-            QScrollArea#LiveChatTopBarActionsScroll {{
-                background: transparent;
-                border: none;
-            }}
-            QScrollArea#LiveChatTopBarActionsScroll > QWidget {{
-                background: transparent;
-                border: none;
-            }}
-            QScrollArea#LiveChatQuickScroll {{
-                background: transparent;
-                border: none;
-            }}
-            QScrollArea#LiveChatQuickScroll > QWidget {{
-                background: transparent;
-                border: none;
-            }}
-            #LiveChatQuickStrip {{
-                background: transparent;
-                border: none;
-            }}
-            #LiveChatToolsStrip PushButton {{
-                background-color: {_C_CHROME_BG};
-                color: {_C_TEXT};
-                border: 1px solid {_C_CHROME_BORDER};
-                border-radius: 8px;
-                font-size: 12px;
-                padding: 4px 8px;
-            }}
-            #LiveChatToolsStrip PushButton:hover {{
-                background-color: {_C_CHROME_HOVER};
-                border-color: rgba(10, 132, 255, 0.55);
-            }}
-            #LiveChatToolsStrip PushButton:pressed {{
-                background-color: {_C_CHROME_PRESSED};
-            }}
-            #LiveChatToolsStrip PushButton:disabled {{
-                background-color: {_C_PANEL};
-                color: {_C_DIM};
-                border-color: {_C_BORDER};
-            }}
-            #LiveChatQuickStrip PushButton {{
-                background-color: {_C_CHROME_BG};
-                color: {_C_TEXT};
-                border: 1px solid {_C_CHROME_BORDER};
-                border-radius: 14px;
-                font-size: 12px;
-                padding: 6px 14px;
-            }}
-            #LiveChatQuickStrip PushButton:hover {{
-                background-color: {_C_CHROME_HOVER};
-                border-color: {_C_ACCENT};
-                color: {_C_TEXT};
-            }}
-            #LiveChatQuickStrip PushButton:pressed {{
-                background-color: {_C_CHROME_PRESSED};
-            }}
-            """
-        )
+        self.setStyleSheet(build_live_chat_stylesheet())
 
     def _build_ui(self):
         """构建 UI（顶栏与关键词管理页：外边距 30、标题区 + 主内容间距 25）。"""
@@ -824,13 +225,13 @@ class ChatLiveWidget(QFrame):
         hl.setContentsMargins(20, 16, 20, 16)
         hl.setSpacing(10)
         sec = CaptionLabel("会话列表")
-        sec.setStyleSheet(f"color: {_C_MUTED};")
+        sec.setStyleSheet(f"color: {T.C_MUTED};")
         self.session_search = QLineEdit()
         self.session_search.setObjectName("LiveChatSessionSearch")
         self.session_search.setPlaceholderText("搜索客户或订单…")
         self.session_search.textChanged.connect(self._on_session_search_changed)
         _sp = self.session_search.palette()
-        _sp.setColor(QPalette.ColorRole.PlaceholderText, QColor(_C_DIM))
+        _sp.setColor(QPalette.ColorRole.PlaceholderText, QColor(T.C_DIM))
         self.session_search.setPalette(_sp)
         hl.addWidget(sec)
         hl.addWidget(self.session_search)
@@ -839,7 +240,8 @@ class ChatLiveWidget(QFrame):
         self.session_tree = TreeWidget(self)
         self.session_tree.setObjectName("LiveChatSessionTree")
         self.session_tree.setHeaderHidden(True)
-        self.session_tree.setIndentation(22)
+        self.session_tree.setIndentation(30)
+        self.session_tree.setIconSize(QSize(24, 24))
         self.session_tree.setMinimumWidth(280)
         self.session_tree.setAnimated(True)
         self.session_tree.itemClicked.connect(self._on_session_clicked)
@@ -874,50 +276,34 @@ class ChatLiveWidget(QFrame):
         info.addWidget(self.lbl_avatar, 0, Qt.AlignmentFlag.AlignTop)
         info.addLayout(name_col, 1)
 
-        self.btn_ai = PushButton("🤖 转 AI")
-        self.btn_human = PushButton("👤 人工接待")
-        self.btn_close = PushButton("结束会话")
+        self.btn_ai = PushButton(FIF.ROBOT, "AI 接待")
+        self.btn_human = PushButton(FIF.PEOPLE, "人工接待")
+        self.btn_close = PushButton(FIF.CLOSE, "结束会话")
         self.btn_ai.clicked.connect(self._on_toggle_ai_true)
         self.btn_human.clicked.connect(self._on_toggle_ai_false)
         self.btn_close.clicked.connect(self._on_close_session)
-        for b in (self.btn_ai, self.btn_human, self.btn_close):
-            b.setFixedHeight(40)
-            b.setSizePolicy(
-                QSizePolicy.Policy.Minimum,
-                QSizePolicy.Policy.Fixed,
-            )
+        for b in (self.btn_ai, self.btn_human):
+            b.setObjectName("LiveChatModeButton")
+            b.setMinimumWidth(112)
+            b.setFixedHeight(36)
+            b.setIconSize(QSize(16, 16))
+        self.btn_close.setObjectName("LiveChatCloseButton")
+        self.btn_close.setMinimumWidth(108)
+        self.btn_close.setFixedHeight(36)
+        self.btn_close.setIconSize(QSize(16, 16))
 
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(12)
+        header_row.addLayout(info, 1)
         actions_row = QHBoxLayout()
         actions_row.setContentsMargins(0, 0, 0, 0)
-        actions_row.setSpacing(0)
-        actions_row.addStretch(1)
-        hdr_actions_inner = QWidget()
-        hdr_actions_inner.setObjectName("LiveChatTopBarActions")
-        hdr_actions_inner.setFixedHeight(40)
-        hdr_act_layout = QHBoxLayout(hdr_actions_inner)
-        hdr_act_layout.setContentsMargins(0, 0, 0, 0)
-        hdr_act_layout.setSpacing(8)
+        actions_row.setSpacing(8)
         for b in (self.btn_ai, self.btn_human, self.btn_close):
-            hdr_act_layout.addWidget(b)
+            actions_row.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
+        header_row.addLayout(actions_row, 0)
 
-        hdr_act_scroll = ScrollArea()
-        hdr_act_scroll.setObjectName("LiveChatTopBarActionsScroll")
-        hdr_act_scroll.setWidgetResizable(False)
-        hdr_act_scroll.setFixedHeight(44)
-        hdr_act_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        hdr_act_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        hdr_act_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        hdr_act_scroll.setLineWidth(0)
-        hdr_act_scroll.viewport().setAutoFillBackground(False)
-        hdr_act_scroll.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
-        hdr_act_scroll.setWidget(hdr_actions_inner)
-        actions_row.addWidget(hdr_act_scroll, 1)
-
-        tb.addLayout(info, 0)
-        tb.addLayout(actions_row, 0)
+        tb.addLayout(header_row, 0)
         self._msg_loading_bar = QProgressBar()
         self._msg_loading_bar.setObjectName("LiveChatLoadingBar")
         self._msg_loading_bar.setFixedHeight(3)
@@ -935,7 +321,7 @@ class ChatLiveWidget(QFrame):
                 min-height: 3px;
             }}
             QProgressBar#LiveChatLoadingBar::chunk {{
-                background-color: {_C_LOADING};
+                background-color: {T.C_LOADING};
                 border-radius: 2px;
             }}
             """
@@ -943,25 +329,15 @@ class ChatLiveWidget(QFrame):
         tb.addWidget(self._msg_loading_bar)
         rv.addWidget(top_bar)
 
-        self.msg_scroll = ScrollArea()
-        self.msg_scroll.setObjectName("LiveChatMsgScroll")
-        self.msg_scroll.setWidgetResizable(True)
-        self.msg_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.msg_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.msg_scroll.setMinimumHeight(120)
-        self.msg_scroll.setSizePolicy(
+        self.msg_list_view = ChatMessageListView()
+        self.msg_list_view.setObjectName("LiveChatMsgScroll")
+        self.msg_list_view.setMinimumHeight(120)
+        self.msg_list_view.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding,
         )
-
-        self.msg_container = QWidget()
-        self.msg_container.setObjectName("LiveChatMsgList")
-        self.msg_container.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self.msg_container.setAutoFillBackground(False)
-        self.msg_layout = QVBoxLayout(self.msg_container)
-        self.msg_layout.setContentsMargins(0, 8, 0, 8)
-        self.msg_layout.setSpacing(6)
-        self.msg_scroll.setWidget(self.msg_container)
+        # 兼容 mixin 内对滚动条的访问
+        self.msg_scroll = self.msg_list_view
 
         self._msg_area = QWidget()
         self._msg_area.setObjectName("LiveChatMsgArea")
@@ -969,7 +345,7 @@ class ChatLiveWidget(QFrame):
         msg_area_lay.setContentsMargins(0, 0, 0, 0)
         msg_area_lay.setSpacing(0)
 
-        msg_area_lay.addWidget(self.msg_scroll, 1)
+        msg_area_lay.addWidget(self.msg_list_view, 1)
 
         self._msg_render_job: Optional[Dict[str, Any]] = None
         self._render_token = 0
@@ -987,9 +363,7 @@ class ChatLiveWidget(QFrame):
         self._msg_loading_older = False
         self._msg_total_count = 0
 
-        self.msg_scroll.verticalScrollBar().valueChanged.connect(
-            self._on_msg_scroll_value_changed
-        )
+        self.msg_list_view.request_load_older.connect(self._load_older_messages)
 
         input_area = QFrame()
         input_area.setObjectName("LiveChatInputArea")
@@ -1089,20 +463,7 @@ class ChatLiveWidget(QFrame):
         self._style_action_buttons()
 
     def _mode_toggle_button_styles(self) -> tuple[str, str]:
-        """(描边, 主色高亮) — 用于「转 AI / 人工接待」与当前 ai_mode 同步。"""
-        outline = (
-            f"PushButton {{ padding: 8px 14px; border-radius: 10px; border: 1px solid {_C_BORDER};"
-            f" background: transparent; color: {_C_MUTED}; font-size: 13px; }}"
-            f"PushButton:hover {{ background-color: {_C_CARD}; color: {_C_TEXT}; }}"
-            f"PushButton:disabled {{ color: {_C_DIM}; border-color: {_C_BORDER}; }}"
-        )
-        primary = (
-            f"PushButton {{ padding: 8px 14px; border-radius: 10px; border: 1px solid {_C_ACCENT};"
-            f" background: {_C_ACCENT}; color: #FFFFFF; font-size: 13px; font-weight: 600; }}"
-            f"PushButton:hover {{ background-color: #0077ED; border-color: #0077ED; }}"
-            f"PushButton:disabled {{ background: {_C_BORDER}; color: {_C_DIM}; border-color: {_C_BORDER}; }}"
-        )
-        return outline, primary
+        return mode_toggle_button_styles()
 
     def _update_mode_toggle_buttons(self) -> None:
         outline, primary = self._mode_toggle_button_styles()
@@ -1118,12 +479,7 @@ class ChatLiveWidget(QFrame):
             self.btn_human.setStyleSheet(primary)
 
     def _style_action_buttons(self) -> None:
-        outline = (
-            f"PushButton {{ padding: 8px 14px; border-radius: 10px; border: 1px solid {_C_BORDER};"
-            f" background: transparent; color: {_C_MUTED}; font-size: 13px; }}"
-            f"PushButton:hover {{ background-color: {_C_CARD}; color: {_C_TEXT}; }}"
-        )
-        self.btn_close.setStyleSheet(outline)
+        self.btn_close.setStyleSheet(action_button_outline_style())
         self._update_mode_toggle_buttons()
 
     def _on_session_search_changed(self, text: str) -> None:
@@ -1146,27 +502,27 @@ class ChatLiveWidget(QFrame):
             self.lbl_avatar.setText("—")
             self.chat_header.setText("未选择会话")
             self.chat_sub.setText("")
-            self.chat_header.setStyleSheet(f"color: {_C_MUTED}; font-size: 16px; font-weight: 600;")
-            self.chat_sub.setStyleSheet(f"color: {_C_DIM}; font-size: 12px;")
+            self.chat_header.setStyleSheet(f"color: {T.C_MUTED}; font-size: 16px; font-weight: 600;")
+            self.chat_sub.setStyleSheet(f"color: {T.C_DIM}; font-size: 12px;")
             self._update_mode_toggle_buttons()
             return
         nick = self._current.get("buyer_nickname") or "买家"
-        self.lbl_avatar.setText(_avatar_letter(nick))
+        self.lbl_avatar.setText(avatar_letter(nick))
         self.chat_header.setText(nick)
         acc = self._current.get("account") or {}
         mode = "AI 自动接待" if self._current.get("ai_mode") else "人工接待中"
         shop = acc.get("shop_name") or ""
-        self.chat_header.setStyleSheet(f"color: {_C_TEXT}; font-size: 16px; font-weight: 600;")
+        self.chat_header.setStyleSheet(f"color: {T.C_TEXT}; font-size: 16px; font-weight: 600;")
         self.chat_sub.setText(f"● {mode}  ·  {shop}")
-        self.chat_sub.setStyleSheet(f"color: {_C_GREEN}; font-size: 12px;")
+        self.chat_sub.setStyleSheet(f"color: {T.C_GREEN}; font-size: 12px;")
         self._update_mode_toggle_buttons()
 
     def _page_size(self) -> int:
         try:
-            n = int(get_config("chat.ui_page_size", _DEFAULT_PAGE_SIZE) or _DEFAULT_PAGE_SIZE)
+            n = int(get_config("chat.ui_page_size", T.DEFAULT_PAGE_SIZE) or T.DEFAULT_PAGE_SIZE)
             return max(1, min(n, 500))
         except (TypeError, ValueError):
-            return _DEFAULT_PAGE_SIZE
+            return T.DEFAULT_PAGE_SIZE
 
     def _initial_load(self):
         self._accounts = db_manager.list_all_accounts_for_chat()
@@ -1190,14 +546,10 @@ class ChatLiveWidget(QFrame):
         if label is None:
             return
         try:
-            from core.connection_status import ConnectionState, ConnectionStatusManager
+            from core.channel_facade import list_connected_accounts
             from ui.auto_reply_ui import auto_reply_manager
 
-            connected = [
-                s
-                for s in ConnectionStatusManager().get_all_status()
-                if s.state == ConnectionState.CONNECTED
-            ]
+            connected = list_connected_accounts()
             running = auto_reply_manager.get_running_count()
             if connected:
                 names = "、".join(s.username for s in connected[:3])
@@ -1219,18 +571,18 @@ class ChatLiveWidget(QFrame):
                         "浏览器与软件同时在线时，网页可能抢 WebSocket（auth fail）。"
                     )
                 label.setText(f"消息通道：已连接 {names}{extra}。{sync_hint}")
-                label.setStyleSheet("color: #32D74B;")
+                label.setStyleSheet(f"color: {T.SUCCESS};")
             elif running > 0:
                 label.setText(
                     "消息通道：正在连接 WebSocket… 若长时间无会话，请在「自动回复」确认已点「开始回复」。"
                 )
-                label.setStyleSheet("color: #FF9F0A;")
+                label.setStyleSheet(f"color: {T.WARNING};")
             else:
                 label.setText(
                     "消息通道：未连接。请在「自动回复」对接待账号点「上线」→「开始回复」；"
                     "仅上线不会收到买家消息。转接须转到本软件正在监听的那个子账号。"
                 )
-                label.setStyleSheet("color: #FF6B6B;")
+                label.setStyleSheet(f"color: {T.ERROR};")
         except Exception as e:
             self.logger.debug("WS 状态提示刷新失败: {}", e)
 
@@ -1243,15 +595,11 @@ class ChatLiveWidget(QFrame):
         shop_id = str(acc.get("platform_shop_id") or "")
         user_id = str(acc.get("seller_user_id") or "")
         try:
-            from core.connection_status import ConnectionState, ConnectionStatusManager
+            from core.channel_facade import account_display_status
 
-            for st in ConnectionStatusManager().get_all_status():
-                if str(st.shop_id) == shop_id and str(st.user_id) == user_id:
-                    if st.state == ConnectionState.CONNECTED:
-                        return "在线"
-                    if st.state in (ConnectionState.CONNECTING, ConnectionState.RECONNECTING):
-                        return "连接中"
-                    break
+            ws_status = account_display_status(shop_id, user_id)
+            if ws_status:
+                return ws_status
         except Exception as e:
             self.logger.debug("读取 WS 连接状态失败: {}", e)
         code = acc.get("status")
@@ -1287,180 +635,6 @@ class ChatLiveWidget(QFrame):
         self._reload_accounts_from_db()
         self.account_list.reload(self._filter_account_id)
         self._refresh_session_trees()
-    
-    def _on_emoji_clicked(self) -> None:
-        """表情按钮点击 - 打开图片网格表情选择器。"""
-        self.logger.info("表情按钮被点击")
-        
-        # 创建表情选择对话框
-        dialog = EmojiPickerDialog(self)
-        emoji = dialog.exec()
-        
-        if emoji:
-            # 插入表情到输入框
-            cursor = self.input_edit.textCursor()
-            cursor.insertText(emoji)
-            self.input_edit.setFocus()
-
-    def _on_img_clicked(self):
-        """图片按钮点击：支持本地图片（预留上传）与 URL 两种方式。"""
-        if not self._current:
-            QMessageBox.warning(self, "无会话", "请先选择一个会话")
-            return
-
-        chooser = QMessageBox(self)
-        chooser.setWindowTitle("发送图片")
-        chooser.setText("请选择发送方式：")
-        local_btn = chooser.addButton("本地图片", QMessageBox.ButtonRole.AcceptRole)
-        url_btn = chooser.addButton("图片 URL", QMessageBox.ButtonRole.ActionRole)
-        chooser.addButton("取消", QMessageBox.ButtonRole.RejectRole)
-        chooser.setDefaultButton(local_btn)
-        chooser.exec()
-
-        clicked = chooser.clickedButton()
-        if clicked is local_btn:
-            file_path, _ = QFileDialog.getOpenFileName(
-                self,
-                "选择本地图片",
-                "",
-                "Images (*.png *.jpg *.jpeg *.gif *.webp *.bmp)",
-            )
-            if not file_path:
-                return
-            self._send_local_image(file_path)
-            return
-        if clicked is url_btn:
-            self._prompt_and_send_image_url()
-
-    def _prompt_and_send_image_url(self, default_url: str = "https://") -> None:
-        url, ok = QInputDialog.getText(
-            self,
-            "发送图片",
-            "请输入可公网访问的图片 URL：",
-            QLineEdit.EchoMode.Normal,
-            default_url,
-        )
-        if not ok:
-            return
-        image_url = (url or "").strip()
-        if not image_url.startswith(("http://", "https://")):
-            QMessageBox.warning(self, "图片地址无效", "请输入 http/https 开头的图片 URL")
-            return
-        self._send_image_via_url(image_url)
-
-    def _send_local_image(self, file_path: str) -> None:
-        """发送本地图片：先走上传适配器，失败后可回退 URL 发送。"""
-        acc = self._current["account"]
-        try:
-            from Channel.pinduoduo.utils.API.upload_media import MediaUploader
-
-            uploader = MediaUploader(str(acc["platform_shop_id"]), str(acc["seller_user_id"]))
-            result = uploader.upload_local_image(file_path)
-            if result.get("success") and result.get("image_url"):
-                self._send_image_via_url(str(result["image_url"]))
-                return
-            err = str(result.get("error_msg") or "图片上传失败")
-        except Exception as e:
-            err = str(e)
-
-        fallback = QMessageBox.question(
-            self,
-            "本地图片上传未就绪",
-            f"{err}\n\n是否改为手动输入图片 URL 发送？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if fallback == QMessageBox.StandardButton.Yes:
-            self._prompt_and_send_image_url(default_url="https://")
-
-    def _send_image_via_url(self, image_url: str) -> None:
-        if not self._current:
-            return
-
-        acc = self._current["account"]
-        self.btn_img.setEnabled(False)
-        self._send_image_thread = SendImageMessageThread(
-            str(acc["platform_shop_id"]),
-            str(acc["seller_user_id"]),
-            str(self._current["buyer_uid"]),
-            image_url,
-        )
-        self._send_image_thread.finished_with_result.connect(self._on_image_send_done)
-        self._send_image_thread.start()
-
-    def _on_image_send_done(self, ok: bool, err: str) -> None:
-        self.btn_img.setEnabled(True)
-        if not ok:
-            QMessageBox.warning(self, "图片发送失败", err or "")
-            return
-        QMessageBox.information(self, "发送成功", "图片已发送")
-
-    def _on_goods_card_clicked(self) -> None:
-        """人工一键发送商品卡。"""
-        if not self._current:
-            QMessageBox.warning(self, "无会话", "请先选择一个会话")
-            return
-
-        # 使用自定义对话框，支持 12 位商品 ID 且禁止粘贴
-        dialog = GoodsIdInputDialog(self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        
-        goods_id = dialog.get_goods_id()
-        if goods_id <= 0:
-            QMessageBox.warning(self, "输入错误", "请输入有效的商品 ID（1-12 位数字）")
-            return
-
-        acc = self._current["account"]
-        self.btn_goods.setEnabled(False)
-        self._send_goods_thread = SendGoodsCardThread(
-            str(acc["platform_shop_id"]),
-            str(acc["seller_user_id"]),
-            str(self._current["buyer_uid"]),
-            int(goods_id),
-        )
-        self._send_goods_thread.finished_with_result.connect(self._on_goods_send_done)
-        self._send_goods_thread.start()
-
-    def _on_goods_send_done(self, ok: bool, err: str) -> None:
-        self.btn_goods.setEnabled(True)
-        if not ok:
-            QMessageBox.warning(self, "商品卡发送失败", err or "")
-            return
-        QMessageBox.information(self, "发送成功", "商品卡已发送")
-
-    def _on_ai_help_clicked(self):
-        """AI 助手按钮点击 - AI 辅助生成回复"""
-        self.logger.info("AI 助手按钮被点击")
-        
-        # 检查是否有当前会话
-        if not self._current:
-            QMessageBox.warning(
-                self,
-                "无会话",
-                "请先选择一个会话",
-            )
-            return
-        
-        # 获取最近的客户消息
-        last_message = self._current.get("last_message", "")
-        if not last_message:
-            last_message = "客户消息"
-        
-        # 显示 AI 辅助对话框
-        reply, ok = QInputDialog.getText(
-            self,
-            "AI 辅助回复",
-            f"客户消息：{last_message}\n\n请输入或修改回复内容：",
-            QLineEdit.EchoMode.Normal,
-            "您好，感谢您的咨询！"
-        )
-        
-        if ok and reply:
-            # 插入回复到输入框
-            self.input_edit.clear()
-            self.input_edit.insertPlainText(reply)
-            self.input_edit.setFocus()
 
     def _on_hub_message_logged(
         self, account_key: str, customer_uid: str, role: str, text: str, ts: float
@@ -1505,10 +679,7 @@ class ChatLiveWidget(QFrame):
                 if not isinstance(cd, dict) or cd.get("type") != "session":
                     continue
                 s = cd["session"]
-                unread = int(s.get("unread_count") or 0)
-                t = s.get("last_message_time") or s.get("updated_at")
-                ts = t.timestamp() if hasattr(t, "timestamp") else 0.0
-                key = (unread > 0, unread, ts)
+                key = session_sort_key(s)
                 if best is None or key > best[0]:
                     best = (key, child)
         if best is None:
@@ -1519,13 +690,7 @@ class ChatLiveWidget(QFrame):
         self._on_session_clicked(child, 0)
 
     def _session_matches_filter(self, s: Dict[str, Any]) -> bool:
-        if not self._session_filter:
-            return True
-        q = self._session_filter
-        nick = (s.get("buyer_nickname") or "").lower()
-        prev = (s.get("last_message") or "").lower()
-        buid = str(s.get("buyer_uid") or "").lower()
-        return q in nick or q in prev or q in buid
+        return session_matches_filter(s, self._session_filter)
 
     def _refresh_session_trees(self):
         self._reload_accounts_from_db()
@@ -1552,32 +717,26 @@ class ChatLiveWidget(QFrame):
             )
             st_txt = self._account_status_text(acc)
             parent = QTreeWidgetItem(
-                [f"{acc.get('shop_name','')} · {acc.get('username','')}  ({st_txt})  未读 {unread}"]
+                [format_account_tree_label(acc, st_txt, unread)]
             )
             parent.setData(
                 0,
                 Qt.ItemDataRole.UserRole,
                 {"type": "account", "account": acc},
             )
-            parent.setSizeHint(0, QSize(0, 44))
+            parent.setSizeHint(0, QSize(0, 54))
             self.session_tree.addTopLevelItem(parent)
             sessions = db_manager.get_chat_sessions(acc["id"], "active")
             for s in sessions:
                 if not self._session_matches_filter(s):
                     continue
-                t = s.get("last_message_time") or s.get("updated_at")
-                ts = format_chat_display_relative(t) if t else ""
-                prev = (s.get("last_message") or "")[:48]
-                nick = s.get("buyer_nickname") or "买家"
-                u = s.get("unread_count", 0) or 0
-                unread_suffix = f"  ·  {u}" if u else ""
-                label = f"{nick}  |  {ts}{unread_suffix}\n{prev}"
-                child = QTreeWidgetItem([label])
+                child = QTreeWidgetItem([format_session_tree_label(s)])
                 child.setData(
                     0,
                     Qt.ItemDataRole.UserRole,
                     {"type": "session", "session": s, "account": acc},
                 )
+                child.setSizeHint(0, QSize(0, 50))
                 parent.addChild(child)
                 if (
                     restore_item is None
@@ -1881,7 +1040,9 @@ class ChatLiveWidget(QFrame):
         if self._current.get("ai_mode", True):
             return
         sid = int(self._current["session_id"])
-        db_manager.set_session_ai_mode(sid, True)
+        from database.session_store import set_ai_mode
+
+        set_ai_mode(sid, True)
         self._current["ai_mode"] = True
         self._update_header_visuals()
         self.logger.info("会话已自动切回 AI 接待模式（离开聊天窗口）")
@@ -1903,7 +1064,9 @@ class ChatLiveWidget(QFrame):
         if self._current.get("ai_mode", True):
             return  # 本来就是 AI 模式，不需要切换
         sid = int(self._current["session_id"])
-        db_manager.set_session_ai_mode(sid, True)
+        from database.session_store import set_ai_mode
+
+        set_ai_mode(sid, True)
         self._current["ai_mode"] = True
         self._update_header_visuals()
         self.logger.info("会话已自动切回 AI 接待模式（输入框 10 秒无活动）")
@@ -1938,10 +1101,7 @@ class ChatLiveWidget(QFrame):
                 if not isinstance(cd, dict) or cd.get("type") != "session":
                     continue
                 s = cd["session"]
-                unread = int(s.get("unread_count") or 0)
-                t = s.get("last_message_time") or s.get("updated_at")
-                ts = t.timestamp() if hasattr(t, "timestamp") else 0.0
-                key = (unread > 0, unread, ts)
+                key = session_sort_key(s)
                 if best_key is None or key > best_key:
                     best_key = key
                     pick = child
@@ -1972,7 +1132,16 @@ class ChatLiveWidget(QFrame):
             "ai_mode": s.get("ai_mode", True),
         }
         set_active_chat_session(int(acc["id"]), str(s["buyer_uid"]))
-        db_manager.mark_chat_messages_read(session_id)
+        from database.session_store import mark_session_read, load_session_summary
+
+        mark_session_read(session_id)
+        fresh_summary = load_session_summary(session_id)
+        if fresh_summary:
+            s = {
+                **s,
+                "ai_mode": fresh_summary.ai_mode,
+                "unread_count": fresh_summary.unread_count,
+            }
         self._update_header_visuals()
         if not self._current.get("ai_mode", True):
             self._reset_input_activity_timer()
@@ -1997,467 +1166,6 @@ class ChatLiveWidget(QFrame):
             self._hub.total_unread_changed.emit(db_manager.get_total_unread_chat())
         except Exception as e:
             self.logger.debug("total_unread_changed emit (session click): {}", e)
-
-    def _flush_after_render_refresh(self) -> None:
-        if not getattr(self, "_pending_after_render_refresh", False):
-            return
-        self._pending_after_render_refresh = False
-        self.account_list.reload(self._filter_account_id)
-        self._refresh_session_trees()
-
-    def _clear_messages(self) -> None:
-        if not self._ensure_message_area():
-            return
-        pending: List[QWidget] = []
-        while self.msg_layout.count():
-            item = self.msg_layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                pending.append(w)
-        for w in pending:
-            w.hide()
-            w.setParent(None)
-            w.deleteLater()
-        for child in list(self.msg_container.children()):
-            if isinstance(child, ChatMessageBubbleWidget):
-                child.hide()
-                child.setParent(None)
-                child.deleteLater()
-        self.msg_container.setMinimumHeight(0)
-        self._msg_last_loaded_id = 0
-        self._msg_last_loaded_session_id = None
-        self._msg_page_offset = 0
-        self._msg_has_more_older = False
-        self._msg_loading_older = False
-        self._msg_total_count = 0
-        app = QApplication.instance()
-        if app is not None:
-            app.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
-
-    def _on_msg_scroll_value_changed(self, value: int) -> None:
-        if value > 12:
-            return
-        if getattr(self, "_msg_loading_older", False):
-            return
-        if not getattr(self, "_msg_has_more_older", False):
-            return
-        if getattr(self, "_render_in_progress", False):
-            return
-        if not self._current:
-            return
-        self._load_older_messages()
-
-    def _load_older_messages(self) -> None:
-        if not self._current or self._msg_loading_older or not self._msg_has_more_older:
-            return
-        sid = int(self._current["session_id"])
-        page_size = self._page_size()
-        new_offset = max(0, self._msg_page_offset - page_size)
-        if new_offset >= self._msg_page_offset:
-            self._msg_has_more_older = False
-            return
-        limit = self._msg_page_offset - new_offset
-        rows = db_manager.get_chat_messages_paginated(sid, limit, new_offset)
-        if not rows:
-            self._msg_has_more_older = False
-            return
-        if not self._ensure_message_area():
-            return
-
-        self._msg_loading_older = True
-        bar = self.msg_scroll.verticalScrollBar()
-        before_max = bar.maximum()
-        before_value = bar.value()
-        nick = self._current.get("buyer_nickname") or "买家"
-        buyer_letter = _avatar_letter(nick)
-        list_w = self._message_area_width()
-
-        self.msg_container.setUpdatesEnabled(False)
-        self.msg_scroll.setUpdatesEnabled(False)
-        try:
-            for m in reversed(rows):
-                widget = make_chat_message_widget(
-                    sender_type=m["sender_type"],
-                    content=m.get("content") or "",
-                    timestamp=m.get("sent_at") or m.get("created_at"),
-                    buyer_letter=buyer_letter,
-                    content_type=m.get("content_type"),
-                    image_url=m.get("image_url"),
-                    is_read=bool(m.get("is_read", True)),
-                    list_width=list_w,
-                )
-                self.msg_layout.insertWidget(0, widget)
-        finally:
-            self.msg_container.setUpdatesEnabled(True)
-            self.msg_scroll.setUpdatesEnabled(True)
-
-        self._msg_page_offset = new_offset
-        self._msg_has_more_older = new_offset > 0
-        reflow_message_widgets(self.msg_container, self.msg_layout, list_w)
-        self.msg_container.adjustSize()
-
-        def _restore_scroll() -> None:
-            b = self.msg_scroll.verticalScrollBar()
-            b.setValue(before_value + (b.maximum() - before_max))
-
-        QTimer.singleShot(0, _restore_scroll)
-        self._msg_loading_older = False
-        self.logger.debug(
-            "加载更早消息 {} 条 session={} offset={}",
-            len(rows),
-            sid,
-            new_offset,
-        )
-
-    def _scroll_messages_to_bottom(self) -> None:
-        if not getattr(self, "msg_scroll", None):
-            return
-        bar = self.msg_scroll.verticalScrollBar()
-        bar.setValue(bar.maximum())
-
-    def _cancel_message_render(self) -> None:
-        self._render_token += 1
-        self._msg_render_job = None
-
-    def _is_message_loading_visible(self) -> bool:
-        bar = getattr(self, "_msg_loading_bar", None)
-        return bar is not None and bar.isVisible()
-
-    def _show_message_loading_early(self) -> None:
-        """切换会话后立即显示加载条（不等待数据库查询）。"""
-        now = time.monotonic()
-        self._msg_loading_started_at = now
-        self._msg_loading_hide_not_before = now + (_MSG_LOADING_MIN_MS / 1000.0)
-        bar = getattr(self, "_msg_loading_bar", None)
-        if bar is not None:
-            bar.setRange(0, 0)
-            bar.show()
-        if self._current:
-            self.chat_sub.setText("正在加载聊天记录…")
-            self.chat_sub.setStyleSheet(
-                f"color: {_C_LOADING}; font-size: 12px; font-weight: 500;"
-            )
-        app = QApplication.instance()
-        if app is not None:
-            app.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
-
-    def _apply_loading_progress(self, current: int, total: int) -> None:
-        total = max(1, int(total))
-        current = min(max(0, int(current)), total)
-        bar = getattr(self, "_msg_loading_bar", None)
-        if bar is not None:
-            bar.setRange(0, total)
-            bar.setValue(current)
-        pct = int(current * 100 / total) if total else 0
-        if hasattr(self, "chat_sub") and self._current:
-            self.chat_sub.setText(f"加载中 {pct}% · {current}/{total}")
-            self.chat_sub.setStyleSheet(
-                f"color: {_C_LOADING}; font-size: 12px; font-weight: 500;"
-            )
-
-    def _show_message_loading(self, total: int) -> None:
-        total = max(1, int(total))
-        self._msg_loading_total = total
-        self._msg_loading_started_at = time.monotonic()
-        self._apply_loading_progress(0, total)
-        bar = getattr(self, "_msg_loading_bar", None)
-        if bar is not None:
-            bar.show()
-        self.logger.info("消息加载 UI 显示: total={}", total)
-        app = QApplication.instance()
-        if app is not None:
-            app.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
-
-    def _update_message_loading_progress(self, current: int, total: int) -> None:
-        self._apply_loading_progress(current, total)
-        bar = getattr(self, "_msg_loading_bar", None)
-        if bar is not None and not bar.isVisible():
-            bar.show()
-        app = QApplication.instance()
-        if app is not None:
-            app.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
-
-    def _hide_message_loading(self) -> None:
-        not_before = getattr(self, "_msg_loading_hide_not_before", 0.0)
-        remain = not_before - time.monotonic()
-        if remain > 0.05:
-            QTimer.singleShot(int(remain * 1000), self._hide_message_loading_impl)
-            return
-        self._hide_message_loading_impl()
-
-    def _hide_message_loading_impl(self) -> None:
-        bar = getattr(self, "_msg_loading_bar", None)
-        if bar is not None:
-            bar.hide()
-        if self._current:
-            self._update_header_visuals()
-
-    def _notify_message_load_success(self, total: int) -> None:
-        if not self._current:
-            return
-        nick = self._current.get("buyer_nickname") or "买家"
-        if total <= 0:
-            content = f"{nick}：暂无历史消息"
-        else:
-            loaded = min(total, self._page_size())
-            grand = int(getattr(self, "_msg_total_count", 0) or total)
-            if grand > loaded:
-                content = f"{nick}：已加载最近 {loaded} 条（共 {grand} 条，上滑加载更多）"
-            else:
-                content = f"{nick}：已加载 {loaded} 条聊天记录"
-        InfoBar.success(
-            title="加载完成",
-            content=content,
-            orient=Qt.Orientation.Horizontal,
-            isClosable=True,
-            position=InfoBarPosition.TOP,
-            duration=2200,
-            parent=self,
-        )
-
-    def _schedule_msg_render_tick(self, delay_ms: int = 0) -> None:
-        token = self._render_token
-
-        def _run() -> None:
-            if token != self._render_token:
-                return
-            self._on_msg_render_tick()
-
-        QTimer.singleShot(max(0, int(delay_ms)), _run)
-
-    def _render_tick_reason(self, job: Optional[Dict[str, Any]]) -> str:
-        if not job:
-            return "no_job"
-        if job.get("token") != self._render_token:
-            return f"token_mismatch job={job.get('token')} cur={self._render_token}"
-        if not self._ensure_message_area():
-            return "layout_unavailable"
-        return "ok"
-
-    def _on_msg_render_tick(self) -> None:
-        job = getattr(self, "_msg_render_job", None)
-        reason = self._render_tick_reason(job)
-        if reason != "ok":
-            self.logger.warning("消息渲染跳过: {}", reason)
-            if reason == "layout_unavailable":
-                self._render_in_progress = False
-                self._msg_render_job = None
-                self._hide_message_loading()
-            return
-
-        rows = job.get("rows") or []
-        idx = int(job.get("index") or 0)
-        total = int(job.get("total") or len(rows))
-        buyer_letter = str(job.get("buyer_letter") or "买")
-        list_w = max(int(job.get("list_w") or 0), self._message_area_width())
-        job["list_w"] = list_w
-        end = min(idx + _MSG_RENDER_BATCH, len(rows))
-
-        self.msg_container.setUpdatesEnabled(False)
-        self.msg_scroll.setUpdatesEnabled(False)
-        try:
-            for i in range(idx, end):
-                m = rows[i]
-                try:
-                    self._append_message_row(
-                        m["sender_type"],
-                        m.get("content") or "",
-                        m.get("sent_at") or m.get("created_at"),
-                        buyer_letter,
-                        m.get("content_type"),
-                        m.get("image_url"),
-                        bool(m.get("is_read", True)),
-                        list_width=list_w,
-                    )
-                except Exception as e:
-                    self.logger.warning("消息行渲染失败 idx={}: {}", i, e)
-        except Exception as e:
-            self.logger.exception("消息批次渲染异常 idx={}: {}", idx, e)
-        finally:
-            self.msg_container.setUpdatesEnabled(True)
-            self.msg_scroll.setUpdatesEnabled(True)
-
-        if getattr(self, "_msg_render_job", None) is not job:
-            return
-
-        job["index"] = end
-        self._update_message_loading_progress(end, total)
-        if end <= _MSG_RENDER_BATCH or end >= total or end % 20 == 0:
-            self.logger.info("消息加载进度: {}/{}", end, total)
-
-        if end >= len(rows):
-            if rows and self._current:
-                self._msg_last_loaded_id = int(rows[-1]["id"])
-                self._msg_last_loaded_session_id = int(self._current["session_id"])
-            self._msg_render_job = None
-            self._finalize_message_render()
-            return
-        self._schedule_msg_render_tick(_MSG_RENDER_INTERVAL_MS)
-
-    def _finalize_message_render(self) -> None:
-        list_w = self._message_area_width()
-        reflow_message_widgets(self.msg_container, self.msg_layout, list_w)
-        app = QApplication.instance()
-        if app is not None:
-            app.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
-        reflow_message_widgets(self.msg_container, self.msg_layout, list_w)
-        self.msg_container.adjustSize()
-
-        elapsed_ms = (time.monotonic() - self._msg_loading_started_at) * 1000.0
-        remain_ms = max(0, int(_MSG_LOADING_MIN_MS - elapsed_ms))
-        QTimer.singleShot(remain_ms, self._complete_message_render)
-
-    def _complete_message_render(self) -> None:
-        if getattr(self, "_msg_render_job", None):
-            return
-        self._render_in_progress = False
-        reflow_message_widgets(
-            self.msg_container, self.msg_layout, self._message_area_width()
-        )
-        self._hide_message_loading()
-        self._flush_after_render_refresh()
-        self._scroll_messages_to_bottom()
-        QTimer.singleShot(0, self._reflow_message_list)
-        QTimer.singleShot(80, self._reflow_message_list)
-        QTimer.singleShot(200, self._reflow_message_list)
-        if self._msg_render_pending:
-            self._msg_render_pending = False
-            QTimer.singleShot(120, self._sync_incremental_messages)
-            return
-        if getattr(self, "_msg_load_notify", False):
-            self._msg_load_notify = False
-            self._notify_message_load_success(int(getattr(self, "_msg_loading_total", 0)))
-
-    def _render_messages_from_db(self) -> None:
-        if not self._current:
-            return
-        if getattr(self, "_render_in_progress", False):
-            self._msg_render_pending = True
-            return
-        sid = int(self._current["session_id"])
-        self._cancel_message_render()
-        render_token = self._render_token
-        self._msg_render_pending = False
-        self._render_in_progress = True
-
-        page_size = self._page_size()
-        total = db_manager.get_chat_message_count(sid)
-        offset = max(0, total - page_size)
-        rows = db_manager.get_chat_messages_paginated(sid, min(page_size, total), offset)
-        self._msg_page_offset = offset
-        self._msg_has_more_older = offset > 0
-        self._msg_total_count = total
-        nick = self._current.get("buyer_nickname") or "买家"
-        buyer_letter = _avatar_letter(nick)
-
-        total = len(rows)
-        if total == 0:
-            self._msg_render_job = None
-            self._render_in_progress = False
-            self._clear_messages()
-            QTimer.singleShot(0, self._hide_message_loading)
-            QTimer.singleShot(0, self._flush_after_render_refresh)
-            if getattr(self, "_msg_load_notify", False):
-                self._msg_load_notify = False
-                QTimer.singleShot(0, lambda: self._notify_message_load_success(0))
-            return
-
-        if not self._ensure_message_area():
-            self.logger.error("消息区不可用，取消加载 session={}", sid)
-            self._render_in_progress = False
-            QTimer.singleShot(0, self._hide_message_loading)
-            return
-
-        self._show_message_loading(total)
-        self._clear_messages()
-        self._msg_render_job = {
-            "rows": rows,
-            "index": 0,
-            "total": total,
-            "buyer_letter": buyer_letter,
-            "list_w": self._message_area_width(),
-            "token": render_token,
-        }
-        self.logger.info(
-            "消息加载开始: session={} total={} token={}", sid, total, render_token
-        )
-        self._schedule_msg_render_tick(0)
-
-    def _can_incremental_message_update(self) -> bool:
-        if not self._current or getattr(self, "_render_in_progress", False):
-            return False
-        sid = int(self._current["session_id"])
-        if getattr(self, "_msg_last_loaded_session_id", None) != sid:
-            return False
-        return self._message_widget_count() > 0
-
-    def _sync_incremental_messages(self, *, refresh_tree: bool = True) -> bool:
-        """仅追加尚未显示的新消息，避免整页重载。"""
-        if not self._can_incremental_message_update():
-            return False
-        if not self._ensure_message_area():
-            return False
-        sid = int(self._current["session_id"])
-        after_id = int(getattr(self, "_msg_last_loaded_id", 0) or 0)
-        rows = db_manager.get_chat_messages_after_id(sid, after_id)
-        if not rows:
-            return False
-
-        nick = self._current.get("buyer_nickname") or "买家"
-        buyer_letter = _avatar_letter(nick)
-        list_w = self._message_area_width()
-        self.msg_container.setUpdatesEnabled(False)
-        self.msg_scroll.setUpdatesEnabled(False)
-        try:
-            for m in rows:
-                self._append_message_row(
-                    m["sender_type"],
-                    m.get("content") or "",
-                    m.get("sent_at") or m.get("created_at"),
-                    buyer_letter,
-                    m.get("content_type"),
-                    m.get("image_url"),
-                    bool(m.get("is_read", True)),
-                    list_width=list_w,
-                )
-                after_id = max(after_id, int(m["id"]))
-        finally:
-            self.msg_container.setUpdatesEnabled(True)
-            self.msg_scroll.setUpdatesEnabled(True)
-
-        self._msg_last_loaded_id = after_id
-        self._msg_last_loaded_session_id = sid
-        reflow_message_widgets(self.msg_container, self.msg_layout, list_w)
-        self._scroll_messages_to_bottom()
-        if refresh_tree:
-            self._refresh_session_trees()
-        self.logger.debug("增量载入 {} 条新消息 session={}", len(rows), sid)
-        return True
-
-    def _append_message_row(
-        self,
-        sender_type: str,
-        content: str,
-        t: Any,
-        buyer_letter: str,
-        content_type: Optional[str] = None,
-        image_url: Optional[str] = None,
-        is_read: bool = True,
-        *,
-        list_width: int = 0,
-    ):
-        list_w = list_width or self._message_area_width()
-        widget = make_chat_message_widget(
-            sender_type=sender_type,
-            content=content,
-            timestamp=t,
-            buyer_letter=buyer_letter,
-            content_type=content_type,
-            image_url=image_url,
-            is_read=is_read,
-            list_width=list_w,
-        )
-        self.msg_layout.addWidget(widget)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
@@ -2506,7 +1214,9 @@ class ChatLiveWidget(QFrame):
         if not self._current:
             return
         sid = int(self._current["session_id"])
-        db_manager.set_session_ai_mode(sid, ai)
+        from database.session_store import set_ai_mode
+
+        set_ai_mode(sid, ai)
         self._current["ai_mode"] = ai
         self._update_header_visuals()
         if ai:

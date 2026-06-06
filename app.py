@@ -50,15 +50,18 @@ from core.di_container import configure_standard_services
 configure_standard_services(_app_config)
 
 try:
+    from config import ConfigError
     from utils.config_startup import log_startup_config_issues
 
     log_startup_config_issues()
+except ConfigError:
+    raise
 except Exception as _cfg_err:
     _get_logger("App").warning(f"启动配置检查跳过: {_cfg_err}")
 
 # ============================================================================
 
-from ui.refined_design import apply_refined_design
+from ui.theme import apply_theme, BG_PRIMARY
 from utils.runtime_path import get_app_icon_path
 
 
@@ -136,6 +139,12 @@ def main():
 
     # 创建应用
     app = QApplication(sys.argv)
+    try:
+        from core.app_shutdown import shutdown_application
+
+        app.aboutToQuit.connect(shutdown_application)
+    except Exception as _sh_err:
+        boot_logger.warning(f"退出清理钩子注册失败: {_sh_err}")
     from utils.qt_threading import init_main_thread_bridge
 
     init_main_thread_bridge()
@@ -148,34 +157,58 @@ def main():
         app.setWindowIcon(QIcon(str(_icon_path)))
     boot_logger.info("QApplication initialized.")
     
-    # 加载安全配置
+    # 加载 .env（供 config.get 环境变量覆盖）
     try:
-        from utils.secure_config import get_config
-        config = get_config()
-        boot_logger.info("安全配置加载完成")
+        from dotenv import load_dotenv
+        from pathlib import Path as _Path
+
+        _env = _Path(__file__).resolve().parent / ".env"
+        if _env.exists():
+            load_dotenv(_env)
+            boot_logger.info("已加载 .env")
     except Exception as e:
-        boot_logger.warning(f"安全配置加载失败：{e}")
+        boot_logger.warning(f".env 加载跳过: {e}")
     
     # macOS 强制深色模式（防止标题栏变白）
     try:
         from PyQt6.QtGui import QPalette, QColor
+        from ui.theme import BG_PRIMARY, TEXT_PRIMARY
         palette = app.palette()
-        palette.setColor(QPalette.ColorRole.Window, QColor("#1C1C1E"))
-        palette.setColor(QPalette.ColorRole.WindowText, QColor("#FFFFFF"))
-        palette.setColor(QPalette.ColorRole.Base, QColor("#1C1C1E"))
-        palette.setColor(QPalette.ColorRole.Text, QColor("#FFFFFF"))
+        palette.setColor(QPalette.ColorRole.Window, QColor(BG_PRIMARY))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor(TEXT_PRIMARY))
+        palette.setColor(QPalette.ColorRole.Base, QColor(BG_PRIMARY))
+        palette.setColor(QPalette.ColorRole.Text, QColor(TEXT_PRIMARY))
         app.setPalette(palette)
         boot_logger.info("macOS dark palette applied.")
     except Exception as e:
         boot_logger.warning(f"Failed to apply dark palette: {e}")
     
-    # 全局深色主题，与「实时聊天」等自定义深色面板一致
+    # 全局深色主题（纯黑主调，见 ui/theme.py）
     setTheme(Theme.DARK, save=False, lazy=False)
-    apply_refined_design(app)
+    apply_theme(app)
     boot_logger.info("Theme and global style applied.")
 
     # 创建主窗口
     logger = _get_logger("App")
+
+    try:
+        from Message.handler_chain_factory import HandlerChainError, audit_handler_chain
+
+        chain_status = audit_handler_chain()
+        if chain_status["ok"]:
+            logger.info("处理器链预加载完成")
+        else:
+            logger.warning(
+                "处理器链存在缺失项: {}",
+                ", ".join(chain_status["missing"]),
+            )
+    except HandlerChainError as hce:
+        logger.error("处理器链加载失败: {}", hce)
+        boot_logger.error("handler chain strict failure: %s", hce)
+        return
+    except Exception as chain_err:
+        logger.warning(f"处理器链预加载跳过: {chain_err}")
+
     logger.info("应用程序启动...")
     boot_logger.info(f"App logger initialized. boot_log={boot_log_path}")
 

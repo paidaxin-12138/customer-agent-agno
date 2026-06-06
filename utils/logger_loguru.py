@@ -9,6 +9,7 @@ import os
 import sys
 import json
 import uuid
+import weakref
 from datetime import datetime
 from typing import Any, Dict, Optional, Union
 from pathlib import Path
@@ -150,41 +151,51 @@ def get_business_logger(module_name: str) -> BusinessLogger:
 
 # UI集成部分
 class UILogHandler(QObject):
-    """UI日志处理器，兼容现有LogHandler接口"""
+    """UI日志处理器：延迟注册 loguru sink，销毁时自动卸载。"""
 
     log_received = pyqtSignal(str, str, object)  # level, message, record
 
-    def __init__(self):
-        super().__init__()
-        self.handler_id = None
-        self._install_loguru_patch()
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.handler_id: Optional[int] = None
+        self.destroyed.connect(self._on_destroyed)
 
-    def _install_loguru_patch(self):
-        """安装loguru拦截器"""
-        # 创建一个自定义的处理器来拦截日志
-        def ui_sink(message):
-            # 解析loguru消息以提取信息
-            record = message.record
-            level = record["level"].name
-            msg = record["message"]
-            # 发送信号
-            self.log_received.emit(level, msg, record)
-
-        # 安装UI处理器
-        self.handler_id = logger.add(ui_sink, level="DEBUG", catch=True)
+    def _on_destroyed(self, *_args) -> None:
+        self.uninstall()
 
     def emit(self, record):
         """为了兼容性保留"""
         pass
 
-    def install(self):
-        """安装处理器 - 已经在__init__中完成"""
-        pass
+    def install(self) -> None:
+        """注册 loguru → Qt 信号桥（可重复调用，幂等）。"""
+        if self.handler_id is not None:
+            return
+        weak_self = weakref.ref(self)
 
-    def uninstall(self):
-        """卸载处理器"""
-        if self.handler_id:
-            logger.remove(self.handler_id)
+        def ui_sink(message):
+            inst = weak_self()
+            if inst is None:
+                return
+            try:
+                record = message.record
+                inst.log_received.emit(
+                    record["level"].name,
+                    record["message"],
+                    record,
+                )
+            except RuntimeError:
+                inst.uninstall()
+
+        self.handler_id = logger.add(ui_sink, level="DEBUG", catch=True)
+
+    def uninstall(self) -> None:
+        """从 loguru 移除 sink，避免 Qt 对象销毁后仍被回调。"""
+        if self.handler_id is not None:
+            try:
+                logger.remove(self.handler_id)
+            except ValueError:
+                pass
             self.handler_id = None
 
 # 上下文日志功能

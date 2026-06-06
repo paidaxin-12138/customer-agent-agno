@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QTextBrowser, QTex
 from qfluentwidgets import SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton
 from openai import OpenAI
 
-from config import Config
+from config import Config, get_config
 from utils.logger_loguru import get_logger
 from utils.human_transfer_intent import detect_human_transfer_intent
 from Agent.CustomerAgent.agent_knowledge import KnowledgeManager
@@ -238,16 +238,18 @@ class AITestWidget(QFrame):
                 self._messages.append({"role": "assistant", "content": promo_reply})
                 return
 
-        config = Config()
-        model_name = config.get("llm.model_name", "") or ""
-        api_key = config.get("llm.api_key", "") or ""
-        api_base = config.get("llm.api_base", "") or ""
+        model_name = (get_config("llm.model_name", "") or "").strip()
+        api_key = (get_config("llm.api_key", "") or "").strip()
+        api_base = (get_config("llm.api_base", "") or "").strip()
         if not model_name or not api_key:
-            self._append("system", "请先在设置中配置 LLM 的 model_name 和 api_key。")
+            self._append(
+                "system",
+                "请先在「系统设置」填写 LLM，或在项目根目录 .env 中配置 LLM_MODEL_NAME / LLM_API_KEY。",
+            )
             return
 
         self._append("user", text)
-        system_prompt = self._build_system_prompt(config)
+        system_prompt = self._build_system_prompt(Config())
         kb_context = self._build_knowledge_context(text) if self._use_local_retrieval else ""
         is_small_talk = self._is_small_talk(text)
         product_catalog_answer = self._build_product_catalog_answer(text) if self._use_local_retrieval else ""
@@ -649,10 +651,9 @@ class AITestWidget(QFrame):
         return any(m in reply for m in markers)
 
     def _is_embedder_configured(self) -> bool:
-        cfg = Config()
-        model = (cfg.get("embedder.model_name", "") or "").strip()
-        key = (cfg.get("embedder.api_key", "") or "").strip()
-        base = (cfg.get("embedder.api_base", "") or "").strip()
+        model = (get_config("embedder.model_name", "") or "").strip()
+        key = (get_config("embedder.api_key", "") or "").strip()
+        base = (get_config("embedder.api_base", "") or "").strip()
         return bool(model and key and base)
 
     def _embedder_hint_text(self) -> str:

@@ -21,6 +21,8 @@ from qfluentwidgets import (
 )
 from database.db_manager import db_manager
 from utils.logger_loguru import get_logger
+from ui import apple_ui_tokens as T
+from ui.card_action_button import setup_card_action_button
 from utils.dialogs import confirm_action
 from Channel.pinduoduo.utils.API.Set_up_online import AccountMonitor
 from ui.logo_loader_thread import LogoLoaderThread
@@ -139,7 +141,16 @@ class AutoReplyManager:
     def _on_connection_failed(self, account_key: str, error: str):
         """连接失败回调"""
         self.logger.error(f"账号 {account_key} 自动回复连接失败: {error}")
-        # 清理失败的线程
+        thread = self.running_accounts.get(account_key)
+        fatal = any(
+            token in (error or "")
+            for token in ("用户管理", "Token", "凭证", "会话已过期", "43001")
+        )
+        if thread is not None and fatal:
+            try:
+                thread.stop()
+            except Exception as e:
+                self.logger.debug("凭证失败后停止线程: {}", e)
         if account_key in self.running_accounts:
             del self.running_accounts[account_key]
     
@@ -157,15 +168,15 @@ class AutoReplyManager:
     def stop_all(self):
         """停止所有自动回复"""
         try:
-            # 停止所有正在运行的线程
-            for account_key, thread in self.running_accounts.items():
-                if thread.is_running():
+            threads = list(self.running_accounts.values())
+            for thread in threads:
+                if thread.isRunning():
                     thread.stop()
-            
-            # 等待所有线程结束
-            for thread in self.running_accounts.values():
-                thread.wait(5000) # 等待5秒
-            
+
+            for thread in threads:
+                if thread.isRunning():
+                    thread.wait(8000)
+
             self.running_accounts.clear()
             self.logger.info("所有自动回复任务已停止")
             
@@ -187,20 +198,30 @@ class AutoReplyThread(QThread):
         
     def run(self):
         """启动后端 PDDChannel 引擎"""
-        from Channel.pinduoduo.pdd_chnnel import PDDChannel
+        from core.channel_facade import create_pdd_channel
         
         try:
             # 为当前线程创建并设置新的事件循环
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
             
-            self.channel = PDDChannel()
+            self.channel = create_pdd_channel()
             
-            # 定义成功和失败的回调函数
+            success_emitted = False
+            failure_emitted = False
+
             def on_success():
+                nonlocal success_emitted
+                if success_emitted:
+                    return
+                success_emitted = True
                 self.connection_success.emit()
 
             def on_failure(error_msg):
+                nonlocal failure_emitted
+                if failure_emitted:
+                    return
+                failure_emitted = True
                 self.connection_failed.emit(error_msg)
 
             # 启动引擎，并传递回调
@@ -227,16 +248,34 @@ class AutoReplyThread(QThread):
     def stop(self):
         """停止后端引擎"""
         try:
-            if self.channel:
-                self.channel.request_stop()
+            loop = getattr(self, "loop", None)
+            channel = self.channel
+            if channel and loop is not None and loop.is_running():
 
-            # 停止事件循环（如果存在）
-            if hasattr(self, 'loop') and self.loop:
-                if self.loop.is_running():
-                    for task in asyncio.all_tasks(self.loop):
-                        if not task.done():
-                            task.cancel()
-                    self.loop.call_soon_threadsafe(self.loop.stop)
+                async def _shutdown_channel() -> None:
+                    close_ws = getattr(channel, "close_websocket", None)
+                    if callable(close_ws):
+                        await close_ws()
+                    else:
+                        channel.request_stop()
+                        stop_all = getattr(channel, "stop_all_connections", None)
+                        if callable(stop_all):
+                            await stop_all()
+
+                try:
+                    asyncio.run_coroutine_threadsafe(_shutdown_channel(), loop).result(
+                        timeout=6
+                    )
+                except Exception as e:
+                    self.logger.debug("WS 异步关闭: {}", e)
+            elif channel:
+                channel.request_stop()
+
+            if loop is not None and loop.is_running():
+                for task in asyncio.all_tasks(loop):
+                    if not task.done():
+                        task.cancel()
+                loop.call_soon_threadsafe(loop.stop)
 
         except Exception as e:
             self.logger.error(f"停止自动回复线程失败: {e}")
@@ -367,7 +406,7 @@ class AutoReplyCard(CardWidget):
     def setupUI(self):
         """设置卡片UI"""
         # 设置卡片样式
-        self.setFixedHeight(120)
+        self.setFixedHeight(132)
         # 主布局
         layout = QHBoxLayout(self)
         layout.setContentsMargins(20, 15, 20, 15)
@@ -392,7 +431,7 @@ class AutoReplyCard(CardWidget):
         self.logo_label = QLabel()
         self.logo_label.setFixedSize(65, 65)
         self.logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.logo_label.setStyleSheet("border-radius: 30px; border: 1px solid #2A3140; background-color: #1B1F2A;")
+        self.logo_label.setStyleSheet(f"border-radius: 30px; border: 1px solid {T.BG_TERTIARY}; background-color: {T.BG_SECONDARY};")
         self.logo_label.setText("加载中...")
         return self.logo_label
         
@@ -478,17 +517,15 @@ class AutoReplyCard(CardWidget):
         # 上线按钮
         self.online_btn = PushButton("上线")
         self.online_btn.setIcon(FIF.PLAY)
-        self.online_btn.setFixedSize(100, 32)
-        
-        # 离线按钮
+        setup_card_action_button(self.online_btn, width=88)
+
         self.offline_btn = PushButton("离线")
         self.offline_btn.setIcon(FIF.PAUSE)
-        self.offline_btn.setFixedSize(100, 32)
-       
-        # 自动回复按钮
+        setup_card_action_button(self.offline_btn, width=88)
+
         self.auto_reply_btn = PrimaryPushButton("开始回复")
         self.auto_reply_btn.setIcon(FIF.ROBOT)
-        self.auto_reply_btn.setFixedSize(110, 32)
+        setup_card_action_button(self.auto_reply_btn, width=100)
 
         buttons_layout.addWidget(self.online_btn)
         buttons_layout.addWidget(self.offline_btn)
@@ -595,6 +632,7 @@ class AutoReplyUI(QFrame):
         self.logger = get_logger()  # 初始化logger（必须在其他操作之前）
         self.accounts_data = []  # 存储账号数据
         self._loaded_once = False
+        self._connect_fail_notified: set[str] = set()
         self.setupUI()
         QTimer.singleShot(300, self._maybeLoadOnShow)
 
@@ -1150,6 +1188,8 @@ class AutoReplyUI(QFrame):
             
             if success:
                 account_card.setAutoReplyStatus(True)
+                key = f"{account_data['channel_name']}_{account_data['shop_id']}_{account_data['username']}"
+                self._connect_fail_notified.discard(key)
                 name = account_data.get("username") or account_data.get("user_id") or "账号"
                 self.logger.info(f"账号 '{name}' 自动回复启动成功")
                 self._toast(
@@ -1266,13 +1306,18 @@ class AutoReplyUI(QFrame):
                 account_card.setAutoReplyStatus(False)
                 account_card.auto_reply_btn.setText("开始回复")
                 account_card.auto_reply_btn.setEnabled(True)
-            
-            self.logger.error(f"账号 '{account_data['username']}' 自动回复连接失败: {error}")
-            QMessageBox.warning(self, "连接失败", f"账号 '{account_data['username']}' 自动回复连接失败：{error}")
-            
-            # 更新统计信息
+
+            name = account_data.get("username") or account_data.get("user_id") or "账号"
+            self.logger.error(f"账号 '{name}' 自动回复连接失败: {error}")
+
+            key = f"{account_data['channel_name']}_{account_data['shop_id']}_{account_data['username']}"
+            if key not in self._connect_fail_notified:
+                self._connect_fail_notified.add(key)
+                level = "error" if "用户管理" in error or "Token" in error or "认证" in error else "warning"
+                self._toast("连接失败", f"账号「{name}」：{error}", level=level, duration=5000)
+
             self.updateStats()
-            
+
         except Exception as e:
             self.logger.error(f"处理自动回复失败回调失败: {str(e)}")
     

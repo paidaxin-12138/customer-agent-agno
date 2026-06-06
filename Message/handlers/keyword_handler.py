@@ -5,7 +5,7 @@ from typing import Dict, Any, FrozenSet
 from bridge.context import Context, ContextType
 from config import config
 from .base import BaseHandler
-from .stage_constants import ALL_HANDLER_STAGES
+from core.session_stages import ALL_HANDLER_STAGES
 from .channel_send import send_text_to_buyer, transfer_to_available_cs_async
 from database.db_manager import db_manager
 from utils.human_transfer_intent import detect_human_transfer_intent

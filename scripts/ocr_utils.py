@@ -108,6 +108,13 @@ def get_ocr_engine(det_limit_side_len: int = 1920):
 
 def download_image(image_url: str, timeout: int = 10) -> Optional[str]:
     try:
+        from utils.url_fetch_guard import is_url_safe_to_fetch
+
+        ok, reason = is_url_safe_to_fetch(image_url, purpose="pdd_asset")
+        if not ok:
+            logger.debug(f"拒绝下载图片 URL reason={reason} url={image_url[:80]}")
+            return None
+
         response = requests.get(image_url, timeout=timeout)
         response.raise_for_status()
 

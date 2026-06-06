@@ -7,9 +7,11 @@
 ## 项目概述
 
 - **桌面 UI**：PyQt6 + PyQt-Fluent-Widgets，入口 `app.py` → `ui/main_ui.py`。
-- **AI**：Agno + OpenAI 兼容 LLM；知识库可用 LanceDB / SQLite（具体实现见 `Agent/CustomerAgent/agent_knowledge.py`）。
-- **拼多多**：`Channel/pinduoduo/pdd_chnnel.py`（注意文件名拼写）维护 WebSocket；`utils/API/send_message.py` 等走 `mms.pinduoduo.com`；开放平台封装见 `utils/API/open_platform_client.py`，物流见 `utils/API/logistics.py`，售后示例见 `utils/API/after_sales.py`。
-- **消息链**：`handler_chain()` 顺序为：**AddressChangeHandler** → **OrderLogisticsHandler** → **ImageVideoHumanHandler** → **AfterSalesApplyHandler** → **KeywordDetectionHandler** → **AIReplyHandler** → **CatchAllHandler**（未回复由 Consumer + `fallback_reply` 安抚）。出站文本统一 `Message/handlers/channel_send.py`。
+- **AI**：Agno + OpenAI 兼容 LLM；知识库门面 `Agent/CustomerAgent/agent_knowledge.py`，实现拆分为 `knowledge_storage.py`（LanceDB/JSON）、`knowledge_indexer.py`（建索引）、`knowledge_retriever.py`（检索）。架构图见 `docs/architecture.md`。
+- **拼多多**：推荐入口 `Channel/pinduoduo/pdd_channel.py`（`PDDChannel`）；WebSocket 实现拆分为 `ws_*` 模块（`ws_account` 启停会话、`ws_inbound_pipeline` 入站、`ws_lifecycle` 清理等），历史文件 `pdd_chnnel.py` 仍保留拼写兼容。出站 HTTP 见 `utils/API/send_message.py`（`mms.pinduoduo.com`）；开放平台封装见 `utils/API/open_platform_client.py`，物流见 `utils/API/logistics.py`。
+- **消息链**：`handler_chain()` 顺序为：**AddressChangeHandler** → **OrderLogisticsHandler** → **ImageVideoHumanHandler** → **AfterSalesApplyHandler** → **BuyerEmotionHandler** → **KeywordDetectionHandler** → **AIReplyHandler** → **CatchAllHandler**（未回复由 Consumer + `fallback_reply` 安抚）。出站文本统一 `Message/handlers/channel_send.py`。
+- **阶段常量**：`core/session_stages.py`（中性包，避免 Agent ↔ Message 循环依赖）。
+- **会话状态**：SQLite（`chat_sessions` / `chat_messages`）为权威；UI Hub 经 `database/session_store.py` 刷新摘要与未读。
 - **配置**：`config.py` 线程安全读取 `config.json`；开放平台密钥放在 `pinduoduo_open`（见默认 `config_base`）。
 
 ---
@@ -29,7 +31,8 @@ source .venv/bin/activate && python app.py   # macOS / Linux
 uv sync
 uv add <package>
 uv sync --upgrade
-uv sync --group dev    # pytest 等
+uv sync --group dev    # pytest、black 等
+uv run black Agent/CustomerAgent/knowledge_*.py   # 知识库模块格式化
 ```
 
 ### Playwright（登录拼多多商家后台）
@@ -75,18 +78,22 @@ uv run python -m pytest test/
 
 | 文件 | 说明 |
 |------|------|
-| `pdd_chnnel.py` | WebSocket 连接、重连、消息派发 |
+| `pdd_channel.py` | **推荐入口**：`PDDChannel`、全局连接查询 re-export |
+| `pdd_chnnel.py` | `PDDChannel` 实现（历史拼写，薄壳） |
+| `ws_account.py` | 单账号启停、建连、上线、会话循环 |
+| `ws_inbound_pipeline.py` | 入站预处理、路由、入队 |
+| `ws_immediate_handlers.py` | AUTH / 转接 / 快捷退款卡等立即处理 |
+| `ws_lifecycle.py` | 停止、资源与消费者清理 |
+| `core/channel_facade.py` | UI 用连接状态 / 心跳查询门面 |
 | `pdd_login.py` | Playwright 登录 / 刷新 Cookie |
-| `pdd_message.py` | 下行消息解析为 `Context`（含订单卡片等） |
-| `utils/base_request.py` | Cookie + 重试 + 会话过期再登录 |
+| `pdd_message.py` | 下行消息解析为 `Context` |
 | `utils/API/send_message.py` | `plateau/chat/send_message` 等 |
 
 开放平台：`OpenPlatformAPI._call_open_platform()`，`client_id` / `client_secret` / `access_token` 来自 `config.get("pinduoduo_open")`。
 
 ### Agent 与知识库
 
-- `Agent/CustomerAgent/agent.py`、`agent_knowledge.py`、`tools/`、`readers/`。
-- 另有扩展模块 `knowledge_enhanced.py`（进度等），是否与主路径挂载以实际 import 为准。
+- `Agent/CustomerAgent/agent.py`、`agent_knowledge.py`、`tools/`。
 
 ### UI（节选）
 
@@ -150,6 +157,21 @@ PyQt6、Agno、SQLAlchemy、SQLite、LanceDB（按需）、websockets、requests
 - Python **≥ 3.11**。
 - 打包路径与日志目录在 frozen 模式下会落到用户可写目录（见 `config.Config._resolve_config_path`、`runtime_path`）。
 - `Channel/pinduoduo/utils/API/get_messages.py` 多为占位，历史消息拉取需自行对接。
+
+---
+
+## 已知限制
+
+| 领域 | 限制 |
+|------|------|
+| **渠道** | 生产路径以拼多多商家 WebSocket + MMS Cookie 为主；其它平台无一等公民支持。 |
+| **登录** | Cookie 依赖 Playwright 登录，过期需人工或脚本刷新；无官方 OAuth 桌面流。 |
+| **历史消息** | MMS 历史拉取接口未完整对接，重连后以 Hub/DB 已有记录为主，可能缺断线期间部分消息。 |
+| **知识库** | 父子店铺 inherit_key 覆盖需父条显式 `allow_child_override`；向量维度和 embedder 配置不一致时需重建 LanceDB。 |
+| **AI** | 回复质量受 LLM/提示词/知识库召回影响；无自动 A/B 与线上评测闭环。 |
+| **测试** | UI（PyQt）仅冒烟覆盖；覆盖率门禁针对 `Message`/`core`/`database`/`utils` 核心包，不含 `ui`/`Channel`/`Agent` 全量。 |
+| **部署** | 桌面单进程架构，水平扩展需自行拆分渠道与 Agent 服务。 |
+| **许可** | 根目录 `LICENSE` 为 NOTICE 性质，非整仓 MIT；二次分发请核对上游署名。 |
 
 ---
 

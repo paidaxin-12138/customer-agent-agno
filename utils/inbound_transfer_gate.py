@@ -79,29 +79,11 @@ def is_inbound_transferred(session_id: int) -> bool:
 
 
 def resolve_session_id(context: Context, metadata: Dict[str, Any]) -> Optional[int]:
-    try:
-        from database.db_manager import db_manager
+    from database.session_store import resolve_session_id_from_context
 
-        shop_id = str(metadata.get("shop_id") or "")
-        user_id = str(metadata.get("user_id") or "")
-        channel = str(metadata.get("channel_name") or "pinduoduo")
-        buyer_uid = str(metadata.get("from_uid") or "")
-        if not buyer_uid:
-            ku = getattr(context, "kwargs", None)
-            if ku and getattr(ku, "from_user", None) == "user":
-                buyer_uid = str(getattr(ku, "from_uid", "") or "")
-        if not shop_id or not user_id or not buyer_uid:
-            return None
-        acc = db_manager.get_account(channel, shop_id, user_id)
-        if not acc or not acc.get("id"):
-            return None
-        sess = db_manager.get_chat_session_by_buyer(int(acc["id"]), buyer_uid, "active")
-        if not sess:
-            sess = db_manager.get_chat_session_by_buyer(int(acc["id"]), buyer_uid, None)
-        return int(sess["id"]) if sess else None
-    except Exception as e:
-        _log.debug("resolve_session_id: {}", e)
-        return None
+    return resolve_session_id_from_context(
+        context, metadata, allow_any_status=True
+    )
 
 
 def should_block_handler_until_transfer(

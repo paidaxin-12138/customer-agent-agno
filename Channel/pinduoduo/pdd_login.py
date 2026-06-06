@@ -50,7 +50,11 @@ def _cookies_json_embed_ua(cookies_json: str, user_agent: Optional[str]) -> str:
 
 def _persistent_user_data_dir(account_key: str) -> str:
     """与 login() 使用同一规则，禁止用内置 hash()（进程间不稳定）。"""
-    return str(app_dir / "user_data" / account_key)
+    from utils.private_paths import ensure_private_dir
+
+    path = app_dir / "user_data" / account_key
+    ensure_private_dir(path)
+    return str(path)
 
 
 def _mms_backstage_url_not_login(url: str) -> bool:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import QMessageBox, QWidget
 
+from ui.message_box_theme import apply_message_box_theme
+
 
 def confirm_action(
     parent: QWidget,
@@ -16,6 +18,7 @@ def confirm_action(
 ) -> bool:
     """Show a localized confirm dialog and return True when confirmed."""
     box = QMessageBox(parent)
+    apply_message_box_theme(box)
     box.setIcon(QMessageBox.Icon.Warning if destructive else QMessageBox.Icon.Question)
     box.setWindowTitle(title)
     box.setText(content)

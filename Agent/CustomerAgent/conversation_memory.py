@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from config import get_config
-from Message.handlers.stage_constants import VALID_SESSION_STAGES
+from core.session_stages import BUSINESS_FLOW_STAGES, VALID_SESSION_STAGES
 from utils.logger_loguru import get_logger
 
 logger = get_logger("ConversationMemory")
@@ -33,9 +33,16 @@ def normalize_session_stage(stage: Optional[str]) -> str:
         return "idle"
     return st
 
-# 会因超时自动回收为 idle 的业务 stage（不含 product_qa）
+# 会因超时自动回收为 idle 的业务 / 商品问答 stage
 _STAGE_TIMEOUT_TARGETS = frozenset(
-    {"address_change", "logistics", "after_sales", "await_confirm"}
+    {
+        "address_change",
+        "logistics",
+        "after_sales",
+        "await_confirm",
+        "product_qa",
+        "recommend",
+    }
 )
 
 _ROLE_TAG = {
@@ -242,32 +249,10 @@ def _guess_intent(text: str) -> str:
 
 
 def resolve_session_id(context: Any, metadata: Optional[Dict[str, Any]] = None) -> Optional[int]:
-    """从 context / metadata 解析 chat_sessions.id。"""
-    if context is None:
-        return None
-    try:
-        from database.db_manager import db_manager
+    """从 context / metadata 解析 chat_sessions.id（委托 session_store）。"""
+    from database.session_store import resolve_session_id_from_context
 
-        meta = metadata or {}
-        ch = str(
-            meta.get("channel_name")
-            or (context.channel_type.value if context.channel_type else "pinduoduo")
-        )
-        shop = str(meta.get("shop_id") or getattr(context.kwargs, "shop_id", None) or "").strip()
-        seller = str(meta.get("user_id") or getattr(context.kwargs, "user_id", None) or "").strip()
-        buyer = str(meta.get("from_uid") or getattr(context.kwargs, "from_uid", None) or "").strip()
-        if not (shop and seller and buyer):
-            return None
-        acc = db_manager.get_account(ch, shop, seller)
-        if not acc or not acc.get("id"):
-            return None
-        sess = db_manager.get_chat_session_by_buyer(int(acc["id"]), buyer, "active")
-        if not sess:
-            return None
-        return int(sess["id"])
-    except Exception as e:
-        logger.debug(f"resolve_session_id: {e}")
-        return None
+    return resolve_session_id_from_context(context, metadata)
 
 
 def _stage_idle_timeout_sec() -> int:
@@ -283,6 +268,23 @@ def _touch_stage_timestamp(task: TaskState, new_stage: str) -> None:
         task.stage_updated_at = time.time()
     elif not task.stage_updated_at and st != "idle":
         task.stage_updated_at = time.time()
+
+
+def _clear_flow_state(task: TaskState) -> None:
+    """业务流结束或超时回收时清空槽位与待确认项。"""
+    task.slots = {}
+    task.pending_confirm = []
+
+
+def _backfill_stage_timestamp_if_needed(task: TaskState) -> bool:
+    """无 stage_updated_at 的历史业务 stage 从首次加载起计超时窗口。"""
+    stage = (task.stage or "idle").strip() or "idle"
+    if stage not in _STAGE_TIMEOUT_TARGETS:
+        return False
+    if float(task.stage_updated_at or 0) > 0:
+        return False
+    task.stage_updated_at = time.time()
+    return True
 
 
 def maybe_expire_task_stage(task: TaskState) -> bool:
@@ -301,6 +303,7 @@ def maybe_expire_task_stage(task: TaskState) -> bool:
     task.stage = "idle"
     task.flow_node = "idle"
     task.stage_updated_at = time.time()
+    _clear_flow_state(task)
     return True
 
 
@@ -314,10 +317,17 @@ def _persist_task_state_if_expired(session_id: int, task: TaskState) -> TaskStat
             stage=normalized,
             source_handler="StageNormalize",
         )
+    if _backfill_stage_timestamp_if_needed(task):
+        update_session_state(
+            session_id,
+            stage=task.stage,
+            source_handler="StageTimestampBackfill",
+        )
     if maybe_expire_task_stage(task):
         update_session_state(
             session_id,
             stage="idle",
+            clear_flow_state=True,
             source_handler="StageTimeout",
         )
     return task
@@ -388,9 +398,11 @@ def update_session_state(
     slots: Optional[Dict[str, Any]] = None,
     stage: Optional[str] = None,
     pending_confirm: Optional[List[str]] = None,
+    clear_flow_state: bool = False,
     source_handler: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> TaskState:
-    """读-改-写 task_state_json；slots 增量 merge。"""
+    """读-改-写 task_state_json；slots 增量 merge；clear_flow_state 清空 slots/pending。"""
     from database.db_manager import db_manager
 
     mem = db_manager.get_session_memory(session_id) or {}
@@ -404,6 +416,8 @@ def update_session_state(
         task.intent = new_intent
     if last_intent is not None:
         task.last_intent = str(last_intent).strip()
+    if clear_flow_state:
+        _clear_flow_state(task)
     if slots:
         for k, v in slots.items():
             if v is not None and str(v).strip():
@@ -435,7 +449,24 @@ def update_session_state(
             task.last_intent,
             list(task.slots.keys()),
         )
+    if metadata is not None:
+        metadata["_session_stage"] = task.stage
     return task
+
+
+def _should_clear_slots_on_stage_enter(prev_stage: str, new_stage: str) -> bool:
+    """从 idle/商品问答进入业务流，或切换业务流时清空旧槽位。"""
+    prev = normalize_session_stage(prev_stage)
+    new = normalize_session_stage(new_stage)
+    if new not in BUSINESS_FLOW_STAGES:
+        return False
+    if prev in ("idle", "product_qa", "recommend"):
+        return True
+    if prev == new:
+        return False
+    if {prev, new} <= {"address_change", "await_confirm"}:
+        return False
+    return True
 
 
 def commit_handler_session_from_context(
@@ -452,15 +483,31 @@ def commit_handler_session_from_context(
     if sid is None:
         return
     effective_stage = "idle" if release_stage else stage
+    clear_slots = release_stage
+    if not release_stage:
+        try:
+            from database.db_manager import db_manager
+
+            mem = db_manager.get_session_memory(sid) or {}
+            prev_task = TaskState.from_dict(
+                json.loads(mem["task_state_json"])
+                if mem.get("task_state_json")
+                else None
+            )
+            clear_slots = _should_clear_slots_on_stage_enter(
+                prev_task.stage, effective_stage
+            )
+        except Exception as e:
+            logger.debug(f"commit_handler_session_from_context read prev: {e}")
     update_session_state(
         sid,
         intent=intent,
         stage=effective_stage,
-        slots=slots,
+        slots=None if release_stage else slots,
+        clear_flow_state=clear_slots,
         source_handler=source_handler,
+        metadata=metadata,
     )
-    if metadata is not None:
-        metadata["_session_stage"] = effective_stage
     ku = getattr(context, "kwargs", None)
     if ku is not None:
         try:
@@ -733,6 +780,106 @@ def build_layered_prompt(
         return q
 
 
+def session_key_from_session_id(session_id: int) -> Optional[str]:
+    """由 chat_sessions.id 构造情绪波动 / watchdog 用的 session_key。"""
+    try:
+        from database.db_manager import db_manager
+
+        row = db_manager.get_chat_session_by_id(int(session_id))
+        if not row:
+            return None
+        acc = db_manager.get_account_row_by_id(int(row.get("account_id") or 0))
+        if not acc:
+            return None
+        channel = str(acc.get("channel_name") or "pinduoduo")
+        shop = str(row.get("platform_shop_id") or acc.get("platform_shop_id") or "")
+        seller = str(acc.get("seller_user_id") or "")
+        buyer = str(row.get("buyer_uid") or "")
+        if shop and seller and buyer:
+            return f"{channel}:{shop}:{seller}:{buyer}"
+    except Exception as e:
+        logger.debug(f"session_key_from_session_id: {e}")
+    return None
+
+
+def reset_session_flow_memory(session_id: int, *, source: str = "") -> None:
+    """结案或会话重开时重置 task_state（保留 long_term_summary）。"""
+    try:
+        from database.db_manager import db_manager
+
+        default = TaskState().to_dict()
+        ok = db_manager.update_session_memory(
+            int(session_id),
+            task_state_json=json.dumps(default, ensure_ascii=False),
+        )
+        if not ok:
+            logger.warning(
+                "reset_session_flow_memory failed session={} source={}",
+                session_id,
+                source or "?",
+            )
+        elif source:
+            logger.debug(
+                "reset_session_flow_memory session={} source={}",
+                session_id,
+                source,
+            )
+        sk = session_key_from_session_id(int(session_id))
+        if sk:
+            try:
+                from utils.buyer_emotion_tracker import reset_emotion_alerts
+
+                reset_emotion_alerts(sk)
+            except Exception as emo_err:
+                logger.debug(f"reset_emotion_alerts: {emo_err}")
+    except Exception as e:
+        logger.debug(f"reset_session_flow_memory: {e}")
+
+
+def append_handler_turn_summary(
+    session_id: int,
+    *,
+    buyer_text: str,
+    agent_text: str,
+    open_issue: Optional[str] = None,
+) -> None:
+    """业务 / AI Handler 出站后追加规则版长期摘要（不调 LLM）。"""
+    if not _memory_cfg().get("enabled"):
+        return
+    buyer = (buyer_text or "").strip()
+    agent = (agent_text or "").strip()
+    if not buyer and not agent:
+        return
+    try:
+        from database.db_manager import db_manager
+
+        mem = db_manager.get_session_memory(int(session_id)) or {}
+        long_term = LongTermSummary.from_dict(
+            json.loads(mem["long_term_summary"]) if mem.get("long_term_summary") else None
+        )
+        if buyer:
+            short = buyer[:120] + ("…" if len(buyer) > 120 else "")
+            if short not in long_term.user_requests:
+                long_term.user_requests.append(short)
+        if agent:
+            short = agent[:120] + ("…" if len(agent) > 120 else "")
+            if any(k in agent for k in ("确认", "已为您", "安排", "记录", "好的", "亲")):
+                if short not in long_term.confirmed:
+                    long_term.confirmed.append(short)
+        issue = (open_issue or "").strip()
+        if issue and issue not in long_term.open_issues:
+            long_term.open_issues.append(issue)
+        long_term.user_requests = long_term.user_requests[-8:]
+        long_term.confirmed = long_term.confirmed[-8:]
+        long_term.open_issues = long_term.open_issues[-6:]
+        db_manager.update_session_memory(
+            int(session_id),
+            long_term_summary=json.dumps(long_term.to_dict(), ensure_ascii=False),
+        )
+    except Exception as e:
+        logger.debug(f"append_handler_turn_summary: {e}")
+
+
 def persist_turn_memory(
     context: Any,
     query: str,
@@ -762,9 +909,6 @@ def persist_turn_memory(
         task = TaskState.from_dict(
             json.loads(mem["task_state_json"]) if mem.get("task_state_json") else None
         )
-        long_term = LongTermSummary.from_dict(
-            json.loads(mem["long_term_summary"]) if mem.get("long_term_summary") else None
-        )
         summary_through = int(mem.get("memory_summary_through_id") or 0)
 
         intent_label = intent or _guess_intent(query)
@@ -776,10 +920,9 @@ def persist_turn_memory(
         if old_msgs:
             summary_through = max(summary_through, max(int(m.get("id") or 0) for m in old_msgs))
 
+        open_issue: Optional[str] = None
         if reply and "暂未" in reply and "查" in reply:
-            issue = (query or "")[:80]
-            if issue and issue not in long_term.open_issues:
-                long_term.open_issues.append(issue)
+            open_issue = (query or "")[:80] or None
 
         product_intents = {"product_spec", "price", "general_product"}
         ai_stage = "product_qa" if intent_label in product_intents else task.stage
@@ -791,9 +934,14 @@ def persist_turn_memory(
             pending_confirm=task.pending_confirm,
             source_handler="AIReplyHandler",
         )
+        append_handler_turn_summary(
+            sid,
+            buyer_text=query,
+            agent_text=reply,
+            open_issue=open_issue,
+        )
         db_manager.update_session_memory(
             sid,
-            long_term_summary=json.dumps(long_term.to_dict(), ensure_ascii=False),
             memory_summary_through_id=summary_through,
         )
     except Exception as e:

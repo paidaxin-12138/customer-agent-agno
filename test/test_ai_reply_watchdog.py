@@ -25,6 +25,18 @@ def test_escalate_default_150_sec(monkeypatch):
     assert w._escalate_after_sec() == 150.0
 
 
+def test_escalate_fallback_to_retry_sec(monkeypatch):
+    def fake_get(k, d=None):
+        if k == "chat.ai_watchdog_escalate_sec":
+            return None
+        if k == "chat.ai_watchdog_retry_sec":
+            return 60
+        return d
+
+    monkeypatch.setattr(w.config, "get", fake_get)
+    assert w._escalate_after_sec() == 60.0
+
+
 @pytest.mark.asyncio
 async def test_escalated_flag():
     key = "sess_esc"

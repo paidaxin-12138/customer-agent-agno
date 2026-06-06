@@ -26,6 +26,8 @@ from .models import (
     format_preview_line,
 )
 from utils.logger_loguru import get_logger
+from ui import apple_ui_tokens as T
+from ui.card_action_button import setup_card_action_button
 
 logger = get_logger(__name__)
 
@@ -39,7 +41,7 @@ class KnowledgeCard(ElevatedCardWidget):
 
     # 类常量
     CARD_MIN_WIDTH = 280
-    CARD_MAX_HEIGHT = 180
+    CARD_MIN_HEIGHT = 168
     PREVIEW_LENGTH = 150
     ID_DISPLAY_LENGTH = 16
     TOOLTIP_SHORT_LENGTH = 30
@@ -82,7 +84,7 @@ class KnowledgeCard(ElevatedCardWidget):
         # 文档ID
         if self.doc.id:
             cid = QLabel(f"ID: {self.doc.id[:self.ID_DISPLAY_LENGTH]}...")
-            cid.setStyleSheet("color: #8A8A98; font-size: 10px;")
+            cid.setStyleSheet(f"color: {T.TEXT_MUTED}; font-size: 10px;")
             cid.setMaximumHeight(15)
             vbox.addWidget(cid)
 
@@ -90,7 +92,7 @@ class KnowledgeCard(ElevatedCardWidget):
         if self.doc.content or self.doc.metadata:
             content_preview = format_preview_line(self.doc)
             self._content_label = QLabel(content_preview)
-            self._content_label.setStyleSheet("color: #9EA6B8; font-size: 12px;")
+            self._content_label.setStyleSheet(f"color: {T.TEXT_SECONDARY}; font-size: 12px;")
             self._content_label.setWordWrap(True)
             self._content_label.setMaximumHeight(36)
             vbox.addWidget(self._content_label)
@@ -101,7 +103,7 @@ class KnowledgeCard(ElevatedCardWidget):
         # 文档长度信息
         if self.doc.content:
             length_label = QLabel(f"{len(self.doc.content)}字")
-            length_label.setStyleSheet("color: #8A8A98; font-size: 10px;")
+            length_label.setStyleSheet(f"color: {T.TEXT_MUTED}; font-size: 10px;")
             info_layout.addWidget(length_label)
 
         # 元数据信息
@@ -109,22 +111,22 @@ class KnowledgeCard(ElevatedCardWidget):
             psid = self.doc.metadata.get("platform_shop_id")
             if psid:
                 shop_tag = QLabel(f"店铺 {psid}")
-                shop_tag.setStyleSheet("color: #5AC8FA; font-size: 10px;")
+                shop_tag.setStyleSheet(f"color: {T.ACCENT}; font-size: 10px;")
                 info_layout.addWidget(shop_tag)
             ikey = self.doc.metadata.get("inherit_key")
             if ikey:
                 ik_tag = QLabel(f"键 {ikey}")
-                ik_tag.setStyleSheet("color: #FFD60A; font-size: 10px;")
+                ik_tag.setStyleSheet(f"color: {T.ACCENT_SECONDARY}; font-size: 10px;")
                 info_layout.addWidget(ik_tag)
             aco = self.doc.metadata.get("allow_child_override")
             if aco in (True, "True", "true", "1", 1):
                 ov_tag = QLabel("可被子覆盖")
-                ov_tag.setStyleSheet("color: #34C759; font-size: 10px;")
+                ov_tag.setStyleSheet(f"color: {T.SUCCESS}; font-size: 10px;")
                 info_layout.addWidget(ov_tag)
             for key in ['row_number', 'sheet_name', 'section']:
                 if key in self.doc.metadata:
                     meta_label = QLabel(f"{self.doc.metadata[key]}")
-                    meta_label.setStyleSheet("color: #8A8A98; font-size: 10px;")
+                    meta_label.setStyleSheet(f"color: {T.TEXT_MUTED}; font-size: 10px;")
                     info_layout.addWidget(meta_label)
                     break
 
@@ -134,26 +136,21 @@ class KnowledgeCard(ElevatedCardWidget):
 
         # 按钮栏
         btn_bar = QHBoxLayout()
-        view_btn = PrimaryPushButton("详情")
+        btn_bar.setSpacing(8)
+        view_btn = PushButton("详情")
         edit_btn = PushButton("编辑")
         delete_btn = PushButton("删除")
-        view_btn.setFixedHeight(30)
-        edit_btn.setFixedHeight(30)
-        delete_btn.setFixedHeight(30)
-        view_btn.setMinimumWidth(60)
-        edit_btn.setMinimumWidth(60)
-        delete_btn.setMinimumWidth(60)
         view_btn.setIcon(FluentIcon.VIEW)
         edit_btn.setIcon(FluentIcon.EDIT)
         delete_btn.setIcon(FluentIcon.DELETE)
-
-        # 设置删除按钮样式为红色
-        delete_btn.setStyleSheet(delete_btn.styleSheet() + "QPushButton { color: #FF453A; }")
+        setup_card_action_button(view_btn, width=76, role="accent")
+        setup_card_action_button(edit_btn, width=76)
+        setup_card_action_button(delete_btn, width=76, role="danger")
 
         btn_bar.addWidget(view_btn)
         btn_bar.addWidget(edit_btn)
         btn_bar.addWidget(delete_btn)
-        btn_bar.setContentsMargins(0, 4, 0, 0)
+        btn_bar.setContentsMargins(0, 6, 0, 0)
         vbox.addLayout(btn_bar)
 
         # 连接信号
@@ -166,8 +163,7 @@ class KnowledgeCard(ElevatedCardWidget):
         self.setMinimumWidth(self.CARD_MIN_WIDTH)
         self.setMaximumWidth(16777215)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setMaximumHeight(self.CARD_MAX_HEIGHT)
-        self.setContentsMargins(8, 8, 8, 8)
+        self.setMinimumHeight(self.CARD_MIN_HEIGHT)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
@@ -580,7 +576,7 @@ class AddKnowledgeDialog(QDialog):
 
         # 标题
         title_label = QLabel("知识标题")
-        title_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #F2F2F7;")
+        title_label.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {T.TEXT_PRIMARY};")
         layout.addWidget(title_label)
 
         self.title_edit = QLineEdit()
@@ -590,7 +586,7 @@ class AddKnowledgeDialog(QDialog):
 
         # 内容
         content_label = QLabel("知识内容")
-        content_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #F2F2F7;")
+        content_label.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {T.TEXT_PRIMARY};")
         layout.addWidget(content_label)
 
         self.content_edit = QTextEdit()
@@ -599,7 +595,7 @@ class AddKnowledgeDialog(QDialog):
         layout.addWidget(self.content_edit)
 
         shop_label = QLabel("拼多多店铺 ID（可选）")
-        shop_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #F2F2F7;")
+        shop_label.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {T.TEXT_PRIMARY};")
         layout.addWidget(shop_label)
         self.shop_id_edit = QLineEdit()
         self.shop_id_edit.setPlaceholderText("仅本店使用的宣发文案填店铺 ID；留空表示全店通用")
@@ -607,7 +603,7 @@ class AddKnowledgeDialog(QDialog):
         layout.addWidget(self.shop_id_edit)
 
         ik_label = QLabel("继承/覆盖键 inherit_key（可选）")
-        ik_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #F2F2F7;")
+        ik_label.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {T.TEXT_PRIMARY};")
         layout.addWidget(ik_label)
         self.inherit_key_edit = QLineEdit()
         self.inherit_key_edit.setPlaceholderText(
@@ -620,7 +616,7 @@ class AddKnowledgeDialog(QDialog):
             "父库：允许子店铺使用相同 inherit_key 时在检索中隐藏本条"
         )
         self.allow_child_cb.setEnabled(False)
-        self.allow_child_cb.setStyleSheet("color: #E5E5EA; font-size: 13px;")
+        self.allow_child_cb.setStyleSheet(f"color: {T.TEXT_PRIMARY}; font-size: 13px;")
         self.allow_child_cb.setToolTip(
             "仅当「店铺 ID 留空」且填写了 inherit_key 时可勾选；未勾选则子店同键不会替换本条。"
         )
@@ -631,7 +627,7 @@ class AddKnowledgeDialog(QDialog):
 
         # 提示信息
         hint_label = QLabel("提示：内容将自动进行分块和向量化处理")
-        hint_label.setStyleSheet("color: #8A8A98; font-size: 12px;")
+        hint_label.setStyleSheet(f"color: {T.TEXT_MUTED}; font-size: 12px;")
         layout.addWidget(hint_label)
 
         # 按钮栏
@@ -750,20 +746,19 @@ class KnowledgeDetailFlyout(FlyoutViewBase):
         tw.setAlternatingRowColors(True)
         tw.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         tw.verticalHeader().setVisible(False)
-        tw.setStyleSheet(
-            """
-            QTableWidget {
-                gridline-color: #3A3F55;
-                background-color: #1B1F2A;
-                color: #F2F2F7;
+        tw.setStyleSheet(f"""
+            QTableWidget {{
+                gridline-color: {T.BORDER};
+                background-color: {T.BG_SECONDARY};
+                color: {T.TEXT_PRIMARY};
                 font-size: 12px;
-            }
-            QHeaderView::section {
-                background-color: #2A3140;
-                color: #F2F2F7;
+            }}
+            QHeaderView::section {{
+                background-color: {T.BG_TERTIARY};
+                color: {T.TEXT_PRIMARY};
                 padding: 4px;
                 border: none;
-            }
+            }}
             """
         )
         for r, row in enumerate(rows):
@@ -795,7 +790,7 @@ class KnowledgeDetailFlyout(FlyoutViewBase):
         main_layout.setSpacing(10)
 
         title_label = QLabel(self._title)
-        title_label.setStyleSheet("font-weight: 600; font-size: 16px; color: #F2F2F7;")
+        title_label.setStyleSheet(f"font-weight: 600; font-size: 16px; color: {T.TEXT_PRIMARY};")
         main_layout.addWidget(title_label)
 
         mode = infer_import_format(self._doc)
@@ -812,13 +807,13 @@ class KnowledgeDetailFlyout(FlyoutViewBase):
 
         mode_label = QLabel(caption)
         mode_label.setWordWrap(True)
-        mode_label.setStyleSheet("color: #9EA6B8; font-size: 11px;")
+        mode_label.setStyleSheet(f"color: {T.TEXT_SECONDARY}; font-size: 11px;")
         main_layout.addWidget(mode_label)
 
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setFrameShadow(QFrame.Shadow.Sunken)
-        line.setStyleSheet("color: #2A3140;")
+        line.setStyleSheet(f"color: {T.BG_TERTIARY};")
         main_layout.addWidget(line)
 
         if use_table:
@@ -837,7 +832,7 @@ class KnowledgeDetailFlyout(FlyoutViewBase):
             if any(bool(s.get("truncated")) for s in pl["sheets"]):
                 tip = QLabel("部分内容行数较多，表格仅展示前 1000 行；复制为制表符分隔文本时亦同。")
                 tip.setWordWrap(True)
-                tip.setStyleSheet("color: #8A8A98; font-size: 11px;")
+                tip.setStyleSheet(f"color: {T.TEXT_MUTED}; font-size: 11px;")
                 inner_layout.addWidget(tip)
             scroll.setWidget(inner)
             main_layout.addWidget(scroll, 1)
@@ -849,13 +844,13 @@ class KnowledgeDetailFlyout(FlyoutViewBase):
             text_edit.setMinimumHeight(self.CONTENT_MIN_HEIGHT)
             text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-            base_style = """
-                QTextEdit {
+            base_style = f"""
+                QTextEdit {{
                     border: none;
                     background-color: transparent;
-                    color: #F2F2F7;
+                    color: {T.TEXT_PRIMARY};
                     font-size: 13px;
-                }
+                }}
             """
             body = self._doc.content or ""
             if mode == "markdown":
@@ -888,7 +883,7 @@ class KnowledgeDetailFlyout(FlyoutViewBase):
             meta_bits.append(f"文件: {fn}")
         if meta_bits:
             foot = QLabel(" · ".join(meta_bits))
-            foot.setStyleSheet("color: #6B7280; font-size: 10px;")
+            foot.setStyleSheet(f"color: {T.TEXT_TERTIARY}; font-size: 10px;")
             main_layout.addWidget(foot)
 
         btn_bar = QHBoxLayout()

@@ -26,9 +26,11 @@ def qapp():
 
 
 def test_chat_bg_colors():
-    assert CHAT_BG == "#1C1C1E"
-    assert SELF_BUBBLE == "#0A84FF"
-    assert OTHER_BUBBLE == "#2C2C3A"
+    from ui import apple_ui_tokens as T
+
+    assert CHAT_BG == T.BG_PRIMARY
+    assert SELF_BUBBLE == T.ACCENT_SURFACE
+    assert OTHER_BUBBLE == T.BG_TERTIARY
 
 
 def test_build_body_plain_text():

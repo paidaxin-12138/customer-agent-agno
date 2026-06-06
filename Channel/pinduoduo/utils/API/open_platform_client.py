@@ -10,7 +10,7 @@ import hashlib
 import time
 from typing import Any, Dict, Optional
 
-from config import config
+from config import get_config
 
 from ..base_request import BaseRequest
 
@@ -22,7 +22,7 @@ class OpenPlatformAPI(BaseRequest):
 
     def __init__(self, shop_id: str, user_id: str, channel_name: str = "pinduoduo"):
         super().__init__(shop_id, user_id, channel_name)
-        po = config.get("pinduoduo_open") or {}
+        po = get_config("pinduoduo_open") or {}
         if not isinstance(po, dict):
             po = {}
         self.client_id = str(po.get("client_id", "") or "").strip()

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -22,6 +23,16 @@ def make_account_key(channel_name: str, shop_id: str, username: str) -> str:
     return f"{channel_name}_{shop_id}_{username}"
 
 
+_HUB_PREVIEW_MAX = 50
+_MAX_HUB_ACCOUNTS = 64
+_MAX_BUYERS_PER_ACCOUNT = 4000
+
+
+def _truncate_preview(text: str, max_len: int = _HUB_PREVIEW_MAX) -> str:
+    s = str(text or "")
+    return s if len(s) <= max_len else s[: max_len - 1] + "…"
+
+
 def _preview_text(content: Any, max_len: int = 80) -> str:
     if content is None:
         return ""
@@ -32,7 +43,17 @@ def _preview_text(content: Any, max_len: int = 80) -> str:
     else:
         s = str(content)
     s = s.replace("\n", " ").strip()
-    return s if len(s) <= max_len else s[: max_len - 1] + "…"
+    return _truncate_preview(s, max_len)
+
+
+def _row_updated_at(row: Dict[str, Any]) -> float:
+    t = row.get("last_message_time") or row.get("updated_at")
+    if t is None:
+        return 0.0
+    try:
+        return float(t.timestamp())
+    except AttributeError:
+        return float(t) if t else 0.0
 
 
 def parse_peer_from_context(context: Context) -> Tuple[Optional[str], str]:
@@ -90,43 +111,103 @@ class ConversationHub(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._lock = threading.Lock()
-        self._by_account: Dict[str, Dict[str, _ConvState]] = {}
+        self._by_account: Dict[str, OrderedDict[str, _ConvState]] = {}
         self._account_id_by_key: Dict[str, int] = {}
+
+    def _touch_account(self, account_key: str) -> None:
+        acc_map = self._by_account
+        if account_key in acc_map and isinstance(acc_map, OrderedDict):
+            acc_map.move_to_end(account_key)
+
+    def _touch_buyer(self, acc: Dict[str, _ConvState], uid: str) -> None:
+        if uid in acc and isinstance(acc, OrderedDict):
+            acc.move_to_end(uid)
+
+    @staticmethod
+    def _pop_oldest(mapping: Dict[str, Any]) -> None:
+        if isinstance(mapping, OrderedDict):
+            mapping.popitem(last=False)
+            return
+        if not mapping:
+            return
+        oldest = min(mapping.keys(), key=lambda k: getattr(mapping[k], "updated_at", 0.0))
+        mapping.pop(oldest, None)
+
+    def _prune_memory_cache(self) -> None:
+        """LRU 限制 Hub 内存索引规模，避免长跑进程无限增长。"""
+        while len(self._by_account) > _MAX_HUB_ACCOUNTS:
+            if isinstance(self._by_account, OrderedDict):
+                oldest_key, _ = self._by_account.popitem(last=False)
+            else:
+                oldest_key = min(
+                    self._by_account.keys(),
+                    key=lambda k: max(
+                        (st.updated_at for st in self._by_account[k].values()),
+                        default=0.0,
+                    ),
+                )
+                self._by_account.pop(oldest_key, None)
+            self._account_id_by_key.pop(oldest_key, None)
+        for acc in self._by_account.values():
+            overflow = len(acc) - _MAX_BUYERS_PER_ACCOUNT
+            if overflow <= 0:
+                continue
+            for _ in range(overflow):
+                if not acc:
+                    break
+                self._pop_oldest(acc)
+
+    def _apply_summary_to_acc(
+        self, acc: Dict[str, _ConvState], summary: Any
+    ) -> None:
+        uid = str(summary.buyer_uid)
+        st = acc.get(uid)
+        if st is None:
+            st = _ConvState()
+            acc[uid] = st
+        st.nickname = summary.buyer_nickname or st.nickname or "买家"
+        st.preview = summary.preview or st.preview
+        st.unread_count = int(summary.unread_count or 0)
+        st.session_id = int(summary.session_id)
+        st.updated_at = float(summary.updated_at or 0.0)
+        if isinstance(acc, OrderedDict):
+            acc.move_to_end(uid)
 
     def sync_latest_conversations(
         self, account_key: str, account_id: int
     ) -> List[Dict[str, Any]]:
         """从 chat_sessions 同步摘要到内存，不加载完整消息。"""
         from database.db_manager import db_manager
+        from database.session_store import summary_from_row
 
         rows = db_manager.get_chat_session_summaries(account_id, "active")
         with self._lock:
             self._account_id_by_key[account_key] = int(account_id)
-            acc = self._by_account.setdefault(account_key, {})
+            acc = self._by_account.setdefault(account_key, OrderedDict())
+            self._touch_account(account_key)
             synced_uids = set()
-            for s in rows:
-                uid = str(s.get("buyer_uid") or "")
+            for row in rows:
+                uid = str(row.get("buyer_uid") or "")
                 if not uid:
                     continue
                 synced_uids.add(uid)
-                st = acc.get(uid)
-                if st is None:
-                    st = _ConvState()
-                    acc[uid] = st
-                st.nickname = s.get("buyer_nickname") or st.nickname or "买家"
-                st.preview = s.get("last_message") or st.preview
-                st.unread_count = int(s.get("unread_count") or 0)
-                st.session_id = int(s["id"]) if s.get("id") is not None else None
-                t = s.get("last_message_time") or s.get("updated_at")
-                if t is not None:
-                    try:
-                        st.updated_at = float(t.timestamp())
-                    except AttributeError:
-                        st.updated_at = float(t) if t else st.updated_at
+                self._apply_summary_to_acc(acc, summary_from_row(row))
             for uid in list(acc.keys()):
                 if uid not in synced_uids:
                     del acc[uid]
+            self._prune_memory_cache()
         return rows
+
+    def apply_db_summary(
+        self, account_key: str, account_id: int, summary: Any
+    ) -> None:
+        """从 session_store.SessionSummary 刷新内存索引（DB 为权威）。"""
+        with self._lock:
+            self._account_id_by_key[account_key] = int(account_id)
+            acc = self._by_account.setdefault(account_key, OrderedDict())
+            self._touch_account(account_key)
+            self._apply_summary_to_acc(acc, summary)
+            self._touch_buyer(acc, str(summary.buyer_uid))
 
     def _touch_summary(
         self,
@@ -141,14 +222,64 @@ class ConversationHub(QObject):
         if nickname:
             st.nickname = nickname
         if preview:
-            st.preview = preview[:50] + ("…" if len(preview) > 50 else "")
+            st.preview = _truncate_preview(preview)
         st.updated_at = ts
         if session_id is not None:
             st.session_id = session_id
-        if role == "user":
-            st.unread_count = int(st.unread_count or 0) + 1
-        elif role in ("agent", "system"):
-            pass
+        # 未读数由 DB（chat_messages.is_read）经 sync_hub_session 刷新，此处不递增
+
+    def _sync_from_db(
+        self,
+        account_key: str,
+        channel_name: str,
+        shop_id: str,
+        user_id: str,
+        buyer_uid: str,
+    ) -> bool:
+        """persist 后从 DB 刷新 Hub（未读/预览以 SQLite 为准）。"""
+        from database.session_store import sync_hub_for_buyer
+
+        return sync_hub_for_buyer(
+            self, account_key, channel_name, shop_id, user_id, buyer_uid
+        ) is not None
+
+    def _refresh_or_touch(
+        self,
+        account_key: str,
+        channel_name: str,
+        shop_id: str,
+        user_id: str,
+        buyer_uid: str,
+        *,
+        nickname: str,
+        preview: str,
+        role: str,
+        ts: float,
+        default_nickname: str = "买家",
+        mall_cs: bool = False,
+    ) -> None:
+        if self._sync_from_db(
+            account_key, channel_name, shop_id, user_id, buyer_uid
+        ):
+            self._emit_hub_updates(account_key, buyer_uid, role, preview, ts)
+            return
+        with self._lock:
+            acc = self._by_account.setdefault(account_key, OrderedDict())
+            self._touch_account(account_key)
+            st = acc.get(buyer_uid)
+            if st is None:
+                nick = "买家" if mall_cs else (nickname or default_nickname)
+                st = _ConvState(nickname=nick)
+                acc[buyer_uid] = st
+            self._touch_buyer(acc, buyer_uid)
+            self._touch_summary(
+                st,
+                nickname=nickname or st.nickname,
+                preview=preview,
+                ts=time.time(),
+                role=role,
+            )
+        self._emit_hub_updates(account_key, buyer_uid, role, preview, ts)
 
     def record_from_context(
         self,
@@ -199,6 +330,7 @@ class ConversationHub(QObject):
                 if st0 is not None and (st0.nickname or "").strip():
                     buyer_nick_for_db = st0.nickname
 
+        synced = False
         try:
             from database.chat_persist import (
                 persist_customer_from_context,
@@ -244,29 +376,29 @@ class ConversationHub(QObject):
                     ts,
                     context=context,
                 )
+            synced = self._sync_from_db(
+                account_key, channel_name, shop_id, user_id, peer_uid
+            )
         except Exception as e:
             _hub_log.warning("persist from context 失败: {}", e)
 
         with self._lock:
-            acc = self._by_account.setdefault(account_key, {})
-            st = acc.get(peer_uid)
-            if is_mall_cs:
-                if st is None:
-                    st = _ConvState(nickname="买家")
-                    acc[peer_uid] = st
-            else:
-                if st is None:
-                    st = _ConvState(nickname=nickname or "买家")
-                    acc[peer_uid] = st
-            self._touch_summary(
-                st,
-                nickname=nickname or st.nickname,
+            self._prune_memory_cache()
+        if synced:
+            self._emit_hub_updates(account_key, peer_uid, role, preview, ts)
+        else:
+            self._refresh_or_touch(
+                account_key,
+                channel_name,
+                shop_id,
+                user_id,
+                peer_uid,
+                nickname=nickname or "买家",
                 preview=preview,
-                ts=time.time(),
                 role=role,
+                ts=ts,
+                mall_cs=is_mall_cs,
             )
-
-        self._emit_hub_updates(account_key, peer_uid, role, preview, ts)
 
     def _emit_hub_updates(
         self,
@@ -324,23 +456,57 @@ class ConversationHub(QObject):
                 getattr(context.kwargs, "msg_id", None),
                 ts,
             )
+            self._refresh_or_touch(
+                account_key,
+                channel_name,
+                shop_id,
+                user_id,
+                peer_uid,
+                nickname=nickname or "买家",
+                preview=raw_preview,
+                role="system",
+                ts=ts,
+            )
         except Exception as e:
             _hub_log.warning("persist platform civility 失败: {}", e)
-        with self._lock:
-            acc = self._by_account.setdefault(account_key, {})
-            st = acc.get(peer_uid)
-            if st is None:
-                st = _ConvState(nickname=nickname or "买家")
-                acc[peer_uid] = st
-            st.preview = raw_preview or st.preview
-            self._touch_summary(
-                st,
-                nickname=nickname or st.nickname,
+            self._refresh_or_touch(
+                account_key,
+                channel_name,
+                shop_id,
+                user_id,
+                peer_uid,
+                nickname=nickname or "买家",
                 preview=raw_preview,
-                ts=time.time(),
                 role="system",
+                ts=ts,
             )
-        self._emit_hub_updates(account_key, peer_uid, "system", raw_preview, ts)
+
+    def notify_persisted_message(
+        self,
+        channel_name: str,
+        shop_id: str,
+        seller_user_id: str,
+        username: str,
+        buyer_uid: str,
+        preview: str,
+        *,
+        role: str = "agent",
+    ) -> None:
+        """DB 已写入后刷新 Hub 摘要并通知 UI（AI/人工出站等路径）。"""
+        account_key = make_account_key(channel_name, shop_id, username)
+        ts = time.time()
+        text = _preview_text(preview, max_len=_HUB_PREVIEW_MAX)
+        self._refresh_or_touch(
+            account_key,
+            channel_name,
+            shop_id,
+            seller_user_id,
+            buyer_uid,
+            nickname="买家",
+            preview=text,
+            role=role,
+            ts=ts,
+        )
 
     def record_manual_sent(
         self,
@@ -351,36 +517,29 @@ class ConversationHub(QObject):
         text: str,
         seller_user_id: str,
     ) -> None:
-        account_key = make_account_key(channel_name, shop_id, username)
-        ts = time.time()
         try:
             from database.chat_persist import persist_human_message
 
-            persist_human_message(
+            if persist_human_message(
                 channel_name,
                 shop_id,
                 seller_user_id,
                 username,
                 customer_uid,
                 text,
-            )
+            ) is not None:
+                return
         except Exception as e:
             _hub_log.warning("persist_human_message 失败: {}", e)
-        with self._lock:
-            acc = self._by_account.setdefault(account_key, {})
-            st = acc.get(customer_uid)
-            if st is None:
-                st = _ConvState(nickname="买家")
-                acc[customer_uid] = st
-            st.preview = _preview_text(text, max_len=50)
-            self._touch_summary(
-                st,
-                nickname=st.nickname,
-                preview=text,
-                ts=ts,
-                role="agent",
-            )
-        self._emit_hub_updates(account_key, customer_uid, "agent", text, ts)
+        self.notify_persisted_message(
+            channel_name,
+            shop_id,
+            seller_user_id,
+            username,
+            customer_uid,
+            text,
+            role="agent",
+        )
 
     def get_conversation_rows(self, account_key: str) -> List[Dict[str, Any]]:
         account_id = self._account_id_by_key.get(account_key)
@@ -391,13 +550,7 @@ class ConversationHub(QObject):
                     "customer_uid": str(s.get("buyer_uid") or ""),
                     "nickname": s.get("buyer_nickname") or "买家",
                     "preview": s.get("last_message") or "",
-                    "updated_at": (
-                        float(s["last_message_time"].timestamp())
-                        if s.get("last_message_time") is not None
-                        else float(s["updated_at"].timestamp())
-                        if s.get("updated_at") is not None
-                        else 0.0
-                    ),
+                    "updated_at": _row_updated_at(s),
                     "unread_count": int(s.get("unread_count") or 0),
                     "session_id": s.get("id"),
                 }
@@ -420,10 +573,6 @@ class ConversationHub(QObject):
             rows.sort(key=lambda r: r["updated_at"], reverse=True)
             return rows
 
-    def get_messages(self, account_key: str, customer_uid: str) -> List[Tuple[str, str, float]]:
-        """兼容旧接口：不再缓存完整消息，请从数据库分页加载。"""
-        return []
-
     def clear_conversation(self, account_key: str, customer_uid: str) -> None:
         with self._lock:
             acc = self._by_account.get(account_key)
@@ -441,6 +590,11 @@ _conversation_hub: Optional[ConversationHub] = None
 
 def get_conversation_hub() -> ConversationHub:
     global _conversation_hub
+    if _conversation_hub is not None:
+        try:
+            _conversation_hub.thread()
+        except RuntimeError:
+            _conversation_hub = None
     if _conversation_hub is None:
         _conversation_hub = ConversationHub()
     return _conversation_hub

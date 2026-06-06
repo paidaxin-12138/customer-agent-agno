@@ -6,6 +6,7 @@
 import asyncio
 import hashlib
 import time
+from collections import OrderedDict
 from typing import Optional, Dict, Set
 from utils.logger_loguru import get_logger
 from config import get_config
@@ -31,7 +32,9 @@ class SimpleMessageQueue:
         self._closed = False
 
         # 去重缓存（可选）
-        self._deduplication_cache: Set[str] = set() if config.enable_deduplication else None
+        self._deduplication_cache: Optional[OrderedDict[str, float]] = (
+            OrderedDict() if config.enable_deduplication else None
+        )
         self._last_cleanup_time = time.time()
 
     async def put(self, context: Context) -> str:
@@ -155,23 +158,36 @@ class SimpleMessageQueue:
             norm = json.dumps(raw, sort_keys=True, ensure_ascii=False)
         else:
             norm = str(raw or "")
-        content_hash = hashlib.sha256(norm.encode("utf-8")).hexdigest()[:32]
+        buyer_key = ""
+        try:
+            ku = getattr(wrapper.context, "kwargs", None)
+            buyer_key = str(getattr(ku, "from_uid", "") or "")
+        except Exception:
+            pass
+        dedup_key = f"{buyer_key}|{norm}"
+        content_hash = hashlib.sha256(dedup_key.encode("utf-8")).hexdigest()[:32]
         if content_hash in self._deduplication_cache:
             return True
 
-        # 添加到缓存并定期清理
-        self._deduplication_cache.add(content_hash)
+        self._deduplication_cache[content_hash] = time.time()
         self._cleanup_deduplication_cache()
         return False
 
-    def _cleanup_deduplication_cache(self):
-        """清理过期的去重缓存"""
+    def _cleanup_deduplication_cache(self) -> None:
+        """LRU + TTL 清理去重缓存，避免无限增长。"""
         current_time = time.time()
-        if current_time - self._last_cleanup_time > self.config.deduplication_window:
-            # 简单策略：清空缓存
-            self._deduplication_cache.clear()
-            self._last_cleanup_time = current_time
-            self.logger.debug("Deduplication cache cleaned")
+        window = float(self.config.deduplication_window or 300)
+        max_keys = 5000
+        expired = [
+            k
+            for k, ts in self._deduplication_cache.items()
+            if current_time - ts > window
+        ]
+        for k in expired:
+            self._deduplication_cache.pop(k, None)
+        while len(self._deduplication_cache) > max_keys:
+            self._deduplication_cache.popitem(last=False)
+        self._last_cleanup_time = current_time
 
     async def clear(self):
         """清空队列"""

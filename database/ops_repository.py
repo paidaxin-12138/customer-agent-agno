@@ -71,13 +71,23 @@ class OpsRepository:
         n = 0
         try:
             rows = session.query(ChatSession).order_by(ChatSession.updated_at.desc()).limit(500).all()
+            if not rows:
+                return 0
+            session_ids = [cs.id for cs in rows]
+            account_ids = list({cs.account_id for cs in rows})
+            existing_map = {
+                r.chat_session_id: r
+                for r in session.query(OpsSessionRow)
+                .filter(OpsSessionRow.chat_session_id.in_(session_ids))
+                .all()
+            }
+            account_map = {
+                a.id: a
+                for a in session.query(Account).filter(Account.id.in_(account_ids)).all()
+            }
             for cs in rows:
-                existing = (
-                    session.query(OpsSessionRow)
-                    .filter(OpsSessionRow.chat_session_id == cs.id)
-                    .first()
-                )
-                acc = session.query(Account).filter(Account.id == cs.account_id).first()
+                existing = existing_map.get(cs.id)
+                acc = account_map.get(cs.account_id)
                 seller_uid = acc.user_id if acc else ""
                 channel = "pinduoduo"
                 user_label = cs.buyer_nickname or cs.buyer_uid or ""

@@ -1,0 +1,105 @@
+"""ChatStoreMixin 单元测试。"""
+
+from __future__ import annotations
+
+import pytest
+
+import database.db_manager as dm_module
+from database.db_manager import DatabaseManager
+
+
+@pytest.fixture
+def chat_db(tmp_path, monkeypatch):
+    DatabaseManager._instance = None
+    path = str(tmp_path / "chat_store_test.db")
+    db = DatabaseManager(db_path=path)
+    dm_module._db_instance = db
+    db.add_shop("pinduoduo", "shop-001", "测试店", "")
+    db.add_account("pinduoduo", "shop-001", "uid-001", "testuser", "pass")
+    monkeypatch.setenv("CHAT_MESSAGE_BUFFER_DISABLE", "1")
+    yield db
+    dm_module._db_instance = None
+    DatabaseManager._instance = None
+
+
+def _account_id(chat_db: DatabaseManager) -> int:
+    return chat_db.get_account("pinduoduo", "shop-001", "uid-001")["id"]
+
+
+def test_truncate_session_preview():
+    short = DatabaseManager._truncate_session_preview("hello")
+    assert short == "hello"
+    long_text = "a" * 60
+    out = DatabaseManager._truncate_session_preview(long_text, max_len=50)
+    assert len(out) == 50
+    assert out.endswith("…")
+
+
+def test_count_unread_buyer_messages(chat_db):
+    acc_id = _account_id(chat_db)
+    sid = chat_db.get_or_create_chat_session(
+        acc_id, "shop-001", "testuser", "buyer_unread", "买家"
+    )
+    chat_db.add_chat_message(sid, acc_id, "customer", "未读1", immediate=True)
+    chat_db.add_chat_message(sid, acc_id, "customer", "未读2", immediate=True)
+    chat_db.mark_chat_messages_read(sid)
+    chat_db.add_chat_message(sid, acc_id, "customer", "新未读", immediate=True)
+    chat_db.add_chat_message(sid, acc_id, "agent", "客服", immediate=True)
+    assert chat_db.count_unread_buyer_messages(sid) == 1
+
+
+def test_get_total_unread_chat(chat_db):
+    acc_id = _account_id(chat_db)
+    sid = chat_db.get_or_create_chat_session(
+        acc_id, "shop-001", "testuser", "buyer_total", "买家"
+    )
+    assert chat_db.get_total_unread_chat() == 0
+    chat_db.add_chat_message(sid, acc_id, "customer", "hi", immediate=True)
+    assert chat_db.get_total_unread_chat() == 1
+    chat_db.mark_chat_messages_read(sid)
+    assert chat_db.get_total_unread_chat() == 0
+
+
+def test_get_chat_session_summaries_and_by_buyer(chat_db):
+    acc_id = _account_id(chat_db)
+    sid = chat_db.get_or_create_chat_session(
+        acc_id, "shop-001", "testuser", "buyer_sum", "摘要买家"
+    )
+    chat_db.add_chat_message(
+        sid, acc_id, "customer", "最后一条很长" * 20, immediate=True
+    )
+
+    summaries = chat_db.get_chat_session_summaries(account_id=acc_id)
+    assert len(summaries) == 1
+    row = summaries[0]
+    assert row["id"] == sid
+    assert row["buyer_nickname"] == "摘要买家"
+    assert row["unread_count"] == 1
+    assert len(row["last_message"]) <= 50
+
+    by_buyer = chat_db.get_chat_session_by_buyer(acc_id, "buyer_sum")
+    assert by_buyer is not None
+    assert by_buyer["id"] == sid
+    assert by_buyer["unread_count"] == 1
+
+
+def test_add_chat_message_dedup_message_id(chat_db):
+    acc_id = _account_id(chat_db)
+    sid = chat_db.get_or_create_chat_session(
+        acc_id, "shop-001", "testuser", "buyer_dedup", "买家"
+    )
+    first = chat_db.add_chat_message(
+        sid, acc_id, "customer", "原内容", message_id="m-dup", immediate=True
+    )
+    second = chat_db.add_chat_message(
+        sid, acc_id, "customer", "重复", message_id="m-dup", immediate=True
+    )
+    assert first is not None
+    assert second == first
+
+
+def test_list_all_accounts_for_chat(chat_db):
+    rows = chat_db.list_all_accounts_for_chat()
+    assert len(rows) == 1
+    assert rows[0]["platform_shop_id"] == "shop-001"
+    assert rows[0]["username"] == "testuser"

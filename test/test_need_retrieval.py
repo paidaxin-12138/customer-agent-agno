@@ -1,6 +1,6 @@
 """按需 RAG 判定测试。"""
 
-from utils.need_retrieval import need_retrieval
+from utils.need_retrieval import need_retrieval, resolve_retrieval_intent
 
 
 def test_handler_processed_forbids_rag():
@@ -78,5 +78,35 @@ def test_idle_general_no_rag():
             current_text="好的",
         )
         is False
+    )
+
+
+def test_follow_up_blocked_by_refund_keyword():
+    assert (
+        need_retrieval(
+            intent="general",
+            stage="idle",
+            handler_already_processed=False,
+            last_intent="price",
+            current_text="价格不合适要退款",
+        )
+        is False
+    )
+
+
+def test_resolve_retrieval_intent_uses_persisted_product():
+    assert (
+        resolve_retrieval_intent(
+            guessed_intent="general",
+            task_intent="product_spec",
+        )
+        == "product_spec"
+    )
+    assert (
+        resolve_retrieval_intent(
+            guessed_intent="price",
+            task_intent="product_spec",
+        )
+        == "price"
     )
 

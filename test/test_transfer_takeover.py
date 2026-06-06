@@ -54,6 +54,7 @@ async def test_takeover_enqueues_unreplied(monkeypatch):
         patch(
             "Agent.CustomerAgent.conversation_memory.update_session_state"
         ) as mock_update,
+        patch("database.session_store.set_ai_mode") as mock_ai,
         patch("Message.put_message", put_mock),
     ):
         ok = await apply_inbound_transfer_takeover(
@@ -66,9 +67,10 @@ async def test_takeover_enqueues_unreplied(monkeypatch):
         )
 
     assert ok is True
-    mock_db.set_session_ai_mode.assert_called_once_with(9, True)
+    mock_ai.assert_called_once_with(9, True)
     mock_update.assert_called_once()
     call_kw = mock_update.call_args[1]
     assert call_kw.get("stage") == "after_sales"
     assert call_kw.get("intent") == "after_sales"
+    assert call_kw.get("clear_flow_state") is True
     put_mock.assert_awaited_once()

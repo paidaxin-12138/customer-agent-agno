@@ -1,0 +1,626 @@
+/* Customer-Agent — Modern Dark SaaS Theme */
+
+* {
+    font-family: {{FONT_FAMILY}};
+    outline: none;
+    selection-background-color: {{ACCENT}};
+    selection-color: {{BG_PRIMARY}};
+}
+
+/* 默认透明：避免每个子控件都刷一层 #131315 造成「色块嵌套」 */
+QWidget {
+    color: {{TEXT_PRIMARY}};
+    font-size: 13px;
+    background-color: transparent;
+}
+
+QMainWindow, FluentWindow {
+    background-color: {{BG_PRIMARY}};
+}
+
+QStackedWidget, StackedWidget {
+    background-color: {{BG_PRIMARY}};
+}
+
+QLabel {
+    background-color: transparent;
+    border: none;
+}
+
+SubtitleLabel, CaptionLabel, BodyLabel, StrongBodyLabel {
+    background-color: transparent;
+    border: none;
+}
+
+QScrollArea {
+    background-color: transparent;
+    border: none;
+}
+
+QScrollArea > QWidget > QWidget {
+    background-color: transparent;
+}
+
+/* ========== 导航侧栏 ========== */
+NavigationInterface,
+NavigationWidget,
+QWidget#navigationInterface {
+    background-color: {{BG_SECONDARY}};
+    border-right: 1px solid {{BORDER_PANEL}};
+}
+
+NavigationPushButton,
+NavigationTreeWidgetBase,
+NavigationWidget PushButton {
+    background-color: transparent;
+    color: {{TEXT_SECONDARY}};
+    border: none;
+    border-radius: {{RADIUS_SM}};
+    padding: 12px 16px;
+    margin: 2px 8px;
+    text-align: left;
+}
+
+NavigationPushButton:hover,
+NavigationTreeWidgetBase:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+    color: {{TEXT_PRIMARY}};
+}
+
+NavigationPushButton[pressed=true],
+NavigationPushButton:checked,
+NavigationTreeWidgetBase[pressed=true] {
+    background-color: rgba(170, 199, 255, 0.12);
+    color: {{ACCENT}};
+    border-left: 3px solid {{ACCENT}};
+}
+
+/* ========== 顶栏 ========== */
+TitleBar, TitleBarBase {
+    background-color: {{BG_SECONDARY}};
+    border-bottom: 1px solid {{BORDER_LIGHT}};
+    min-height: 64px;
+}
+
+QLabel#titleLabel {
+    color: {{TEXT_PRIMARY}};
+    font-weight: 600;
+    font-size: 15px;
+}
+
+/* ========== 卡片 / 面板（唯一有底色的容器层） ========== */
+CardWidget,
+ElevatedCardWidget,
+QFrame#ModulePanel,
+QWidget#ModulePanel,
+DashboardCard,
+QFrame#DashboardCard,
+QFrame[variant="card"],
+QFrame[variant="elevated"] {
+    background-color: {{GLASS_PANEL}};
+    border: 1px solid {{BORDER}};
+    border-radius: {{RADIUS_LG}};
+}
+
+/* 卡片内子控件透明（按钮除外） */
+DashboardCard QLabel,
+QFrame#DashboardCard QLabel,
+CardWidget QLabel,
+ElevatedCardWidget QLabel,
+DashboardCard QWidget,
+QFrame#DashboardCard QWidget,
+CardWidget QWidget,
+ElevatedCardWidget QWidget {
+    background-color: transparent;
+}
+
+DashboardCard QTableWidget,
+QFrame#DashboardCard QTableWidget,
+CardWidget QTableWidget,
+ElevatedCardWidget QTableWidget {
+    border: none;
+    alternate-background-color: rgba(255, 255, 255, 0.02);
+}
+
+QFrame#ModulePanel > QTableView,
+QWidget#ModulePanel > QTableView {
+    border: none;
+    background-color: transparent;
+    border-radius: {{RADIUS_MD}};
+}
+
+DashboardCard {
+    padding: 24px;
+}
+
+/* 提示条 */
+QLabel#HintBanner {
+    background-color: rgba(255, 255, 255, 0.03);
+    border: 1px solid {{BORDER}};
+    border-radius: {{RADIUS_MD}};
+    padding: 8px 12px;
+    color: {{TEXT_SECONDARY}};
+    font-size: 13px;
+}
+
+/* ========== 看板 KPI ========== */
+MetricTitle,
+QLabel#MetricTitle {
+    color: {{TEXT_SECONDARY}};
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+}
+
+MetricLabel,
+QLabel#MetricLabel {
+    color: {{TEXT_PRIMARY}};
+    font-size: 48px;
+    font-weight: 700;
+}
+
+MetricTrendUp,
+QLabel#MetricTrendUp {
+    color: {{SUCCESS}};
+    font-size: 12px;
+    font-weight: 600;
+}
+
+MetricTrendDown,
+QLabel#MetricTrendDown {
+    color: {{ERROR}};
+    font-size: 12px;
+    font-weight: 600;
+}
+
+SectionTitle,
+QLabel#SectionTitle {
+    color: {{TEXT_PRIMARY}};
+    font-size: 18px;
+    font-weight: 600;
+}
+
+/* ========== 意图标签云（标签本身保留胶囊底色） ========== */
+IntentTag,
+QLabel#IntentTag {
+    background-color: rgba(255, 255, 255, 0.06);
+    color: {{TEXT_SECONDARY}};
+    border: 1px solid {{BORDER_LIGHT}};
+    border-radius: 40px;
+    padding: 8px 16px;
+    font-size: 12px;
+}
+
+IntentTagHot,
+QLabel#IntentTagHot {
+    background-color: rgba(170, 199, 255, 0.18);
+    color: {{ACCENT}};
+    border: 1px solid rgba(170, 199, 255, 0.35);
+    border-radius: 40px;
+    padding: 8px 16px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+/* ========== 状态徽章 ========== */
+StatusBadge,
+QLabel#StatusBadge {
+    border-radius: {{RADIUS_PILL}};
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid {{BORDER}};
+}
+
+StatusBadge[status="ok"],
+QLabel#StatusBadge[status="ok"] {
+    color: {{SUCCESS}};
+    background-color: rgba(71, 226, 102, 0.12);
+    border-color: rgba(71, 226, 102, 0.3);
+}
+
+StatusBadge[status="warn"],
+QLabel#StatusBadge[status="warn"] {
+    color: {{ERROR}};
+    background-color: rgba(255, 180, 171, 0.12);
+    border-color: rgba(255, 180, 171, 0.3);
+}
+
+/* ========== 输入框 ========== */
+QLineEdit, QTextEdit, QPlainTextEdit, LineEdit, TextEdit {
+    background-color: {{BG_ELEVATED}};
+    color: {{TEXT_PRIMARY}};
+    border: 1px solid {{BORDER}};
+    border-radius: {{RADIUS_SM}};
+    padding: 10px 14px;
+}
+
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, LineEdit:focus {
+    border: 1px solid {{ACCENT}};
+}
+
+QLineEdit::placeholder, QTextEdit::placeholder {
+    color: {{TEXT_MUTED}};
+}
+
+ComboBox, QComboBox {
+    background-color: {{BG_ELEVATED}};
+    color: {{TEXT_PRIMARY}};
+    border: 1px solid {{BORDER}};
+    border-radius: {{RADIUS_SM}};
+    padding: 8px 12px;
+}
+
+/* ========== 按钮 ========== */
+QPushButton, PushButton {
+    background-color: {{BG_ELEVATED}};
+    color: {{TEXT_PRIMARY}};
+    border: 1px solid {{BORDER}};
+    border-radius: {{RADIUS_SM}};
+    padding: 10px 18px;
+    min-height: 36px;
+    font-weight: 500;
+}
+
+QPushButton:hover, PushButton:hover {
+    background-color: {{BG_HOVER}};
+    border-color: {{BORDER_PANEL}};
+}
+
+/* 卡片内紧凑按钮：避免 36px min-height 与 setFixedHeight(32) 冲突导致裁切 */
+QPushButton#CardActionButton,
+PushButton#CardActionButton,
+PrimaryPushButton#CardActionButton {
+    min-height: 32px;
+    max-height: 32px;
+    padding: 4px 10px;
+    font-size: 12px;
+}
+
+PushButton#CardActionButton[cardRole="accent"] {
+    color: {{ACCENT}};
+    background-color: {{ACCENT_SURFACE}};
+    border: 1px solid {{ACCENT_SURFACE_BORDER}};
+}
+
+PushButton#CardActionButton[cardRole="accent"]:hover {
+    background-color: {{ACCENT_SURFACE_HOVER}};
+    border-color: {{ACCENT}};
+    color: {{ACCENT_HOVER}};
+}
+
+PushButton#CardActionButton[cardRole="danger"] {
+    color: {{ERROR}};
+    background-color: transparent;
+    border: 1px solid {{BORDER}};
+}
+
+PushButton#CardActionButton[cardRole="danger"]:hover {
+    background-color: rgba(255, 180, 171, 0.1);
+    border-color: {{ERROR}};
+}
+
+PrimaryPushButton,
+QPushButton[variant="primary"] {
+    background-color: {{ACCENT_SURFACE}};
+    color: {{ACCENT}};
+    border: 1px solid {{ACCENT_SURFACE_BORDER}};
+    font-weight: 600;
+}
+
+PrimaryPushButton:hover,
+QPushButton[variant="primary"]:hover {
+    background-color: {{ACCENT_SURFACE_HOVER}};
+    border-color: {{ACCENT}};
+    color: {{ACCENT_HOVER}};
+}
+
+PrimaryPushButton:pressed {
+    background-color: {{ACCENT_SURFACE_HOVER}};
+    color: {{ACCENT}};
+}
+
+/* ========== 表格（独立面板用；卡片内表格见上方透明规则） ========== */
+QTableView, QTableWidget {
+    background-color: {{BG_TERTIARY}};
+    alternate-background-color: rgba(255, 255, 255, 0.02);
+    color: {{TEXT_PRIMARY}};
+    border: 1px solid {{BORDER}};
+    border-radius: {{RADIUS_MD}};
+    gridline-color: {{GRID_LINE}};
+    selection-background-color: rgba(170, 199, 255, 0.22);
+    selection-color: {{TEXT_PRIMARY}};
+}
+
+QTableView::item, QTableWidget::item {
+    padding: 12px 16px;
+    min-height: 56px;
+    border-bottom: 1px solid {{BORDER_LIGHT}};
+}
+
+QTableView::item:hover, QTableWidget::item:hover {
+    background-color: rgba(255, 255, 255, 0.02);
+}
+
+QHeaderView::section {
+    background-color: {{BG_TERTIARY}};
+    color: {{TEXT_MUTED}};
+    border: none;
+    border-bottom: 1px solid {{BORDER_LIGHT}};
+    padding: 14px 16px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+}
+
+QTableCornerButton::section {
+    background-color: {{BG_TERTIARY}};
+    border: none;
+}
+
+QHeaderView::section:vertical {
+    background-color: {{BG_TERTIARY}};
+    color: {{TEXT_MUTED}};
+    border: none;
+    padding: 8px;
+}
+
+QTableView#OpsDataTable,
+QTableWidget#OpsDataTable {
+    background-color: {{BG_TERTIARY}};
+    alternate-background-color: rgba(255, 255, 255, 0.02);
+    border: 1px solid {{BORDER}};
+    border-radius: {{RADIUS_MD}};
+    gridline-color: transparent;
+    outline: none;
+}
+
+QTableView#OpsDataTable::item,
+QTableWidget#OpsDataTable::item {
+    padding: 10px 14px;
+    min-height: 44px;
+    border: none;
+    border-bottom: 1px solid {{BORDER_LIGHT}};
+}
+
+QTableView#OpsDataTable::item:selected,
+QTableWidget#OpsDataTable::item:selected {
+    background-color: rgba(170, 199, 255, 0.18);
+    color: {{TEXT_PRIMARY}};
+}
+
+QTableView#OpsDataTable QHeaderView::section,
+QTableWidget#OpsDataTable QHeaderView::section {
+    background-color: {{BG_TERTIARY}};
+}
+
+QTableView#OpsDataTable QScrollBar:vertical,
+QTableWidget#OpsDataTable QScrollBar:vertical,
+QScrollArea#OpsDashboardScroll QScrollBar:vertical {
+    background: rgba(255, 255, 255, 0.05);
+    width: 10px;
+    margin: 2px 2px 2px 0;
+    border-radius: 5px;
+}
+
+QTableView#OpsDataTable QScrollBar::handle:vertical,
+QTableWidget#OpsDataTable QScrollBar::handle:vertical,
+QScrollArea#OpsDashboardScroll QScrollBar::handle:vertical {
+    background: {{BG_HOVER}};
+    border-radius: 5px;
+    min-height: 36px;
+}
+
+QTableView#OpsDataTable QScrollBar::add-line:vertical,
+QTableView#OpsDataTable QScrollBar::sub-line:vertical,
+QTableWidget#OpsDataTable QScrollBar::add-line:vertical,
+QTableWidget#OpsDataTable QScrollBar::sub-line:vertical,
+QScrollArea#OpsDashboardScroll QScrollBar::add-line:vertical,
+QScrollArea#OpsDashboardScroll QScrollBar::sub-line:vertical {
+    height: 0;
+    border: none;
+    background: transparent;
+}
+
+QTableView#OpsDataTable QScrollBar:horizontal,
+QTableWidget#OpsDataTable QScrollBar:horizontal {
+    background: rgba(255, 255, 255, 0.05);
+    height: 10px;
+    margin: 0 2px 2px 2px;
+    border-radius: 5px;
+}
+
+QTableView#OpsDataTable QScrollBar::handle:horizontal,
+QTableWidget#OpsDataTable QScrollBar::handle:horizontal {
+    background: {{BG_HOVER}};
+    border-radius: 5px;
+    min-width: 36px;
+}
+
+/* ========== 进度条 ========== */
+QProgressBar {
+    background-color: {{BG_ELEVATED}};
+    border: none;
+    border-radius: 3px;
+    max-height: 6px;
+    min-height: 6px;
+    text-align: center;
+    color: transparent;
+}
+
+QProgressBar::chunk {
+    background-color: {{ACCENT}};
+    border-radius: 3px;
+}
+
+/* ========== Tab ========== */
+QTabWidget::pane {
+    background-color: transparent;
+    border: none;
+    padding: 12px 0 0 0;
+}
+
+QTabBar::tab {
+    background-color: transparent;
+    color: {{TEXT_SECONDARY}};
+    padding: 10px 20px;
+    border-bottom: 2px solid transparent;
+}
+
+QTabBar::tab:selected {
+    color: {{ACCENT}};
+    border-bottom: 2px solid {{ACCENT}};
+}
+
+QTabBar::tab:hover {
+    color: {{TEXT_PRIMARY}};
+    background-color: rgba(255, 255, 255, 0.04);
+}
+
+/* ========== 树 / 列表 ========== */
+QTreeWidget, QListWidget, TreeWidget {
+    background-color: {{BG_TERTIARY}};
+    border: 1px solid {{BORDER}};
+    border-radius: {{RADIUS_MD}};
+    color: {{TEXT_PRIMARY}};
+}
+
+QTreeWidget::item:hover, QListWidget::item:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+QTreeWidget::item:selected, QListWidget::item:selected {
+    background-color: rgba(170, 199, 255, 0.15);
+    color: {{ACCENT}};
+}
+
+/* ========== 滚动条 ========== */
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 4px;
+}
+
+QScrollBar::handle:vertical {
+    background: {{BG_HOVER}};
+    border-radius: 4px;
+    min-height: 30px;
+}
+
+QScrollBar:horizontal {
+    background: transparent;
+    height: 8px;
+}
+
+QScrollBar::handle:horizontal {
+    background: {{BG_HOVER}};
+    border-radius: 4px;
+}
+
+/* ========== 标签 ========== */
+QLabel[variant="subtitle"], SubtitleLabel {
+    font-size: 20px;
+    font-weight: 600;
+    color: {{TEXT_PRIMARY}};
+}
+
+CaptionLabel, QLabel[variant="caption"] {
+    color: {{TEXT_SECONDARY}};
+    font-size: 12px;
+}
+
+/* ========== 图表区域（卡片内嵌，仅细边框不叠底色） ========== */
+ChartPanel,
+QWidget#ChartPanel {
+    background-color: transparent;
+    border: 1px solid {{BORDER_LIGHT}};
+    border-radius: {{RADIUS_MD}};
+    min-height: 220px;
+}
+
+/* ========== 系统 / Fluent 对话框（避免浅色底 + 浅色字不可读） ========== */
+QDialog,
+QMessageBox,
+MessageBox,
+MaskDialogBase {
+    background-color: {{BG_TERTIARY}};
+    color: {{TEXT_PRIMARY}};
+    border: 1px solid {{BORDER}};
+    border-radius: {{RADIUS_MD}};
+}
+
+QDialog QLabel,
+QMessageBox QLabel,
+MessageBox QLabel {
+    color: {{TEXT_PRIMARY}};
+    background-color: transparent;
+}
+
+QMessageBox QLabel#qt_msgbox_label,
+QMessageBox QLabel#qt_msgboxex_icon_label {
+    color: {{TEXT_PRIMARY}};
+    background-color: transparent;
+}
+
+QInputDialog {
+    background-color: {{BG_TERTIARY}};
+    color: {{TEXT_PRIMARY}};
+}
+
+QInputDialog QLabel {
+    color: {{TEXT_PRIMARY}};
+    background-color: transparent;
+}
+
+QDialog QPushButton,
+QMessageBox QPushButton,
+MessageBox QPushButton {
+    background-color: {{BG_ELEVATED}};
+    color: {{TEXT_PRIMARY}};
+    border: 1px solid {{BORDER}};
+    border-radius: {{RADIUS_SM}};
+    padding: 8px 18px;
+    min-width: 72px;
+    min-height: 32px;
+}
+
+QDialog QPushButton:hover,
+QMessageBox QPushButton:hover,
+MessageBox QPushButton:hover {
+    background-color: {{BG_HOVER}};
+    border-color: {{BORDER_PANEL}};
+}
+
+QDialog QPushButton:default,
+QMessageBox QPushButton:default,
+MessageBox QPushButton:default {
+    background-color: {{ACCENT_SURFACE}};
+    color: {{ACCENT}};
+    border: 1px solid {{ACCENT_SURFACE_BORDER}};
+}
+
+/* ========== Fluent 顶部通知条 ========== */
+InfoBar,
+InfoBar * {
+    color: {{TEXT_PRIMARY}};
+}
+
+InfoBar {
+    background-color: {{BG_ELEVATED}};
+    border: 1px solid {{BORDER}};
+    border-radius: {{RADIUS_SM}};
+}
+
+InfoBar QLabel {
+    color: {{TEXT_PRIMARY}};
+    background-color: transparent;
+}
+
+/* ========== 工具提示 ========== */
+QToolTip {
+    background-color: {{BG_ELEVATED}};
+    color: {{TEXT_PRIMARY}};
+    border: 1px solid {{BORDER}};
+    padding: 6px 10px;
+    border-radius: {{RADIUS_SM}};
+}

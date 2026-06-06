@@ -13,8 +13,14 @@ from qfluentwidgets import (CardWidget, SubtitleLabel, CaptionLabel, BodyLabel,
                            TimePicker, SwitchButton)
 from PyQt6.QtCore import QTime
 from utils.logger_loguru import get_logger
-from config import config
+from config import config, get_config
 from utils.dialogs import confirm_action
+from utils.env_secrets import (
+    effective_secret,
+    persist_settings_secrets,
+    secret_configured,
+    strip_secrets_for_json,
+)
 
 
 
@@ -81,8 +87,19 @@ class LLMConfigCard(CardWidget):
 
     def setConfig(self, config: dict):
         """设置配置"""
-        self.api_base_edit.setText(config.get("api_base", "https://ark.cn-beijing.volces.com/api/v3"))
-        self.api_key_edit.setText(config.get("api_key", ""))
+        self.api_base_edit.setText(
+            config.get("api_base") or "https://ark.cn-beijing.volces.com/api/v3"
+        )
+        key = (config.get("api_key") or "").strip()
+        if key:
+            self.api_key_edit.setText(key)
+            self.api_key_edit.setPlaceholderText("输入您的 API Key")
+        else:
+            self.api_key_edit.clear()
+            if config.get("_from_env"):
+                self.api_key_edit.setPlaceholderText("已从 .env 加载（留空不修改）")
+            else:
+                self.api_key_edit.setPlaceholderText("输入您的 API Key")
         self.model_name_edit.setText(config.get("model_name", ""))
 
 
@@ -146,8 +163,19 @@ class EmbedderConfigCard(CardWidget):
 
     def setConfig(self, config: dict):
         """设置配置"""
-        self.api_base_edit.setText(config.get("api_base", "https://ark.cn-beijing.volces.com/api/v3"))
-        self.api_key_edit.setText(config.get("api_key", ""))
+        self.api_base_edit.setText(
+            config.get("api_base") or "https://ark.cn-beijing.volces.com/api/v3"
+        )
+        key = (config.get("api_key") or "").strip()
+        if key:
+            self.api_key_edit.setText(key)
+            self.api_key_edit.setPlaceholderText("输入嵌入模型的 API Key（可选）")
+        else:
+            self.api_key_edit.clear()
+            if config.get("_from_env"):
+                self.api_key_edit.setPlaceholderText("已从 .env 加载（留空不修改）")
+            else:
+                self.api_key_edit.setPlaceholderText("输入嵌入模型的 API Key（可选）")
         self.model_name_edit.setText(config.get("model_name", ""))
 
 
@@ -347,7 +375,7 @@ class PinduoduoOpenConfigCard(CardWidget):
         description_label = CaptionLabel(
             "用于买家咨询物流时调用开放平台接口（如 pdd.logistics.ordertrace.get）。\n"
             "在 open.pinduoduo.com 创建应用并完成店铺授权后填写；未启用时不影响普通聊天与商品 MMS 接口。\n"
-            "与 .env 中 PDD_ENABLED / PDD_CLIENT_ID / PDD_CLIENT_SECRET / PDD_ACCESS_TOKEN 对应，保存后写入 config.json。"
+            "小商家可留空；仅在使用开放平台物流查询时填写。密钥保存到 .env，Client ID 等非敏感项写入 config.json。"
         )
         description_label.setStyleSheet("color: #9EA6B8; padding: 8px 0;")
         description_label.setWordWrap(True)
@@ -373,8 +401,24 @@ class PinduoduoOpenConfigCard(CardWidget):
         po = po or {}
         self.enabled_cb.setChecked(self._coerce_enabled(po.get("enabled", False)))
         self.client_id_edit.setText(str(po.get("client_id", "") or ""))
-        self.client_secret_edit.setText(str(po.get("client_secret", "") or ""))
-        self.access_token_edit.setText(str(po.get("access_token", "") or ""))
+        sec = str(po.get("client_secret", "") or "").strip()
+        tok = str(po.get("access_token", "") or "").strip()
+        if sec:
+            self.client_secret_edit.setText(sec)
+            self.client_secret_edit.setPlaceholderText("应用 client_secret")
+        else:
+            self.client_secret_edit.clear()
+            self.client_secret_edit.setPlaceholderText(
+                "已从 .env 加载（留空不修改）" if po.get("_secrets_from_env") else "应用 client_secret"
+            )
+        if tok:
+            self.access_token_edit.setText(tok)
+            self.access_token_edit.setPlaceholderText("店铺授权 access_token")
+        else:
+            self.access_token_edit.clear()
+            self.access_token_edit.setPlaceholderText(
+                "已从 .env 加载（留空不修改）" if po.get("_secrets_from_env") else "店铺授权 access_token"
+            )
 
 
 class BusinessHoursCard(CardWidget):
@@ -597,20 +641,19 @@ class SettingUI(QFrame):
             "client_secret": str(po.get("client_secret", "") or ""),
             "access_token": str(po.get("access_token", "") or ""),
         }
-        env_map = (
-            ("enabled", "PDD_ENABLED"),
-            ("client_id", "PDD_CLIENT_ID"),
-            ("client_secret", "PDD_CLIENT_SECRET"),
-            ("access_token", "PDD_ACCESS_TOKEN"),
+        out["enabled"] = PinduoduoOpenConfigCard._coerce_enabled(
+            get_config("pinduoduo_open.enabled", out["enabled"])
         )
-        for key, env_key in env_map:
-            val = os.getenv(env_key)
-            if val is None or str(val).strip() == "":
-                continue
-            if key == "enabled":
-                out[key] = str(val).strip().lower() in ("1", "true", "yes", "on")
-            elif not out.get(key):
-                out[key] = str(val).strip()
+        if not out["client_id"]:
+            out["client_id"] = str(get_config("pinduoduo_open.client_id", "") or "")
+        sec = str(get_config("pinduoduo_open.client_secret", "") or "")
+        tok = str(get_config("pinduoduo_open.access_token", "") or "")
+        out["client_secret"] = sec
+        out["access_token"] = tok
+        out["_secrets_from_env"] = bool(
+            (secret_configured("pinduoduo_open.client_secret") and not po.get("client_secret"))
+            or (secret_configured("pinduoduo_open.access_token") and not po.get("access_token"))
+        )
         return out
 
     def loadConfig(self):
@@ -619,14 +662,22 @@ class SettingUI(QFrame):
             # 从配置模块获取各个配置项
             loaded_config = {
                 "llm": {
-                    "api_base": config.get("llm.api_base", "https://ark.cn-beijing.volces.com/api/v3"),
-                    "api_key": config.get("llm.api_key", ""),
-                    "model_name": config.get("llm.model_name", "doubao-seed-1-6-flash-250828")
+                    "api_base": get_config("llm.api_base")
+                    or config.get("llm.api_base", "https://ark.cn-beijing.volces.com/api/v3"),
+                    "api_key": get_config("llm.api_key", "") or "",
+                    "model_name": get_config("llm.model_name")
+                    or config.get("llm.model_name", "doubao-seed-1-6-flash-250828"),
+                    "_from_env": secret_configured("llm.api_key")
+                    and not (config.get("llm.api_key") or "").strip(),
                 },
                 "embedder": {
-                    "api_base": config.get("embedder.api_base", "https://ark.cn-beijing.volces.com/api/v3"),
-                    "api_key": config.get("embedder.api_key", ""),
-                    "model_name": config.get("embedder.model_name", "doubao-embedding-large-text-250515")
+                    "api_base": get_config("embedder.api_base")
+                    or config.get("embedder.api_base", "https://ark.cn-beijing.volces.com/api/v3"),
+                    "api_key": get_config("embedder.api_key", "") or "",
+                    "model_name": get_config("embedder.model_name")
+                    or config.get("embedder.model_name", "doubao-embedding-large-text-250515"),
+                    "_from_env": secret_configured("embedder.api_key")
+                    and not (config.get("embedder.api_key") or "").strip(),
                 },
                 "knowledge_base": {
                     "contents_db_path": config.get("knowledge_base.contents_db_path", ""),
@@ -766,43 +817,60 @@ class SettingUI(QFrame):
             business_config = self.business_hours_card.getConfig()
             pinduoduo_open_config = self.pinduoduo_open_card.getConfig()
 
-            # 合并配置为新的结构
+            persist_settings_secrets(
+                llm=llm_config,
+                embedder=embedder_config,
+                pinduoduo_open=pinduoduo_open_config,
+            )
+            llm_json, emb_json, po_json = strip_secrets_for_json(
+                llm_config, embedder_config, pinduoduo_open_config
+            )
+            for d in (llm_json, emb_json):
+                d.pop("_from_env", None)
+            po_json.pop("_secrets_from_env", None)
+
             new_config = {
-                "llm": llm_config,
-                "embedder": embedder_config,
+                "llm": llm_json,
+                "embedder": emb_json,
                 "knowledge_base": knowledge_config,
                 "prompt": prompt_config,
-                "pinduoduo_open": pinduoduo_open_config,
+                "pinduoduo_open": po_json,
                 "business_hours": business_config.get("businessHours", {"start": "08:00", "end": "23:00"}),
-                # 保持与旧配置的兼容性
-                "db_path": config.get("db_path", "")
+                "db_path": config.get("db_path", ""),
             }
 
             if pinduoduo_open_config.get("enabled"):
-                if not pinduoduo_open_config.get("client_id") or not pinduoduo_open_config.get(
-                    "client_secret"
+                if not effective_secret(
+                    "pinduoduo_open.client_secret",
+                    pinduoduo_open_config.get("client_secret", ""),
+                ) and not effective_secret(
+                    "pinduoduo_open.access_token",
+                    pinduoduo_open_config.get("access_token", ""),
                 ):
-                    QMessageBox.warning(
-                        self,
-                        "配置提示",
-                        "已启用拼多多开放平台，请填写 Client ID 与 Client Secret。",
-                    )
-                    return
-                if not pinduoduo_open_config.get("access_token"):
-                    QMessageBox.warning(
-                        self,
-                        "配置提示",
-                        "已启用拼多多开放平台，但未填写 Access Token，"
-                        "买家咨询物流时将无法查询轨迹，仅可文字引导或转人工。",
+                    InfoBar.warning(
+                        title="开放平台",
+                        content="已启用但未配置密钥，物流查询将不可用（可稍后在 .env 或此处补全）。",
+                        orient=Qt.Orientation.Horizontal,
+                        isClosable=True,
+                        position=InfoBarPosition.TOP,
+                        duration=4000,
+                        parent=self,
                     )
 
-            # 验证 LLM 必填项
-            if not llm_config.get("api_key"):
-                QMessageBox.warning(self, "配置错误", "请输入LLM API Key！")
+            if not effective_secret("llm.api_key", llm_config.get("api_key", "")):
+                QMessageBox.warning(
+                    self,
+                    "配置错误",
+                    "请填写 LLM API Key，或在项目根目录 .env 中设置 LLM_API_KEY。",
+                )
                 return
-            if not llm_config.get("model_name"):
-                QMessageBox.warning(self, "配置错误", "请输入LLM模型名称！")
+            model_name = (llm_config.get("model_name") or "").strip() or str(
+                get_config("llm.model_name", "") or ""
+            ).strip()
+            if not model_name:
+                QMessageBox.warning(self, "配置错误", "请输入 LLM 模型名称！")
                 return
+            llm_config["model_name"] = model_name
 
             # 验证时间设置
             start_time = self.business_hours_card.start_time_picker.getTime()

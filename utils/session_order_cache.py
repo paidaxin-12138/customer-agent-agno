@@ -9,16 +9,30 @@ from typing import Dict, Optional, Tuple
 
 _CACHE: Dict[str, Tuple[str, float]] = {}
 _DEFAULT_TTL_SEC = 3600
+_MAX_CACHE_KEYS = 10_000
 
 
 def _key(shop_id: str, buyer_uid: str) -> str:
     return f"{shop_id}:{buyer_uid}"
 
 
+def _trim_ttl_cache(cache: Dict[str, Tuple[str, float]], *, max_keys: int) -> None:
+    now = time.time()
+    for k in [k for k, (_, exp) in cache.items() if now > exp]:
+        cache.pop(k, None)
+    while len(cache) > max_keys:
+        oldest = min(cache.items(), key=lambda x: x[1][1])[0]
+        cache.pop(oldest, None)
+
+
 def remember_order(shop_id: str, buyer_uid: str, order_sn: str, ttl_sec: int = _DEFAULT_TTL_SEC) -> None:
     if not shop_id or not buyer_uid or not order_sn:
         return
-    _CACHE[_key(str(shop_id), str(buyer_uid))] = (str(order_sn).strip(), time.time() + max(60, int(ttl_sec)))
+    _trim_ttl_cache(_CACHE, max_keys=_MAX_CACHE_KEYS)
+    _CACHE[_key(str(shop_id), str(buyer_uid))] = (
+        str(order_sn).strip(),
+        time.time() + max(60, int(ttl_sec)),
+    )
 
 
 def get_recent_order(shop_id: str, buyer_uid: str) -> Optional[str]:

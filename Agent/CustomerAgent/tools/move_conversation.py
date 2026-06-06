@@ -1,6 +1,7 @@
 from agno.run import RunContext
-from Channel.pinduoduo.utils.API.send_message import SendMessage
 from agno.tools import tool
+from Channel.pinduoduo.utils.API.send_message import SendMessage
+from utils.agent_tool_guard import allow_transfer_tool_call, bind_tool_session_params
 from utils.logger_loguru import get_logger
 
 logger = get_logger("TransferConversationTool")
@@ -36,11 +37,29 @@ def _select_best_cs_uid(cs_list: dict, my_cs_uid: str) -> str | None:
     return candidates[0][1]
 
 @tool(name="transfer_conversation", description="将当前会话转接给人工客服。")
-def transfer_conversation(shop_id: str, user_id: str, recipient_uid: str) -> str:
+def transfer_conversation(
+    run_context: RunContext,
+    shop_id: str,
+    user_id: str,
+    recipient_uid: str,
+) -> str:
     """
     将当前会话转接给人工客服。
     """
     try:
+        deps = getattr(run_context, "dependencies", None) or {}
+        allowed, deny_reason = allow_transfer_tool_call(deps)
+        if not allowed:
+            logger.info("transfer_conversation 被拒绝: {}", deny_reason)
+            return deny_reason
+
+        shop_id, user_id, recipient_uid, bind_err = bind_tool_session_params(
+            deps, shop_id=shop_id, user_id=user_id, recipient_uid=recipient_uid
+        )
+        if bind_err:
+            logger.info("transfer_conversation 会话绑定失败: {}", bind_err)
+            return bind_err
+
         try:
             from core.ops_telemetry import record_tool_call
 
@@ -50,9 +69,6 @@ def transfer_conversation(shop_id: str, user_id: str, recipient_uid: str) -> str
             )
         except Exception:
             pass
-
-        if not all([shop_id, user_id, recipient_uid]):
-            return f"转接失败：缺少必要的会话信息 (shop_id={shop_id}, user_id={user_id}, recipient_uid={recipient_uid})"
 
         sender = SendMessage(shop_id, user_id)
         cs_list = sender.getAssignCsList()

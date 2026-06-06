@@ -1,0 +1,57 @@
+# 可复用测试作业：由 ci.yml 在 push/PR 时调用，避免与其它 workflow 重复跑测
+name: Test
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Run tests with coverage
+        run: >-
+          uv run python -m pytest test/ -q --tb=short -m "not perf"
+          --cov=Message --cov=bridge --cov=core --cov=database --cov=utils
+          --cov-report=term-missing:skip-covered --cov-report=xml
+          --cov-fail-under=65
+        env:
+          ALLOW_PLAINTEXT_CREDENTIALS: "1"
+          STRICT_CONFIG: "0"
+          CHAT_MESSAGE_BUFFER_DISABLE: "1"
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.xml
+          fail_ci_if_error: false
+
+      - name: Performance baseline (informational)
+        run: uv run python -m pytest test/test_concurrency_benchmark.py -q -m perf -s
+        env:
+          ALLOW_PLAINTEXT_CREDENTIALS: "1"
+          STRICT_CONFIG: "0"
+
+      - name: Upload perf baseline artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-baseline
+          path: logs/perf_baseline.json
+          if-no-files-found: ignore

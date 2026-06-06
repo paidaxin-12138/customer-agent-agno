@@ -12,40 +12,14 @@ from typing import Any, Dict, Optional
 
 from bridge.context import Context, ContextType, ChannelType
 
+from utils.logistics_intent import is_logistics_intent
+
 from .base import BaseHandler
 
 
 def _is_logistics_intent(text: str) -> bool:
-    """询问包裹/物流进度（避免误伤闲聊）。"""
-    t = (text or "").strip()
-    if not t:
-        return False
-    strong = (
-        "物流",
-        "查物流",
-        "快递到哪",
-        "快递哪里",
-        "快递呢",
-        "发货了吗",
-        "发货没",
-        "发了吗",
-        "揽收",
-        "派送",
-        "派件",
-        "轨迹",
-        "运单号",
-        "运单",
-        "到哪了",
-        "到哪里了",
-        "几天到",
-        "什么时候到",
-        "啥时候到",
-    )
-    if any(s in t for s in strong):
-        return True
-    if "快递" in t and any(x in t for x in ("哪", "查", "单", "多久", "几天")):
-        return True
-    return False
+    """向后兼容别名。"""
+    return is_logistics_intent(text)
 
 
 def _kw(context: Context, key: str) -> Any:

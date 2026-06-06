@@ -5,14 +5,17 @@
 - 配置上限（代码中的 Semaphore / 队列容量）
 - 不同买家：消费者可同时处理的最大任务数
 - 同一买家：受 per-buyer Lock 限制，应接近串行
+- ``test_perf_consumer_latency_p95``：输出 P95 处理延迟（仅报告，不作为门禁）
 """
 
 from __future__ import annotations
 
 import asyncio
+import statistics
 import time
 from dataclasses import dataclass
 from typing import List
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -21,7 +24,7 @@ from Message.core.consumer import MessageConsumer
 from Message.core.handlers import MessageHandler
 from Message.core.queue import queue_manager
 from Message.models.queue_models import MessageWrapper, QueueConfig
-from Channel.pinduoduo.pdd_chnnel import PDDChannel
+from Channel.pinduoduo.pdd_channel import PDDChannel
 
 
 # ---------- 配置快照（与线上一致） ----------
@@ -119,19 +122,40 @@ async def _run_consumer_bench(
         uid = f"buyer_{i}" if unique_buyers else "buyer_same"
         await queue.put(_make_context(uid))
 
-    await consumer.start()
-    t0 = time.perf_counter()
-    deadline = t0 + 30.0
-    while (
-        handler.processed_count < message_count
-        or queue.size() > 0
-        or handler._in_flight > 0
-    ):
-        if time.perf_counter() > deadline:
-            break
-        await asyncio.sleep(0.02)
-    elapsed = time.perf_counter() - t0
-    await consumer.stop()
+    patches = [
+        patch(
+            "Message.handlers.ai_reply_watchdog.start_inbound_watchdog",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+        patch(
+            "utils.inbound_transfer_gate.should_block_handler_until_transfer",
+            return_value=False,
+        ),
+        patch(
+            "Agent.CustomerAgent.conversation_memory.prime_session_stage_on_context",
+        ),
+        patch("utils.intent_stage_reset.try_intent_stage_reset", return_value=False),
+    ]
+    for p in patches:
+        p.start()
+    try:
+        await consumer.start()
+        t0 = time.perf_counter()
+        deadline = t0 + 30.0
+        while (
+            handler.processed_count < message_count
+            or queue.size() > 0
+            or handler._in_flight > 0
+        ):
+            if time.perf_counter() > deadline:
+                break
+            await asyncio.sleep(0.02)
+        elapsed = time.perf_counter() - t0
+        await consumer.stop()
+    finally:
+        for p in patches:
+            p.stop()
 
     serial_time = message_count * handler_delay
     effective = serial_time / elapsed if elapsed > 0 else 0.0
@@ -200,6 +224,87 @@ async def test_same_buyer_serializes_per_lock():
     assert r.peak_parallel == 1, r.as_dict()
     serial_min = message_count * handler_delay * 0.75
     assert r.elapsed_sec >= serial_min, r.as_dict()
+
+
+@pytest.mark.perf
+@pytest.mark.asyncio
+async def test_perf_consumer_latency_p95(capsys):
+    """
+    可重复运行的性能探针：记录单条消息处理耗时的 P95（毫秒）。
+    不作为 CI 门禁，仅输出 PERF_CONSUMER_P95_MS 供基线对比。
+    """
+    samples_ms: List[float] = []
+    n = 24
+    handler_delay = 0.04
+
+    class _TimingHandler(_SleepHandler):
+        async def handle(self, context, metadata: dict) -> bool:
+            t0 = time.perf_counter()
+            try:
+                return await super().handle(context, metadata)
+            finally:
+                samples_ms.append((time.perf_counter() - t0) * 1000.0)
+
+    queue_name = f"perf_p95_{int(time.time() * 1000)}"
+    queue_manager.recreate_queue(queue_name, QueueConfig(max_size=n + 4))
+    handler = _TimingHandler(delay_sec=handler_delay)
+    consumer = MessageConsumer(queue_name, max_concurrent=8)
+    consumer.handlers = [handler]
+    queue = queue_manager.get_or_create_queue(queue_name)
+    for i in range(n):
+        await queue.put(_make_context(f"perf_buyer_{i}"))
+
+    patches = [
+        patch(
+            "Message.handlers.ai_reply_watchdog.start_inbound_watchdog",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+        patch(
+            "utils.inbound_transfer_gate.should_block_handler_until_transfer",
+            return_value=False,
+        ),
+        patch(
+            "Agent.CustomerAgent.conversation_memory.prime_session_stage_on_context",
+        ),
+        patch("utils.intent_stage_reset.try_intent_stage_reset", return_value=False),
+    ]
+    for p in patches:
+        p.start()
+    try:
+        await consumer.start()
+        deadline = time.perf_counter() + 20.0
+        while handler.processed_count < n and time.perf_counter() < deadline:
+            await asyncio.sleep(0.02)
+        await consumer.stop()
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert len(samples_ms) >= n - 1
+    p95 = statistics.quantiles(samples_ms, n=20)[18] if len(samples_ms) >= 2 else samples_ms[0]
+    p50 = statistics.median(samples_ms)
+    payload = {
+        "p50_ms": round(float(p50), 2),
+        "p95_ms": round(float(p95), 2),
+        "samples": len(samples_ms),
+        "handler_delay_sec": handler_delay,
+        "message_count": n,
+    }
+    print(
+        f"\nPERF_CONSUMER_P50_MS={payload['p50_ms']:.2f} "
+        f"PERF_CONSUMER_P95_MS={payload['p95_ms']:.2f} "
+        f"samples={payload['samples']}"
+    )
+    try:
+        import json
+        from pathlib import Path
+
+        out = Path("logs/perf_baseline.json")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"PERF_BASELINE_WRITE_SKIP={exc}")
 
 
 @pytest.mark.asyncio

@@ -122,7 +122,9 @@ def _summarize_trace_dict(d: Dict[str, Any], depth: int = 0) -> str:
 
 def open_platform_logistics_ready() -> bool:
     """开放平台物流降级是否可用（enabled 且密钥齐全）。"""
-    po = config.get("pinduoduo_open") or {}
+    from config import get_config
+
+    po = get_config("pinduoduo_open") or {}
     if not isinstance(po, dict):
         return False
     if not po.get("enabled", True):

@@ -3,7 +3,10 @@
 macOS 风格设计
 """
 
+import os
 import sys
+import threading
+import time
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QApplication,
@@ -16,17 +19,34 @@ from PyQt6.QtWidgets import (
     QWidget,
     QSplitter,
 )
-from PyQt6.QtGui import QFont, QIcon
+from PyQt6.QtGui import QCloseEvent, QFont, QIcon
 from qfluentwidgets import FluentWindow, NavigationItemPosition
 from qfluentwidgets import FluentIcon as FIF
 import time
 
-from ui.dark_apple_style import apply_dark_apple_style
-from ui.macos_design import MacOSFonts, MacOSSpacing
+from ui.macos_fonts import MacOSFonts, MacOSSpacing
+from ui.macos_window_chrome import apply_dark_titlebar_chrome, use_unified_dark_titlebar
+from utils.dialogs import confirm_action
 from utils.logger_loguru import get_logger
 from utils.runtime_path import get_app_icon_path
 
 logger = get_logger("MainWindow")
+
+SHUTDOWN_TIMEOUT_SEC = 5.0
+
+
+async def stop_all_services() -> None:
+    """异步停止 WebSocket、消息消费者、Watchdog 等后台服务（委托 core.app_shutdown）。"""
+    from core.app_shutdown import stop_all_services as _stop
+
+    await _stop()
+
+
+def run_stop_all_services_sync(timeout: float = SHUTDOWN_TIMEOUT_SEC) -> None:
+    """同步执行服务清理，最多等待 timeout 秒。"""
+    from core.app_shutdown import run_stop_all_services_sync as _run
+
+    _run(timeout)
 
 
 class Widget(QFrame):
@@ -70,12 +90,11 @@ class MainWindow(FluentWindow):
             self.setWindowIcon(QIcon(str(_icon)))
         self.setMinimumSize(1200, 800)
         self.resize(1400, 900)
-        
+        if sys.platform == "darwin":
+            use_unified_dark_titlebar(self)
+
         logger.info(f"基础属性初始化：{time.perf_counter()-t:.2f}s")
-        
-        # 应用深色 Apple 风格设计系统
-        apply_dark_apple_style(QApplication.instance())
-        
+
         # 延迟加载的视图
         self.monitor_view = None
         self.ops_dashboard_view = None
@@ -86,6 +105,12 @@ class MainWindow(FluentWindow):
         self.knowledge_view = None
         self.settingInterface = None
         self.ai_test_view = None
+        self._navigation_ready = False
+        self._was_on_chat_page = False
+        self._chat_page_index = -1
+        self._page_change_timer = QTimer(self)
+        self._page_change_timer.setSingleShot(True)
+        self._page_change_timer.timeout.connect(self._apply_page_changed)
         
         t = time.perf_counter()
         # 立即初始化导航和窗口
@@ -110,7 +135,10 @@ class MainWindow(FluentWindow):
         )
         self._session_idle_closer.start()
         QTimer.singleShot(800, self._show_startup_config_hints)
+        QTimer.singleShot(1200, self._warm_knowledge_index)
         self._init_system_tray()
+        self._force_quit = False
+        self._closing = False
 
     def _init_system_tray(self) -> None:
         """系统托盘：关闭窗口时最小化到托盘。"""
@@ -119,7 +147,13 @@ class MainWindow(FluentWindow):
             return
         app = QApplication.instance()
         if app is not None:
-            app.setQuitOnLastWindowClosed(False)
+            try:
+                from config import get_config
+
+                minimize = bool(get_config("ui.minimize_to_tray_on_close", False))
+            except Exception:
+                minimize = False
+            app.setQuitOnLastWindowClosed(not minimize)
 
         self._tray_icon = QSystemTrayIcon(self)
         _icon = get_app_icon_path()
@@ -145,9 +179,14 @@ class MainWindow(FluentWindow):
         self.activateWindow()
 
     def _quit_from_tray(self) -> None:
+        """托盘退出：走主窗口 close()，确保先完成资源清理。"""
+        self._force_quit = True
         if getattr(self, "_tray_icon", None):
             self._tray_icon.hide()
-        QApplication.instance().quit()
+        app = QApplication.instance()
+        if app is not None:
+            app.setQuitOnLastWindowClosed(True)
+        self.close()
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
@@ -181,7 +220,8 @@ class MainWindow(FluentWindow):
         try:
             from utils.config_startup import validate_startup_config
 
-            issues = validate_startup_config()
+            errors, warnings = validate_startup_config()
+            issues = errors + warnings
             if not issues:
                 return
             from qfluentwidgets import InfoBar, InfoBarPosition
@@ -201,6 +241,15 @@ class MainWindow(FluentWindow):
                 self.notify_user("配置提示", issues[0], tray_only=True)
         except Exception as e:
             logger.debug(f"启动配置提示跳过: {e}")
+
+    def _warm_knowledge_index(self) -> None:
+        """窗口显示后在后台预热知识库索引，不阻塞 UI。"""
+        try:
+            from Agent.CustomerAgent.agent_knowledge import get_knowledge_manager
+
+            get_knowledge_manager()
+        except Exception as e:
+            logger.debug("知识库预热跳过: {}", e)
 
     def initNavigation(self):
         """初始化导航栏 - macOS 风格"""
@@ -356,47 +405,81 @@ class MainWindow(FluentWindow):
         
         # 初始化导航
         self.initNavigation()
-        
-        # 连接页面切换信号，监控是否离开聊天窗口
-        # 使用 stackedWidget 的 currentChanged 信号（兼容不同版本的 PyQt-Fluent-Widgets）
+        self._configure_navigation()
+
+        # 连接页面切换信号：仅在导航就绪后、且确认离开聊天页时切回 AI
         try:
-            if hasattr(self, 'stackedWidget') and self.stackedWidget:
-                self.stackedWidget.currentChanged.connect(self._on_page_changed)
-                logger.info("✅ 已连接 stackedWidget 页面切换监控")
-            elif hasattr(self.navigationInterface, 'panelLayout'):
-                self.navigationInterface.panelLayout.currentChanged.connect(self._on_page_changed)
-                logger.info("✅ 已连接 panelLayout 页面切换监控")
+            sw = getattr(self, "stackedWidget", None)
+            if sw is not None:
+                self._chat_page_index = self._index_of_stacked_widget(self.live_chat_view)
+                sw.currentChanged.connect(self._on_page_changed)
+                logger.info(
+                    "✅ 已连接 stackedWidget 页面切换监控 chat_index={}",
+                    self._chat_page_index,
+                )
             else:
-                logger.warning("⚠️ 未找到可用的页面切换信号")
+                logger.warning("⚠️ 未找到 stackedWidget，跳过页面切换监控")
         except Exception as e:
             logger.error(f"❌ 连接页面切换信号失败：{e}")
+        self._navigation_ready = True
         
         logger.info(f"延迟视图初始化耗时：{time.perf_counter() - t0:.2f}s")
 
-    def _on_page_changed(self, index: int = None):
-        """页面切换时的处理 - 离开聊天窗口时自动切回 AI 接待"""
+    def _configure_navigation(self) -> None:
+        """侧栏 280px、默认展开，符合 SaaS 看板布局。"""
+        nav = getattr(self, "navigationInterface", None)
+        if nav is None:
+            return
         try:
-            if not self.live_chat_view:
+            if hasattr(nav, "setExpandWidth"):
+                nav.setExpandWidth(280)
+            if hasattr(nav, "setCollapsible"):
+                nav.setCollapsible(False)
+            if hasattr(nav, "expand"):
+                nav.expand(useAni=False)
+        except Exception as e:
+            logger.debug("导航栏配置跳过: {}", e)
+
+    def _index_of_stacked_widget(self, widget) -> int:
+        sw = getattr(self, "stackedWidget", None)
+        if sw is None or widget is None:
+            return -1
+        for i in range(sw.count()):
+            if sw.widget(i) is widget:
+                return i
+        return -1
+
+    def _is_chat_page_active(self) -> bool:
+        """当前 stacked 页是否为实时聊天（索引 + widget 双重判断，避免初始化误触发）。"""
+        if not getattr(self, "live_chat_view", None):
+            return False
+        sw = getattr(self, "stackedWidget", None)
+        if sw is None:
+            return False
+        current = sw.currentWidget()
+        if current is self.live_chat_view:
+            return True
+        chat_idx = int(getattr(self, "_chat_page_index", -1))
+        return chat_idx >= 0 and sw.currentIndex() == chat_idx
+
+    def _on_page_changed(self, index: int = None) -> None:
+        """页面切换去抖：stackedWidget 在 addSubInterface 时会连续触发 currentChanged。"""
+        if not getattr(self, "_navigation_ready", False):
+            return
+        self._pending_page_index = index
+        self._page_change_timer.start(80)
+
+    def _apply_page_changed(self) -> None:
+        """仅在「从聊天页切到其他页」时恢复 AI 接待，避免同页或初始化误触发。"""
+        try:
+            if not getattr(self, "live_chat_view", None):
                 return
+            is_chat = self._is_chat_page_active()
+            was_chat = bool(getattr(self, "_was_on_chat_page", False))
 
-            sw = getattr(self, "stackedWidget", None)
-            if sw is None:
-                return
-
-            if index is None:
-                index = sw.currentIndex()
-            current_widget = sw.widget(index) if index >= 0 else sw.currentWidget()
-            is_chat_page = current_widget is self.live_chat_view
-
-            if not is_chat_page:
-                logger.info("检测到离开实时聊天页面，自动切回 AI 接待")
-                try:
-                    self.live_chat_view._restore_ai_for_current_if_manual()
-                    logger.info("已自动切回 AI 接待模式")
-                except Exception as e:
-                    logger.debug(f"切换 AI 模式失败：{e}")
-            else:
-                logger.debug("切换到实时聊天页面")
+            if is_chat:
+                self._was_on_chat_page = True
+                logger.debug("当前位于实时聊天页面")
                 try:
                     timer = getattr(self.live_chat_view, "_input_activity_timer", None)
                     if timer is not None:
@@ -405,37 +488,130 @@ class MainWindow(FluentWindow):
                         timer.start(10000)
                 except Exception as e:
                     logger.debug(f"重启输入框活动定时器失败：{e}")
+                return
+
+            if was_chat:
+                self._was_on_chat_page = False
+                logger.info("离开实时聊天页面，自动切回 AI 接待")
+                try:
+                    self.live_chat_view._restore_ai_for_current_if_manual()
+                except Exception as e:
+                    logger.debug(f"切换 AI 模式失败：{e}")
+            else:
+                self._was_on_chat_page = False
 
         except Exception as e:
             logger.error(f"页面切换处理失败：{e}")
     
     def initWindow(self):
         """初始化窗口 - macOS 风格，强制深色标题栏"""
-        # 设置窗口属性
         self.setWindowTitle('拼多多 AI 客服助手')
         self.setMinimumSize(1200, 800)
         self.resize(1400, 900)
-        
-        # macOS 强制深色标题栏（非 macOS 或 windowHandle 未就绪时会失败，可忽略）
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if sys.platform == "darwin":
+            apply_dark_titlebar_chrome(self)
+            QTimer.singleShot(50, lambda: apply_dark_titlebar_chrome(self))
+
+    def _stop_ui_timers(self) -> None:
+        closer = getattr(self, "_session_idle_closer", None)
+        if closer is not None:
+            try:
+                closer.stop()
+            except Exception as e:
+                logger.debug("停止会话空闲检测: {}", e)
+
+    def _release_tray(self) -> None:
+        """退出前移除托盘图标；否则 Qt 会认为应用仍在运行。"""
+        icon = getattr(self, "_tray_icon", None)
+        if icon is None:
+            return
         try:
-            wh = self.windowHandle()
-            if wh is not None:
-                wh.setProperty("NSAppearanceName", "NSAppearanceNameDarkAqua")
+            icon.hide()
+            icon.setVisible(False)
+            icon.deleteLater()
         except Exception as e:
-            logger.debug("设置 macOS 外观失败：{}", e)
+            logger.debug("移除托盘图标: {}", e)
+        self._tray_icon = None
+        self._tray_enabled = False
 
-        # 应用 macOS 设计 (已在 __init__ 中应用)
+    def _quit_application(self) -> None:
+        """显式结束 Qt 事件循环（托盘存在时关窗不会自动 quit）。"""
+        self._release_tray()
+        app = QApplication.instance()
+        if app is None:
+            return
+        app.setQuitOnLastWindowClosed(True)
+        app.quit()
 
-    def closeEvent(self, event) -> None:
-        if getattr(self, "_tray_enabled", False) and getattr(self, "_tray_icon", None):
-            if self._tray_icon.isVisible():
+        def _force_exit_if_stuck() -> None:
+            time.sleep(2.0)
+            os._exit(0)
+
+        threading.Thread(
+            target=_force_exit_if_stuck, daemon=True, name="QuitWatchdog"
+        ).start()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        minimize = False
+        try:
+            from config import get_config
+
+            minimize = bool(get_config("ui.minimize_to_tray_on_close", False))
+        except Exception:
+            minimize = False
+
+        if (
+            not getattr(self, "_force_quit", False)
+            and minimize
+            and getattr(self, "_tray_enabled", False)
+            and getattr(self, "_tray_icon", None)
+            and self._tray_icon.isVisible()
+        ):
+            event.ignore()
+            self.hide()
+            self._tray_icon.showMessage(
+                "客服助手仍在运行",
+                "程序已最小化到托盘，右键图标可退出。",
+                QSystemTrayIcon.MessageIcon.Information,
+                4000,
+            )
+            return
+
+        if not getattr(self, "_force_quit", False):
+            if not confirm_action(
+                self,
+                "确认退出",
+                "确定要退出客服助手吗？\n正在运行的账号连接与自动回复将停止。",
+                confirm_text="退出",
+                cancel_text="取消",
+                destructive=True,
+            ):
                 event.ignore()
-                self.hide()
-                self._tray_icon.showMessage(
-                    "客服助手仍在运行",
-                    "程序已最小化到托盘，右键图标可退出。",
-                    QSystemTrayIcon.MessageIcon.Information,
-                    4000,
-                )
                 return
+
+        if getattr(self, "_closing", False):
+            event.accept()
+            super().closeEvent(event)
+            return
+
+        self._closing = True
+        event.accept()
+        self._stop_ui_timers()
+        self._release_tray()
+        app = QApplication.instance()
+        if app is not None:
+            app.setQuitOnLastWindowClosed(True)
+
+        try:
+            from core.app_shutdown import shutdown_application
+
+            shutdown_application()
+        except Exception as e:
+            logger.warning("退出清理失败，继续关闭窗口: {}", e)
+            run_stop_all_services_sync(SHUTDOWN_TIMEOUT_SEC)
+
         super().closeEvent(event)
+        self._quit_application()

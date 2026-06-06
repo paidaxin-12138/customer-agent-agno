@@ -3,7 +3,7 @@
 import json
 
 from bridge.context import Context, ContextType
-from Channel.pinduoduo.pdd_chnnel import _context_struct_payload
+from Channel.pinduoduo.pdd_channel import _context_struct_payload
 from Channel.pinduoduo.utils.API.chat_orders import refund_card_push_expired
 
 

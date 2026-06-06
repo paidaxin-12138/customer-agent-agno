@@ -59,12 +59,24 @@ def test_retry_recovers(monkeypatch):
     )
     calls = {"n": 0}
 
-    def flaky(*_a, **_k):
+    def flaky_resolve(*_a, **_k):
         calls["n"] += 1
         if calls["n"] < 2:
             raise OSError("busy")
-        return {"id": 1}
+        return 1
 
+    from database.session_store import SessionSummary
+
+    summary = SessionSummary(
+        session_id=1,
+        account_id=1,
+        buyer_uid="b1",
+        buyer_nickname="",
+        preview="",
+        unread_count=0,
+        ai_mode=False,
+        updated_at=0.0,
+    )
     ctx = Context(type=ContextType.TEXT, content="hi")
     meta = {
         "channel_name": "pinduoduo",
@@ -72,10 +84,10 @@ def test_retry_recovers(monkeypatch):
         "user_id": "u1",
         "from_uid": "b1",
     }
-    with patch("database.db_manager.db_manager.get_account", side_effect=flaky):
-        with patch(
-            "database.db_manager.db_manager.get_chat_session_by_buyer",
-            return_value={"ai_mode": False},
-        ):
-            assert ai_mode_check.is_ai_mode_enabled(ctx, meta) is False
+    with patch(
+        "database.session_store.resolve_session_id", side_effect=flaky_resolve
+    ), patch(
+        "database.session_store.load_session_summary", return_value=summary
+    ):
+        assert ai_mode_check.is_ai_mode_enabled(ctx, meta) is False
     assert ai_mode_check.get_ai_mode_check_stats()["recovered_after_retry"] >= 1

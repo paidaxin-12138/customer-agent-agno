@@ -271,12 +271,15 @@ class AIReplyHandler(BaseHandler):
             if not self._is_ai_mode_enabled(context, metadata):
                 await self._maybe_send_manual_mode_notice(context, metadata)
                 await self.log_message(context, "AI跳过", "会话处于人工模式(ai_mode=False)")
-                return True
+                return False
 
             processed_content = self.preprocessor.process(context.content, context.type)
             processed_content = self._resolve_effective_buyer_query(
                 context, metadata, processed_content
             )
+            if not str(processed_content or "").strip():
+                await self.log_message(context, "AI跳过", "买家消息为空")
+                return False
 
             session_key = self._get_session_key(context, metadata)
             raw_buyer_text = str(context.content or "")
@@ -360,7 +363,8 @@ class AIReplyHandler(BaseHandler):
                         processed_content
                     )
                     finish_turn(reply, intent_label=intent_label)
-                    persist_turn_memory(
+                    await asyncio.to_thread(
+                        persist_turn_memory,
                         context,
                         processed_content,
                         reply,
@@ -511,17 +515,23 @@ class AIReplyHandler(BaseHandler):
             load_task_state,
             resolve_session_id,
         )
-        from utils.need_retrieval import need_retrieval
+        from utils.need_retrieval import need_retrieval, resolve_retrieval_intent
 
         meta = metadata or {}
-        intent = self._guess_intent(query)
+        guessed = self._guess_intent(query)
         stage = "idle"
         last_intent: Optional[str] = None
+        task_intent: Optional[str] = None
         sid = resolve_session_id(context, meta)
         if sid is not None:
-            task = load_task_state(sid)
+            task = await asyncio.to_thread(load_task_state, sid)
             stage = task.stage or "idle"
+            task_intent = task.intent or None
             last_intent = task.last_intent or task.intent or None
+        intent = resolve_retrieval_intent(
+            guessed_intent=guessed,
+            task_intent=task_intent,
+        )
         rag_on = need_retrieval(
             intent=intent,
             stage=stage,

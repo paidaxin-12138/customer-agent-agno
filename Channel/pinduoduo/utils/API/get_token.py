@@ -24,7 +24,14 @@ class GetToken(BaseRequest):
             elif 'result' in result and 'token' in result['result']:
                 return result['result']['token']
             else:
-                self.logger.error(f"账号 {self.account_name} 无法从响应中获取token: {result}")
+                from utils.log_redact import redact_log_payload
+
+                safe = redact_log_payload(result if isinstance(result, dict) else {"raw": result})
+                self.logger.error(
+                    "账号 {} 无法从响应中获取 token: {}",
+                    self.account_name,
+                    safe,
+                )
         
         return None
 

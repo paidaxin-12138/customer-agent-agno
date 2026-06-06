@@ -28,14 +28,16 @@ from ui import apple_ui_tokens as UI
 
 # 与主窗口背景一致（apple_ui_tokens.BG_PRIMARY）
 CHAT_BG = UI.BG_PRIMARY
-SELF_BUBBLE = "#0A84FF"
-SELF_TEXT = "#FFFFFF"
-OTHER_BUBBLE = "#2C2C3A"
+SELF_BUBBLE = UI.ACCENT_SURFACE
+SELF_BUBBLE_BORDER = UI.ACCENT_SURFACE_BORDER
+SELF_ARROW = UI.ACCENT_FILL
+SELF_TEXT = UI.TEXT_PRIMARY
+OTHER_BUBBLE = UI.BG_TERTIARY
 OTHER_TEXT = "#E5E5E5"
-OTHER_BORDER = "#3A3A4A"
-TIME_TEXT = "#8E8E93"
-SYSTEM_BG = "#2C2C3A"
-SYSTEM_TEXT = "#98989D"
+OTHER_BORDER = UI.BORDER
+TIME_TEXT = UI.TEXT_SECONDARY
+SYSTEM_BG = UI.BG_TERTIARY
+SYSTEM_TEXT = UI.TEXT_SECONDARY
 
 _URL_RE = re.compile(r"https?://", re.I)
 _BUBBLE_MAX_W = 420
@@ -170,6 +172,13 @@ class _ChatImageLoaderThread(QThread):
             self.failed.emit()
             return
         try:
+            from utils.url_fetch_guard import is_url_safe_to_fetch
+
+            ok, reason = is_url_safe_to_fetch(self._url, purpose="chat_image")
+            if not ok:
+                self.failed.emit()
+                return
+
             import aiohttp
 
             async def fetch_image() -> bytes:
@@ -327,7 +336,7 @@ class _BubbleFrame(QFrame):
                 f"""
                 QFrame#ChatRightBubbleFrame {{
                     background-color: {SELF_BUBBLE};
-                    border: none;
+                    border: 1px solid {SELF_BUBBLE_BORDER};
                     border-radius: 18px;
                 }}
                 """
@@ -627,7 +636,7 @@ class ChatMessageBubbleWidget(QWidget):
             0,
             Qt.AlignmentFlag.AlignTop,
         )
-        row.addWidget(_BubbleArrow(pointing="right", color=SELF_BUBBLE), 0, Qt.AlignmentFlag.AlignTop)
+        row.addWidget(_BubbleArrow(pointing="right", color=SELF_ARROW), 0, Qt.AlignmentFlag.AlignTop)
 
         col = QVBoxLayout()
         col.setSpacing(4)

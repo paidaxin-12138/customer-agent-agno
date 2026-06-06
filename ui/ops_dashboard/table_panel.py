@@ -6,14 +6,54 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QAbstractScrollArea,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QSizePolicy,
     QTableView,
     QVBoxLayout,
     QWidget,
 )
 from qfluentwidgets import CaptionLabel, PrimaryPushButton, PushButton, SubtitleLabel
+
+
+def configure_ops_table_scroll(table: QAbstractScrollArea) -> None:
+    """约束表格在父级高度内滚动，并在右侧显示垂直滚动条。"""
+    table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+    table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    table.setSizeAdjustPolicy(QAbstractScrollArea.SizeAdjustPolicy.AdjustIgnored)
+    table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+
+def configure_ops_table_view(table: QTableView) -> None:
+    """后台看板表格：隐藏行号/角按钮，避免深色主题下出现黑块或「假复选框」。"""
+    table.setObjectName("OpsDataTable")
+    table.setAlternatingRowColors(True)
+    table.setShowGrid(False)
+    table.setCornerButtonEnabled(False)
+    table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
+    table.setSelectionMode(QTableView.SelectionMode.SingleSelection)
+    table.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    table.setFrameShape(QFrame.Shape.NoFrame)
+    configure_ops_table_scroll(table)
+
+    v_header = table.verticalHeader()
+    v_header.setVisible(False)
+    v_header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+    v_header.setDefaultSectionSize(48)
+
+    h_header = table.horizontalHeader()
+    h_header.setVisible(True)
+    h_header.setHighlightSections(False)
+    h_header.setStretchLastSection(True)
+    h_header.setDefaultAlignment(
+        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+    )
 
 
 class DictTableModel(QAbstractTableModel):
@@ -69,6 +109,7 @@ class OpsTablePanel(QWidget):
         parent=None,
     ):
         super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._columns = list(columns)
         self._model = DictTableModel(columns, headers)
         self._on_refresh = None
@@ -88,9 +129,10 @@ class OpsTablePanel(QWidget):
 
         self.table = QTableView()
         self.table.setModel(self._model)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
+        configure_ops_table_view(self.table)
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
         self.table.clicked.connect(self._on_row_clicked)
         layout.addWidget(self.table, 1)
 

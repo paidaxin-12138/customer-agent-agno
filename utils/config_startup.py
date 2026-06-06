@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import os
-from typing import List
+from typing import List, Tuple
 
 from config import config, get_config
 from utils.logger_loguru import get_logger
@@ -12,7 +12,7 @@ from utils.logger_loguru import get_logger
 _logger = get_logger("ConfigStartup")
 
 
-def validate_startup_config(*, strict: bool = False) -> List[str]:
+def validate_startup_config(*, strict: bool = False) -> Tuple[List[str], List[str]]:
     """
     检查关键配置是否可用。
 
@@ -20,52 +20,73 @@ def validate_startup_config(*, strict: bool = False) -> List[str]:
         strict: True 时若存在 error 级问题则抛出 ConfigError
 
     Returns:
-        人类可读的问题列表（空表示无 error 级问题）
+        (errors, warnings) — strict 仅对 errors 硬失败
     """
-    issues: List[str] = []
+    errors: List[str] = []
+    warnings: List[str] = []
 
     api_key = (get_config("llm.api_key") or "").strip()
     if not api_key:
-        issues.append(
+        errors.append(
             "llm.api_key 未配置（可设置环境变量 LLM_API_KEY）；AI 自动回复将不可用"
         )
 
     api_base = (get_config("llm.api_base") or "").strip()
     if api_key and not api_base:
-        issues.append("llm.api_base 未配置，部分 OpenAI 兼容网关需要填写")
+        warnings.append("llm.api_base 未配置，部分 OpenAI 兼容网关需要填写")
 
     model_name = (get_config("llm.model_name") or "").strip()
     if api_key and not model_name:
-        issues.append("llm.model_name 未配置")
+        warnings.append("llm.model_name 未配置")
 
     if bool(get_config("pinduoduo_open.enabled", True)):
-        po = config.get("pinduoduo_open") or {}
+        po = get_config("pinduoduo_open") or {}
         if isinstance(po, dict):
             if not str(po.get("client_id") or "").strip():
-                issues.append(
+                warnings.append(
                     "pinduoduo_open.client_id 未配置，物流查询等开放平台能力不可用"
                 )
             if not str(po.get("client_secret") or "").strip():
-                issues.append("pinduoduo_open.client_secret 未配置")
+                warnings.append("pinduoduo_open.client_secret 未配置")
 
     db_path = (get_config("db_path") or "").strip()
     if not db_path:
-        issues.append("db_path 未配置，将使用默认 ./temp/customer.db")
+        from database.db_manager import DEFAULT_DB_PATH
 
-    if strict and issues:
+        warnings.append(f"db_path 未配置，将使用默认 {DEFAULT_DB_PATH}")
+
+    try:
+        from utils.secret_config import check_health_exposure, check_plaintext_secrets
+
+        sec_errors, sec_warnings = check_plaintext_secrets()
+        errors.extend(sec_errors)
+        warnings.extend(sec_warnings)
+        he, hw = check_health_exposure(strict=strict)
+        errors.extend(he)
+        warnings.extend(hw)
+    except Exception as e:
+        warnings.append(f"敏感配置检查跳过: {e}")
+
+    if strict and errors:
         from config import ConfigError
 
-        raise ConfigError("启动配置检查未通过:\n- " + "\n- ".join(issues))
+        raise ConfigError("启动配置检查未通过:\n- " + "\n- ".join(errors))
 
-    return issues
+    return errors, warnings
 
 
 def log_startup_config_issues(*, strict: bool = False) -> List[str]:
-    """执行检查并写入日志；返回问题列表。"""
-    strict = strict or os.getenv("STRICT_CONFIG", "").strip() in ("1", "true", "yes")
-    issues = validate_startup_config(strict=strict)
-    for msg in issues:
+    """执行检查并写入日志；返回全部问题列表（errors + warnings）。"""
+    strict = strict or os.getenv("STRICT_CONFIG", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    errors, warnings = validate_startup_config(strict=strict)
+    for msg in errors:
+        _logger.error(msg)
+    for msg in warnings:
         _logger.warning(msg)
-    if not issues:
+    if not errors and not warnings:
         _logger.info("启动配置检查通过（关键项已填写或已显式关闭）")
-    return issues
+    return errors + warnings

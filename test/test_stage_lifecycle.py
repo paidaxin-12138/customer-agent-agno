@@ -47,10 +47,48 @@ def _ctx(text: str = "你好", *, raw_stage: str = "idle") -> Context:
     )
 
 
-def test_commit_release_stage_sets_idle():
+def test_commit_enter_business_flow_from_idle_clears_stale_slots():
+    ctx = _ctx("改收货地址")
+    meta = {"shop_id": "s1", "user_id": "u1", "from_uid": "b1", "channel_name": "pinduoduo"}
+    mem = {
+        "task_state_json": json.dumps(
+            {
+                "stage": "idle",
+                "slots": {"order_sn": "old-order", "phone": "13800138000"},
+            }
+        )
+    }
+    mock_db = MagicMock()
+    mock_db.get_account.return_value = {"id": 1}
+    mock_db.get_chat_session_by_buyer.return_value = {"id": 42}
+    mock_db.get_session_memory.return_value = mem
+
+    with patch("database.db_manager.db_manager", mock_db):
+        commit_handler_session_from_context(
+            ctx,
+            meta,
+            stage="address_change",
+            intent="address_change",
+            slots={"phone": "13900139000"},
+            source_handler="Test",
+        )
+    written = json.loads(mock_db.update_session_memory.call_args.kwargs["task_state_json"])
+    assert written["stage"] == "address_change"
+    assert written["slots"] == {"phone": "13900139000"}
+
+
+def test_commit_release_stage_sets_idle_and_clears_slots():
     ctx = _ctx()
     meta = {"shop_id": "s1", "user_id": "u1", "from_uid": "b1", "channel_name": "pinduoduo"}
-    mem = {"task_state_json": json.dumps({"stage": "address_change"})}
+    mem = {
+        "task_state_json": json.dumps(
+            {
+                "stage": "address_change",
+                "slots": {"order_sn": "250101-1", "phone": "13800138000"},
+                "pending_confirm": ["收货信息"],
+            }
+        )
+    }
     mock_db = MagicMock()
     mock_db.get_account.return_value = {"id": 1}
     mock_db.get_chat_session_by_buyer.return_value = {"id": 42}
@@ -67,6 +105,8 @@ def test_commit_release_stage_sets_idle():
     assert meta["_session_stage"] == "idle"
     written = json.loads(mock_db.update_session_memory.call_args.kwargs["task_state_json"])
     assert written["stage"] == "idle"
+    assert written.get("slots") == {}
+    assert written.get("pending_confirm") == []
 
 
 def test_maybe_expire_task_stage_resets_old_business_stage():
@@ -77,6 +117,7 @@ def test_maybe_expire_task_stage_resets_old_business_stage():
     ):
         assert maybe_expire_task_stage(task) is True
     assert task.stage == "idle"
+    assert task.slots == {}
 
 
 def test_load_task_state_persists_expired_stage():

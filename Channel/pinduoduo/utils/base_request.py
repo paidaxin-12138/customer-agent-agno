@@ -145,6 +145,12 @@ class BaseRequest:
                 "请在「账号管理」中重新登录并检查店铺在线状态。"
             )
             severity = "error"
+            try:
+                from core.app_metrics import record_cookie_refresh_failure
+
+                record_cookie_refresh_failure()
+            except Exception:
+                pass
         else:
             detail = f"账号 {target} 会话已过期，正在尝试刷新 Cookie…"
             severity = "warn"

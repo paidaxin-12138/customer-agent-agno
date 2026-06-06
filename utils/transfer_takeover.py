@@ -19,7 +19,7 @@ logger = get_logger("TransferTakeover")
 
 
 def _transfer_stage() -> str:
-    from Message.handlers.stage_constants import VALID_SESSION_STAGES
+    from core.session_stages import VALID_SESSION_STAGES
 
     raw = str(config.get("chat.inbound_transfer_stage", "after_sales") or "after_sales").strip()
     if raw not in VALID_SESSION_STAGES:
@@ -61,19 +61,15 @@ def _resolve_session_id(
     seller_user_id: str,
     buyer_uid: str,
 ) -> Optional[int]:
-    try:
-        from database.db_manager import db_manager
+    from database.session_store import resolve_session_id
 
-        acc = db_manager.get_account(channel_name, shop_id, seller_user_id)
-        if not acc or not acc.get("id"):
-            return None
-        sess = db_manager.get_chat_session_by_buyer(int(acc["id"]), buyer_uid, "active")
-        if not sess:
-            sess = db_manager.get_chat_session_by_buyer(int(acc["id"]), buyer_uid, None)
-        return int(sess["id"]) if sess else None
-    except Exception as e:
-        logger.debug("resolve session for takeover: {}", e)
-        return None
+    return resolve_session_id(
+        channel_name=channel_name,
+        shop_id=shop_id,
+        seller_user_id=seller_user_id,
+        buyer_uid=buyer_uid,
+        allow_any_status=True,
+    )
 
 
 def _build_synthetic_context(
@@ -148,10 +144,13 @@ async def apply_inbound_transfer_takeover(
             sid,
             stage=_transfer_stage(),
             intent="after_sales",
+            clear_flow_state=True,
             source_handler="InboundTransferTakeover",
         )
         if _takeover_ai_mode():
-            db_manager.set_session_ai_mode(sid, True)
+            from database.session_store import set_ai_mode
+
+            set_ai_mode(sid, True)
             logger.info(
                 "转接接管: session={} buyer={} stage={} ai_mode=True",
                 sid,

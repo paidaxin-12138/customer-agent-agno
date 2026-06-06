@@ -45,7 +45,9 @@ def resolve_backup_dir() -> Path:
     path = Path(str(d))
     if not path.is_absolute():
         path = ROOT / path
-    path.mkdir(parents=True, exist_ok=True)
+    from utils.private_paths import ensure_private_dir
+
+    ensure_private_dir(path)
     return path
 
 
@@ -60,7 +62,9 @@ def backup_database(
         raise FileNotFoundError(f"数据库不存在: {src}")
 
     out_dir = backup_dir or resolve_backup_dir()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    from utils.private_paths import ensure_private_dir, ensure_private_file
+
+    ensure_private_dir(out_dir)
     stamp = datetime.now().strftime("%Y-%m-%d")
     dest = out_dir / f"customer_agent_{stamp}.db"
 
@@ -77,6 +81,18 @@ def backup_database(
             dest_conn.close()
     finally:
         src_conn.close()
+
+    ensure_private_file(dest)
+
+    check = sqlite3.connect(dest)
+    try:
+        row = check.execute("PRAGMA integrity_check").fetchone()
+        if not row or str(row[0]).lower() != "ok":
+            check.close()
+            dest.unlink(missing_ok=True)
+            raise RuntimeError(f"备份完整性校验失败: {row}")
+    finally:
+        check.close()
 
     cutoff = datetime.now() - timedelta(days=max(1, retention_days))
     for f in out_dir.glob("customer_agent_*.db"):

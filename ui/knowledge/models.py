@@ -9,6 +9,8 @@ from typing import Any, Optional
 import json
 import os
 
+from ui import apple_ui_tokens as T
+
 
 @dataclass
 class SimpleDocument:
@@ -328,7 +330,7 @@ class MarkdownConverter:
             elif line.startswith('`') and line.endswith('`') and len(line) > 2:
                 # 行内代码
                 content = line[1:-1]
-                html_lines.append(f"<code style='background:#1B1F2A;color:#F2F2F7;padding:2px 4px;border-radius:3px;'>{content}</code>")
+                html_lines.append(f"<code style='background:{T.BG_SECONDARY};color:{T.TEXT_PRIMARY};padding:2px 4px;border-radius:3px;'>{content}</code>")
             elif line.startswith('*') and line.endswith('*') and len(line) > 2:
                 # 斜体
                 content = line[1:-1]
@@ -463,12 +465,12 @@ class ImportError(Exception):
 
     @classmethod
     def from_docx_error(cls, original_error: Exception) -> "ImportError":
-        """从DOCX导入错误创建"""
+        """从 DOC/DOCX 导入错误创建"""
         return cls(
-            "DOCX导入失败，可能缺少依赖或文件损坏",
+            "Word 文档导入失败，可能文件损坏或格式不支持",
             [
-                "确认已安装 python-docx 库",
-                "检查文件完整性"
+                "尝试在 Word 中另存为 .txt 或 .pdf 后重新导入",
+                "检查文件是否损坏",
             ]
         )
 

@@ -20,7 +20,9 @@ user_data/
 *.db
 *.db
 config.json
+.env
 temp/
+data/
 .claude/
 
 # Backup directories
@@ -38,6 +40,7 @@ tmp/
 *.temp
 
 # IDE and editor files
+.cursor/
 .vscode/
 .idea/
 *.swp

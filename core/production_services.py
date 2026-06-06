@@ -80,6 +80,8 @@ def _thread_target() -> None:
     asyncio.set_event_loop(_loop)
     try:
         _loop.run_until_complete(_async_main())
+    except asyncio.CancelledError:
+        pass
     except Exception as e:
         _logger.error("生产后台服务异常退出: {}", e)
     finally:
@@ -108,9 +110,37 @@ def start_production_background_services() -> None:
 
 def stop_production_background_services() -> None:
     audit_system_lifecycle("system_shutdown", "应用关闭")
-    global _loop
+    global _loop, _thread
+
+    async def _full_shutdown() -> None:
+        await _shutdown_async()
+        if _loop is None:
+            return
+        pending = [
+            t
+            for t in asyncio.all_tasks(_loop)
+            if t is not asyncio.current_task(_loop) and not t.done()
+        ]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
     if _loop and _loop.is_running():
-        asyncio.run_coroutine_threadsafe(_shutdown_async(), _loop)
+        try:
+            fut = asyncio.run_coroutine_threadsafe(_full_shutdown(), _loop)
+            fut.result(timeout=3.0)
+        except Exception as e:
+            _logger.debug("生产后台服务停止: {}", e)
+        try:
+            _loop.call_soon_threadsafe(_loop.stop)
+        except Exception:
+            pass
+
+    if _thread and _thread.is_alive():
+        _thread.join(timeout=2.0)
+    _thread = None
+    _loop = None
 
 
 atexit.register(lambda: audit_system_lifecycle("system_shutdown", "进程退出"))

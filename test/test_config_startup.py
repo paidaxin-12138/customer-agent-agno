@@ -12,11 +12,11 @@ def test_validate_startup_detects_missing_api_key(monkeypatch):
         "utils.config_startup.config.get",
         lambda key, default=None: False if key == "pinduoduo_open.enabled" else default,
     )
-    issues = validate_startup_config()
-    assert any("llm.api_key" in i for i in issues)
+    errors, warnings = validate_startup_config()
+    assert any("llm.api_key" in i for i in errors)
 
 
-def test_validate_startup_strict_raises(monkeypatch):
+def test_validate_startup_strict_raises_on_api_key_only(monkeypatch):
     monkeypatch.setattr(
         "utils.config_startup.get_config",
         lambda key, default=None: "" if key == "llm.api_key" else default,
@@ -29,3 +29,17 @@ def test_validate_startup_strict_raises(monkeypatch):
 
     with pytest.raises(ConfigError):
         validate_startup_config(strict=True)
+
+
+def test_pinduoduo_open_missing_is_warning_not_strict_error(monkeypatch):
+    monkeypatch.setattr(
+        "utils.config_startup.get_config",
+        lambda key, default=None: "sk-test" if key == "llm.api_key" else default,
+    )
+    monkeypatch.setattr(
+        "utils.config_startup.config.get",
+        lambda key, default=None: True if key == "pinduoduo_open.enabled" else default,
+    )
+    errors, warnings = validate_startup_config(strict=True)
+    assert not errors
+    assert any("pinduoduo_open" in w for w in warnings)

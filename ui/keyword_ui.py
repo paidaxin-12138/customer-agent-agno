@@ -12,6 +12,7 @@ from qfluentwidgets import (SubtitleLabel, CaptionLabel, BodyLabel,
 from database.db_manager import db_manager
 from Message.keyword_reload import reload_keyword_handler
 from utils.dialogs import confirm_action
+from ui.card_action_button import setup_card_action_button
 
 
 class KeywordTableWidget(TableWidget):
@@ -67,13 +68,12 @@ class KeywordTableWidget(TableWidget):
         # 编辑按钮
         edit_btn = PushButton("编辑")
         edit_btn.setIcon(FIF.EDIT)
-        edit_btn.setFixedSize(100, 30)
+        setup_card_action_button(edit_btn, width=88)
         edit_btn.clicked.connect(lambda: self.edit_clicked.emit(keyword))
-        
-        # 删除按钮
+
         delete_btn = PushButton("删除")
         delete_btn.setIcon(FIF.DELETE)
-        delete_btn.setFixedSize(100, 30)
+        setup_card_action_button(delete_btn, width=88, role="danger")
         delete_btn.clicked.connect(lambda: self.delete_clicked.emit(keyword))
         
         action_layout.addWidget(edit_btn)
@@ -106,6 +106,13 @@ class KeywordManagerWidget(QFrame):
         
         # 创建内容区域（表格）
         self.table_widget = KeywordTableWidget()
+
+        table_wrap = QFrame(self)
+        table_wrap.setObjectName("ModulePanel")
+        table_layout = QVBoxLayout(table_wrap)
+        table_layout.setContentsMargins(12, 12, 12, 12)
+        table_layout.setSpacing(0)
+        table_layout.addWidget(self.table_widget)
         
         # 连接表格信号
         self.table_widget.edit_clicked.connect(self.onEditKeyword)
@@ -117,7 +124,7 @@ class KeywordManagerWidget(QFrame):
         
         # 添加到主布局
         main_layout.addWidget(header_widget)
-        main_layout.addWidget(self.table_widget, 1)
+        main_layout.addWidget(table_wrap, 1)
         
         # 设置对象名
         self.setObjectName("关键词管理")

@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any, Dict, FrozenSet, Optional, Set
 
 from config import get_config
-from Message.handlers.stage_constants import BUSINESS_FLOW_STAGES
+from core.session_stages import BUSINESS_FLOW_STAGES
 
 # 各业务 stage 仅允许「本流」意图；泛聊/询价应 reset 到 idle 交给 AI（勿含 general/greeting）
 _STAGE_ALLOWED_INTENTS: Dict[str, FrozenSet[str]] = {
@@ -67,13 +67,10 @@ def should_reset_stage_for_intent(
         except Exception:
             pass
     if stage == "logistics":
-        try:
-            from Message.handlers.order_logistics_handler import _is_logistics_intent
+        from utils.logistics_intent import is_logistics_intent
 
-            if _is_logistics_intent(text):
-                return False
-        except Exception:
-            pass
+        if is_logistics_intent(text):
+            return False
     if stage == "after_sales":
         try:
             from utils.after_sales_policy import is_after_sales_related
@@ -133,6 +130,7 @@ def try_intent_stage_reset(
         sid,
         stage="idle",
         intent=guessed,
+        clear_flow_state=True,
         source_handler="IntentReset",
     )
     if metadata is not None:

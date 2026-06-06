@@ -113,6 +113,12 @@ class ChatMessage(Base):
         Index('idx_chat_messages_account', 'account_id'),
         Index('idx_chat_messages_created', 'created_at'),
         Index('idx_chat_messages_msgid', 'message_id'),
+        Index(
+            'idx_chat_messages_unread',
+            'session_id',
+            'sender_type',
+            'is_read',
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)

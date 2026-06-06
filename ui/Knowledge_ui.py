@@ -41,6 +41,7 @@ from qfluentwidgets import (
 if TYPE_CHECKING:
     from Agent.CustomerAgent.agent_knowledge import KnowledgeManager
 from utils.logger_loguru import get_logger
+from ui import apple_ui_tokens as T
 from utils.file_validator import FileValidator, ExcelValidator
 from utils.dialogs import confirm_action
 
@@ -107,7 +108,7 @@ class GoodsSyncAccountPickerDialog(QDialog):
         layout.addWidget(self.ocr_cb)
 
         ocr_hint = CaptionLabel("建议关闭 OCR；中断后可再次同步，已写入的商品会自动跳过。")
-        ocr_hint.setStyleSheet("color: #9EA6B8;")
+        ocr_hint.setStyleSheet(f"color: {T.TEXT_SECONDARY};")
         ocr_hint.setWordWrap(True)
         layout.addWidget(ocr_hint)
 
@@ -667,34 +668,34 @@ class KnowledgeUI(QFrame):
 
         # 旋转图标（使用圆形点阵）
         self.loading_icon = QLabel("⠋")
-        self.loading_icon.setStyleSheet("""
-            QLabel {
-                color: #0A84FF;
+        self.loading_icon.setStyleSheet(f"""
+            QLabel {{
+                color: {T.ACCENT};
                 font-size: 24px;
                 font-weight: normal;
-            }
+            }}
         """)
         loading_text_layout.addWidget(self.loading_icon, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # 加载文字
         self.loading_text = QLabel("正在导入")
-        self.loading_text.setStyleSheet("""
-            QLabel {
-                color: #0A84FF;
+        self.loading_text.setStyleSheet(f"""
+            QLabel {{
+                color: {T.ACCENT};
                 font-size: 14px;
                 font-weight: bold;
-            }
+            }}
         """)
         loading_text_layout.addWidget(self.loading_text, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # 动态省略号
         self.loading_dots = QLabel("...")
-        self.loading_dots.setStyleSheet("""
-            QLabel {
-                color: #0A84FF;
+        self.loading_dots.setStyleSheet(f"""
+            QLabel {{
+                color: {T.ACCENT};
                 font-size: 14px;
                 font-weight: bold;
-            }
+            }}
         """)
         loading_text_layout.addWidget(self.loading_dots, alignment=Qt.AlignmentFlag.AlignCenter)
 
@@ -711,16 +712,7 @@ class KnowledgeUI(QFrame):
 
         # 提示语
         tip_label = QLabel("💡 提示：导入或添加知识后需重启应用才可生效哦")
-        tip_label.setStyleSheet("""
-            QLabel {
-                background-color: #1B1F2A;
-                border: 1px solid #2A3140;
-                border-radius: 12px;
-                padding: 8px 12px;
-                color: #9EA6B8;
-                font-size: 13px;
-            }
-        """)
+        tip_label.setObjectName("HintBanner")
         tip_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.mainLayout.addWidget(tip_label)
 
@@ -991,7 +983,7 @@ class KnowledgeUI(QFrame):
             if self.knowledge_manager is None:
                 no_data_label = QLabel("知识库未初始化，打开该页时将自动加载")
                 no_data_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                no_data_label.setStyleSheet("color: #9EA6B8; font-size: 14px; padding: 40px;")
+                no_data_label.setStyleSheet(f"color: {T.TEXT_SECONDARY}; font-size: 14px; padding: 40px;")
                 self.gridLayout.addWidget(no_data_label, 0, 0)
                 self._layout_initialized = True
                 return
@@ -1039,7 +1031,7 @@ class KnowledgeUI(QFrame):
 
         no_data_label = QLabel(f"加载失败: {error}\n请刷新页面重试")
         no_data_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        no_data_label.setStyleSheet("color: #FF453A; font-size: 14px; padding: 40px;")
+        no_data_label.setStyleSheet(f"color: {T.ERROR}; font-size: 14px; padding: 40px;")
         self.gridLayout.addWidget(no_data_label, 0, 0)
         self._layout_initialized = True
 
@@ -1342,7 +1334,7 @@ class KnowledgeUI(QFrame):
 
         self._sync_count_label = QLabel("已完成 0 / —")
         self._sync_count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._sync_count_label.setStyleSheet("color: #9EA6B8; font-size: 13px;")
+        self._sync_count_label.setStyleSheet(f"color: {T.TEXT_SECONDARY}; font-size: 13px;")
         layout.addWidget(self._sync_count_label)
         
         # 进度条
@@ -1872,7 +1864,7 @@ class KnowledgeUI(QFrame):
             self.clear_grid_layout()
             no_data_label = QLabel(f"刷新失败: {error}\n请重试")
             no_data_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            no_data_label.setStyleSheet("color: #FF453A; font-size: 14px; padding: 40px;")
+            no_data_label.setStyleSheet(f"color: {T.ERROR}; font-size: 14px; padding: 40px;")
             self.gridLayout.addWidget(no_data_label, 0, 0)
 
     def _show_message(
@@ -1993,7 +1985,7 @@ class KnowledgeUI(QFrame):
                     # 当前页没有数据（异常情况）
                     no_data_label = QLabel("当前页没有数据")
                 no_data_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                no_data_label.setStyleSheet("color: #9EA6B8; font-size: 14px; padding: 40px;")
+                no_data_label.setStyleSheet(f"color: {T.TEXT_SECONDARY}; font-size: 14px; padding: 40px;")
                 self.gridLayout.addWidget(no_data_label, 0, 0)
                 self._layout_initialized = True
                 return

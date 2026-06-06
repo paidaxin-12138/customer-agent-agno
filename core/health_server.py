@@ -1,17 +1,71 @@
 """本地健康检查 HTTP 服务（aiohttp）。"""
 from __future__ import annotations
 
+import os
 import time
 from typing import Any, Dict, Optional, Tuple
 
 from aiohttp import web
 
-from core.app_metrics import get_metrics_payload
+from core.app_metrics import get_handler_chain_metrics, get_metrics_payload
 from utils.logger_loguru import get_logger
 
 _logger = get_logger("HealthServer")
 _runner: Optional[web.AppRunner] = None
 _site: Optional[web.TCPSite] = None
+
+
+def _configured_health_token() -> str:
+    token = (os.getenv("HEALTH_CHECK_TOKEN") or "").strip()
+    if token:
+        return token
+    try:
+        from config import get_config
+
+        return str(get_config("production.health_token") or "").strip()
+    except Exception:
+        return ""
+
+
+def _health_auth_ok(request: web.Request) -> bool:
+    """未配置 Token 时保持兼容；/ready、/metrics 在配置 Token 后需认证。"""
+    token = _configured_health_token()
+    if not token:
+        return True
+    auth = (request.headers.get("Authorization") or "").strip()
+    if auth.lower().startswith("bearer ") and auth[7:].strip() == token:
+        return True
+    if (request.query.get("token") or "").strip() == token:
+        return True
+    return False
+
+
+def _with_health_auth(handler):
+    async def wrapped(request: web.Request) -> web.Response:
+        if not _health_auth_ok(request):
+            return web.json_response(
+                {"error": "unauthorized", "timestamp": int(time.time())},
+                status=401,
+            )
+        return await handler(request)
+
+    return wrapped
+
+
+def _require_handler_chain_for_ready() -> bool:
+    return os.getenv("READINESS_REQUIRE_HANDLERS", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
+def _evaluate_handler_chain() -> Tuple[bool, str, Dict[str, Any]]:
+    detail = get_handler_chain_metrics()
+    if detail.get("ok"):
+        return True, "", detail
+    missing = detail.get("missing") or []
+    return False, "handler_chain_degraded", {**detail, "missing_handlers": missing}
 
 
 async def _health_handler(_request: web.Request) -> web.Response:
@@ -46,13 +100,14 @@ def _evaluate_readiness() -> Tuple[bool, str, Dict[str, Any]]:
         return False, "no_websocket_connected", detail
 
     try:
+        from Channel.pinduoduo.ws_config import queue_name_for_shop
         from Message.core.consumer import message_consumer_manager
     except Exception as e:
         _logger.debug("readiness: consumer manager unavailable: {}", e)
         return False, "consumer_manager_unavailable", detail
 
     for status in connected:
-        queue_name = f"pdd_{status.shop_id}"
+        queue_name = queue_name_for_shop(str(status.shop_id))
         consumer = message_consumer_manager.get_consumer(queue_name)
         running = bool(consumer and consumer.is_running())
         detail["consumers_running"].append(
@@ -66,15 +121,19 @@ def _evaluate_readiness() -> Tuple[bool, str, Dict[str, Any]]:
 
 async def _ready_handler(_request: web.Request) -> web.Response:
     try:
+        handler_ok, handler_reason, handler_detail = _evaluate_handler_chain()
         ready, reason, detail = _evaluate_readiness()
         body: Dict[str, Any] = {
-            "ready": ready,
+            "ready": ready and handler_ok,
             "timestamp": int(time.time()),
+            "handler_chain": handler_detail,
             **detail,
         }
         if not ready:
             body["reason"] = reason
-        status = 200 if ready else 503
+        elif not handler_ok and _require_handler_chain_for_ready():
+            body["reason"] = handler_reason
+        status = 200 if body["ready"] else 503
         return web.json_response(body, status=status)
     except Exception as e:
         _logger.warning("readiness handler error: {}", e)
@@ -95,8 +154,8 @@ async def start_health_server(host: str = "127.0.0.1", port: int = 8080) -> None
         return
     app = web.Application()
     app.router.add_get("/health", _health_handler)
-    app.router.add_get("/ready", _ready_handler)
-    app.router.add_get("/metrics", _metrics_handler)
+    app.router.add_get("/ready", _with_health_auth(_ready_handler))
+    app.router.add_get("/metrics", _with_health_auth(_metrics_handler))
     _runner = web.AppRunner(app)
     await _runner.setup()
     _site = web.TCPSite(_runner, host, port)

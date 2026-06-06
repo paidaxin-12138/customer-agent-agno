@@ -18,6 +18,16 @@ from ..models.queue_models import MessageWrapper
 logger = get_logger(__name__)
 
 _AI_CHAIN_HANDLERS = frozenset({"AIReplyHandler", "CatchAllHandler"})
+_BUSINESS_CHAIN_HANDLERS = frozenset(
+    {
+        "AddressChangeHandler",
+        "OrderLogisticsHandler",
+        "ImageVideoHumanHandler",
+        "AfterSalesApplyHandler",
+        "BuyerEmotionHandler",
+        "KeywordDetectionHandler",
+    }
+)
 
 
 class MessageConsumer:
@@ -85,6 +95,8 @@ class MessageConsumer:
                 self.logger.error(
                     f"Consumer worker {worker_id} process error: {e}"
                 )
+            finally:
+                self._buyer_locks.prune_idle()
 
     async def stop(self):
         """停止消费者并等待在途消息处理完成"""
@@ -105,6 +117,8 @@ class MessageConsumer:
         if self._worker_tasks:
             await asyncio.gather(*self._worker_tasks, return_exceptions=True)
         self._worker_tasks.clear()
+        self._buyer_locks.clear()
+        self.logger.debug(f"Consumer {self.queue_name} workers and locks cleared")
 
     def _record_process_failure(
         self,
@@ -158,6 +172,14 @@ class MessageConsumer:
                     self.logger.debug(f"metadata enrich skipped: {e}")
                 metadata["user_key"] = user_key
                 try:
+                    from database.session_store import prime_metadata_session
+
+                    await asyncio.to_thread(
+                        prime_metadata_session, wrapper.context, metadata
+                    )
+                except Exception as prime_err:
+                    self.logger.debug(f"prime_metadata_session: {prime_err}")
+                try:
                     ku = getattr(wrapper.context, "kwargs", None)
                     raw = getattr(ku, "raw_data", None) if ku else None
                     if isinstance(raw, dict) and raw.get("_transfer_takeover"):
@@ -170,7 +192,9 @@ class MessageConsumer:
                         prime_session_stage_on_context,
                     )
 
-                    prime_session_stage_on_context(wrapper.context, metadata)
+                    await asyncio.to_thread(
+                        prime_session_stage_on_context, wrapper.context, metadata
+                    )
                 except Exception as stage_err:
                     self.logger.debug(f"prime_session_stage: {stage_err}")
 
@@ -182,10 +206,18 @@ class MessageConsumer:
                         if isinstance(wrapper.context.content, str)
                         else str(wrapper.context.content or "")
                     )
-                    if try_intent_stage_reset(
-                        wrapper.context, metadata, message_text=msg_text
-                    ):
-                        prime_session_stage_on_context(wrapper.context, metadata)
+                    reset = await asyncio.to_thread(
+                        try_intent_stage_reset,
+                        wrapper.context,
+                        metadata,
+                        message_text=msg_text,
+                    )
+                    if reset:
+                        await asyncio.to_thread(
+                            prime_session_stage_on_context,
+                            wrapper.context,
+                            metadata,
+                        )
                 except Exception as reset_err:
                     self.logger.debug(f"intent_stage_reset: {reset_err}")
 
@@ -264,6 +296,13 @@ class MessageConsumer:
                             await handler.on_error(wrapper.context, e)
                         except Exception as oe:
                             self.logger.debug(f"on_error callback: {oe}")
+                        if hname in _BUSINESS_CHAIN_HANDLERS:
+                            self.logger.warning(
+                                "业务 Handler {} 异常，停止责任链: {}",
+                                hname,
+                                e,
+                            )
+                            break
                         continue
 
                 if not processed and not metadata.get("_outbound_comfort_sent"):

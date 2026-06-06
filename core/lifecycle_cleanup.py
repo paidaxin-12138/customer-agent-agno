@@ -204,11 +204,12 @@ def run_lifecycle_cleanup() -> Dict[str, int]:
                     do_vacuum = False
             except ValueError:
                 pass
+        conn.commit()
         if do_vacuum:
             conn.execute("VACUUM")
             _app_meta_set(conn, "last_vacuum_at", datetime.now().isoformat(timespec="seconds"))
+            conn.commit()
             stats["vacuum"] = 1
-        conn.commit()
     finally:
         conn.close()
 

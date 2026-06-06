@@ -4,9 +4,15 @@
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any
+from typing import Dict, Any, FrozenSet
 from bridge.context import Context
 from utils.logger_loguru import get_logger
+
+
+def stage_allowed_for_context(context: Context, allowed_stages: FrozenSet[str]) -> bool:
+    from Agent.CustomerAgent.conversation_memory import get_current_stage
+
+    return get_current_stage(context) in allowed_stages
 
 
 class MessageHandler(ABC):
@@ -100,9 +106,7 @@ class CatchAllHandler(MessageHandler):
         super().__init__()
 
     def can_handle(self, context: Context) -> bool:
-        from Agent.CustomerAgent.conversation_memory import get_current_stage
-
-        if get_current_stage(context) not in self.allowed_stages:
+        if not stage_allowed_for_context(context, self.allowed_stages):
             return False
         return True
 

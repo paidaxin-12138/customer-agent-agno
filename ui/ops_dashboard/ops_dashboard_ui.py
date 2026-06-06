@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 from qfluentwidgets import CaptionLabel, PushButton, SubtitleLabel
 
 from database.ops_repository import get_ops_repository
+from ui.dashboard_page import DashboardOverviewPage
 from ui.ops_dashboard.table_panel import OpsTablePanel
 from utils.logger_loguru import get_logger
 
@@ -57,6 +58,9 @@ class OpsDashboardUI(QFrame):
 
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
+
+        self._overview = DashboardOverviewPage(self._repo, self)
+        self.tabs.addTab(self._overview, "概览")
 
         self._build_sessions_tab()
         self._build_trace_tab()
@@ -312,6 +316,8 @@ class OpsDashboardUI(QFrame):
 
     def refresh_all(self) -> None:
         self._repo.sync_sessions_from_chat()
+        if hasattr(self, "_overview"):
+            self._overview.refresh()
         self._load_sessions()
         self._load_traces()
         self._load_knowledge()
