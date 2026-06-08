@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.logger_loguru import get_logger
 from database.db_manager import db_manager
 from Channel.pinduoduo.utils.API.product_manager import ProductManager
-from Agent.CustomerAgent.agent_knowledge import NailLampKnowledgeManager
+from Agent.CustomerAgent.agent_knowledge import get_knowledge_manager
 from config import get_config
 from scripts.ocr_utils import OcrRunConfig, build_product_ocr_knowledge_section
 
@@ -184,7 +184,7 @@ class GoodsKnowledgeSyncer:
             shop_id=self.shop_id,
             user_id=self.user_id,
         )
-        self.knowledge_manager = NailLampKnowledgeManager()
+        self.knowledge_manager = get_knowledge_manager()
         self.synced_count = 0
         self.failed_count = 0
         self.use_ocr = use_ocr

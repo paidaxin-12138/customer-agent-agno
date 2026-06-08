@@ -36,14 +36,17 @@ jobs:
       - name: Run tests with coverage
         run: >-
           uv run python -m pytest test/ -q --tb=short -m "not perf"
-          --cov=Message --cov=bridge --cov=core --cov=database --cov=utils
+          --cov-config=scripts/coverage_ci.ini --cov
           --cov-report=term-missing:skip-covered --cov-report=xml
-          --cov-fail-under=65
+          --cov-fail-under=55
         env:
           ALLOW_PLAINTEXT_CREDENTIALS: "1"
           STRICT_CONFIG: "0"
           CHAT_MESSAGE_BUFFER_DISABLE: "1"
           QT_QPA_PLATFORM: offscreen
+
+      - name: Refactor module coverage floors
+        run: uv run python scripts/coverage_refactor_gate.py
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

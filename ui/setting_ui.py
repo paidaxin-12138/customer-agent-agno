@@ -421,6 +421,57 @@ class PinduoduoOpenConfigCard(CardWidget):
             )
 
 
+class ChatReceptionConfigCard(CardWidget):
+    """多店多账号接待策略（弱监督等）。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setupUI()
+
+    def setupUI(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(16)
+
+        title_label = StrongBodyLabel("接待与监督")
+        title_label.setFont(QFont("Microsoft YaHei", 12, QFont.Weight.Bold))
+        layout.addWidget(title_label)
+
+        weak_row = QHBoxLayout()
+        weak_row.setSpacing(12)
+        weak_text = QVBoxLayout()
+        weak_title = BodyLabel("弱监督模式（多店多账号推荐）")
+        weak_hint = CaptionLabel(
+            "开启后：所有在线账号直接 AI 自动接待，不等待平台 TRANSFER；"
+            "新建会话默认 AI 模式。关键词/情绪/改址等仍会转人工。"
+        )
+        weak_hint.setStyleSheet("color: #9EA6B8;")
+        weak_text.addWidget(weak_title)
+        weak_text.addWidget(weak_hint)
+        weak_row.addLayout(weak_text, 1)
+        self.weak_supervision_switch = SwitchButton()
+        self.weak_supervision_switch.setChecked(False)
+        weak_row.addWidget(self.weak_supervision_switch, 0, Qt.AlignmentFlag.AlignRight)
+        layout.addLayout(weak_row)
+
+        description_label = CaptionLabel(
+            "关闭弱监督时，可在 config.json 配置 preferred_transfer_seller_user_ids，"
+            "让接待专用号在收到转接前仅入库、不自动回复。"
+        )
+        description_label.setStyleSheet("color: #9EA6B8; padding: 8px 0;")
+        layout.addWidget(description_label)
+
+    def getConfig(self) -> dict:
+        return {
+            "weak_supervision_enabled": self.weak_supervision_switch.isChecked(),
+        }
+
+    def setConfig(self, chat_config: dict):
+        self.weak_supervision_switch.setChecked(
+            bool(chat_config.get("weak_supervision_enabled", False))
+        )
+
+
 class BusinessHoursCard(CardWidget):
     """业务时间配置卡片"""
     
@@ -606,6 +657,7 @@ class SettingUI(QFrame):
         self.knowledge_config_card = KnowledgeConfigCard()
         self.prompt_config_card = PromptConfigCard()
         self.pinduoduo_open_card = PinduoduoOpenConfigCard()
+        self.chat_reception_card = ChatReceptionConfigCard()
         self.business_hours_card = BusinessHoursCard()
 
         # 添加到布局
@@ -614,6 +666,7 @@ class SettingUI(QFrame):
         content_layout.addWidget(self.knowledge_config_card)
         content_layout.addWidget(self.prompt_config_card)
         content_layout.addWidget(self.pinduoduo_open_card)
+        content_layout.addWidget(self.chat_reception_card)
         content_layout.addWidget(self.business_hours_card)
         content_layout.addStretch()
 
@@ -696,6 +749,11 @@ class SettingUI(QFrame):
                     "end": config.get("business_hours.end", "23:00")
                 },
                 "pinduoduo_open": self._load_pinduoduo_open_config(),
+                "chat": {
+                    "weak_supervision_enabled": bool(
+                        get_config("chat.weak_supervision_enabled", False)
+                    ),
+                },
             }
 
             # 验证并设置配置
@@ -743,6 +801,7 @@ class SettingUI(QFrame):
                 "client_secret": "",
                 "access_token": "",
             },
+            "chat": {"weak_supervision_enabled": False},
         }
 
         self._validateAndSetConfig(default_config)
@@ -782,6 +841,10 @@ class SettingUI(QFrame):
                     "access_token": "",
                 },
             ),
+            "chat": config_data.get(
+                "chat",
+                {"weak_supervision_enabled": False},
+            ),
         }
 
         # 验证business_hours格式
@@ -801,6 +864,7 @@ class SettingUI(QFrame):
         self.knowledge_config_card.setConfig(validated_config["knowledge_base"])
         self.prompt_config_card.setConfig(validated_config["prompt"])
         self.pinduoduo_open_card.setConfig(validated_config["pinduoduo_open"])
+        self.chat_reception_card.setConfig(validated_config["chat"])
 
         # 处理业务时间配置
         business_hours_config = validated_config["business_hours"]
@@ -816,6 +880,7 @@ class SettingUI(QFrame):
             prompt_config = self.prompt_config_card.getConfig()
             business_config = self.business_hours_card.getConfig()
             pinduoduo_open_config = self.pinduoduo_open_card.getConfig()
+            chat_reception_config = self.chat_reception_card.getConfig()
 
             persist_settings_secrets(
                 llm=llm_config,
@@ -836,6 +901,10 @@ class SettingUI(QFrame):
                 "prompt": prompt_config,
                 "pinduoduo_open": po_json,
                 "business_hours": business_config.get("businessHours", {"start": "08:00", "end": "23:00"}),
+                "chat": {
+                    **(config.get("chat") or {}),
+                    **chat_reception_config,
+                },
                 "db_path": config.get("db_path", ""),
             }
 

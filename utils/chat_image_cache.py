@@ -40,24 +40,15 @@ class _ImageFetchThread(QThread):
             self.failed.emit(url)
             return
         try:
-            from utils.url_fetch_guard import is_url_safe_to_fetch
+            from utils.url_fetch_guard import aiohttp_fetch_bytes
 
-            ok, _reason = is_url_safe_to_fetch(url, purpose="chat_image")
-            if not ok:
-                self.failed.emit(url)
-                return
-
-            import aiohttp
-
-            async def fetch_image() -> bytes:
-                timeout = aiohttp.ClientTimeout(total=12)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(url, headers=_IMAGE_HEADERS) as response:
-                        if response.status >= 400:
-                            raise ValueError(f"HTTP {response.status}")
-                        return await response.read()
-
-            image_data = asyncio.run(fetch_image())
+            image_data = asyncio.run(
+                aiohttp_fetch_bytes(
+                    url,
+                    purpose="chat_image",
+                    headers=_IMAGE_HEADERS,
+                )
+            )
             if not image_data:
                 raise ValueError("empty body")
             pixmap = QPixmap()

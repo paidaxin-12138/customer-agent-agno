@@ -11,8 +11,22 @@ def connection_key(shop_id: str, user_id: str) -> str:
     return f"{shop_id}_{user_id}"
 
 
-def queue_name_for_shop(shop_id: str) -> str:
-    """店铺消息队列名（与 Message 消费者注册一致）。"""
+def queue_name_for_account(shop_id: str, user_id: str) -> str:
+    """账号级消息队列名（多店多账号：每连接独立队列与消费者）。"""
+    sid = str(shop_id or "").strip()
+    uid = str(user_id or "").strip()
+    if not sid or not uid:
+        raise ValueError("queue_name_for_account requires shop_id and user_id")
+    return f"pdd_{sid}_{uid}"
+
+
+def queue_name_for_shop(shop_id: str, user_id: str | None = None) -> str:
+    """
+    消息队列名。传入 user_id 时与 queue_name_for_account 一致；
+    仅 shop_id 时保留旧名 pdd_{shop_id}（兼容测试/迁移）。
+    """
+    if user_id is not None and str(user_id).strip():
+        return queue_name_for_account(shop_id, user_id)
     return f"pdd_{shop_id}"
 
 

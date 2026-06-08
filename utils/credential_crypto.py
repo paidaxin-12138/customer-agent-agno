@@ -62,12 +62,28 @@ def _try_keyring_set(seed_hex: str) -> bool:
 
 
 def _key_file_path() -> Path:
-    if os.name == "nt":
-        base = Path(os.environ.get("APPDATA", Path.home())) / "AgentCustomer"
-    else:
-        base = Path.home() / "Library" / "Application Support" / "AgentCustomer"
-    base.mkdir(parents=True, exist_ok=True)
+    from utils.private_paths import ensure_private_dir
+    from utils.runtime_path import get_user_data_dir
+
+    base = get_user_data_dir()
+    ensure_private_dir(base)
     return base / ".credential_key"
+
+
+def _legacy_key_file_path() -> Optional[Path]:
+    """旧版在非 macOS 上误用 macOS 路径时的密钥文件（仅 Linux 迁移）。"""
+    import sys
+
+    if sys.platform != "linux":
+        return None
+    legacy = (
+        Path.home()
+        / "Library"
+        / "Application Support"
+        / "AgentCustomer"
+        / ".credential_key"
+    )
+    return legacy if legacy.is_file() else None
 
 
 def _load_or_create_key_material() -> bytes:
@@ -85,6 +101,19 @@ def _load_or_create_key_material() -> bytes:
         raw = path.read_bytes()
         if len(raw) >= 32:
             return raw[:32]
+
+    legacy = _legacy_key_file_path()
+    if legacy is not None:
+        raw = legacy.read_bytes()
+        if len(raw) >= 32:
+            key_bytes = raw[:32]
+            try:
+                path.write_bytes(key_bytes)
+                _ensure_private_file(path)
+                _logger.info("已从旧路径迁移凭据密钥: {} -> {}", legacy, path)
+            except OSError as e:
+                _logger.warning("无法迁移凭据密钥到 {}: {}", path, e)
+            return key_bytes
 
     seed = os.urandom(32)
     seed_hex = seed.hex()

@@ -91,8 +91,14 @@ def should_block_handler_until_transfer(
     metadata: Dict[str, Any],
 ) -> bool:
     """True = 跳过责任链（未收到转接的接待号会话）。"""
-    if not gate_until_transfer_enabled():
-        return False
+    try:
+        from utils.weak_supervision import effective_inbound_transfer_gate
+
+        if not effective_inbound_transfer_gate():
+            return False
+    except Exception:
+        if not gate_until_transfer_enabled():
+            return False
     if context.type == ContextType.TRANSFER:
         return False
     try:

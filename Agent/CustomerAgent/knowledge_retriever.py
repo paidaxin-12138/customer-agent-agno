@@ -561,8 +561,15 @@ class KnowledgeRetrieverMixin:
                             if self._doc_visible_for_shop(doc, eff_shop):
                                 filtered.append((row.get("_distance", 0), doc))
 
-                        # 按距离排序（越小越相关）
+                        # 按距离排序（越小越相关），并应用父子店 inherit 覆盖
                         filtered.sort(key=lambda x: x[0])
+                        pool = self._documents_for_retrieval(
+                            ignore_shop_filter=ignore_shop_filter,
+                            platform_shop_id=eff_shop,
+                        )
+                        filtered = self._apply_parent_override_filter(
+                            filtered, pool, eff_shop
+                        )
                         top = filtered[:limit]
 
                         self.logger.debug(

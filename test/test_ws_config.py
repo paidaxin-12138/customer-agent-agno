@@ -65,3 +65,10 @@ def test_queue_name_for_shop():
     from Channel.pinduoduo.ws_config import queue_name_for_shop
 
     assert queue_name_for_shop("570414651") == "pdd_570414651"
+
+
+def test_queue_name_for_account():
+    from Channel.pinduoduo.ws_config import queue_name_for_account, queue_name_for_shop
+
+    assert queue_name_for_account("570414651", "184046586") == "pdd_570414651_184046586"
+    assert queue_name_for_shop("570414651", "184046586") == "pdd_570414651_184046586"

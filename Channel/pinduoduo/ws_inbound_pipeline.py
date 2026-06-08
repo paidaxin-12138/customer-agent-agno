@@ -154,13 +154,34 @@ async def dispatch_inbound_message(
         )
         if route == InboundRoute.FORCE_QUEUE:
             log.info("买家未知类型仍入队 ws_type={}", msg_type)
-        msg_id = await put_message(queue_name, context)
+        try:
+            wrapper_id = await put_message(queue_name, context)
+        except RuntimeError as qerr:
+            if "Queue is full" in str(qerr):
+                log.error(
+                    "{} 队列已满，消息丢弃 queue={} msg_id={} from_uid={}",
+                    tag,
+                    queue_name,
+                    pdd_message.msg_id,
+                    from_uid,
+                )
+                return
+            raise
+        if not wrapper_id:
+            log.info(
+                "{} 去重跳过 queue={} platform_msg_id={} from_uid={}",
+                tag,
+                queue_name,
+                pdd_message.msg_id,
+                from_uid,
+            )
+            return
         log.info(
             "{} 已入队 queue={} msg_id={} wrapper_id={}",
             tag,
             queue_name,
             pdd_message.msg_id,
-            msg_id,
+            wrapper_id,
         )
         return
 

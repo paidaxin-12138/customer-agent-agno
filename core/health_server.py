@@ -75,7 +75,7 @@ async def _health_handler(_request: web.Request) -> web.Response:
 
 def _evaluate_readiness() -> Tuple[bool, str, Dict[str, Any]]:
     """
-    就绪条件：至少一个店铺 WebSocket 已连接，且对应 pdd_{shop_id} 消费者正在运行。
+    就绪条件：至少一个账号 WebSocket 已连接，且对应 pdd_{shop_id}_{user_id} 消费者正在运行。
     所有依赖未初始化或异常时安全返回 not ready。
     """
     detail: Dict[str, Any] = {
@@ -100,18 +100,23 @@ def _evaluate_readiness() -> Tuple[bool, str, Dict[str, Any]]:
         return False, "no_websocket_connected", detail
 
     try:
-        from Channel.pinduoduo.ws_config import queue_name_for_shop
+        from Channel.pinduoduo.ws_config import queue_name_for_account
         from Message.core.consumer import message_consumer_manager
     except Exception as e:
         _logger.debug("readiness: consumer manager unavailable: {}", e)
         return False, "consumer_manager_unavailable", detail
 
     for status in connected:
-        queue_name = queue_name_for_shop(str(status.shop_id))
+        queue_name = queue_name_for_account(str(status.shop_id), str(status.user_id))
         consumer = message_consumer_manager.get_consumer(queue_name)
         running = bool(consumer and consumer.is_running())
         detail["consumers_running"].append(
-            {"shop_id": status.shop_id, "queue_name": queue_name, "running": running}
+            {
+                "shop_id": status.shop_id,
+                "user_id": status.user_id,
+                "queue_name": queue_name,
+                "running": running,
+            }
         )
         if running:
             return True, "", detail
@@ -148,9 +153,26 @@ async def _metrics_handler(_request: web.Request) -> web.Response:
     return web.json_response(payload)
 
 
+def _is_loopback_host(host: str) -> bool:
+    h = (host or "").strip().lower()
+    return h in ("127.0.0.1", "::1", "localhost")
+
+
 async def start_health_server(host: str = "127.0.0.1", port: int = 8080) -> None:
     global _runner, _site
     if _site is not None:
+        return
+    if not _is_loopback_host(host) and not _configured_health_token():
+        import os
+
+        strict = os.getenv("STRICT_CONFIG", "").strip() in ("1", "true", "yes")
+        msg = (
+            f"health_host={host} 非本机地址且未配置 HEALTH_CHECK_TOKEN，"
+            "拒绝启动健康检查服务"
+        )
+        if strict:
+            raise RuntimeError(msg)
+        _logger.error("{}（设置 HEALTH_CHECK_TOKEN 或绑定 127.0.0.1）", msg)
         return
     app = web.Application()
     app.router.add_get("/health", _health_handler)

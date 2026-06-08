@@ -15,7 +15,7 @@ from openai import OpenAI
 from config import Config, get_config
 from utils.logger_loguru import get_logger
 from utils.human_transfer_intent import detect_human_transfer_intent
-from Agent.CustomerAgent.agent_knowledge import KnowledgeManager
+from Agent.CustomerAgent.agent_knowledge import get_knowledge_manager
 
 
 class AIChatWorker(QThread):
@@ -456,7 +456,7 @@ class AITestWidget(QFrame):
         embedder_ok = self._is_embedder_configured()
         try:
             if self._knowledge_manager is None:
-                self._knowledge_manager = KnowledgeManager()
+                self._knowledge_manager = get_knowledge_manager()
             results = (
                 self._knowledge_manager.search_knowledge(
                     query, limit=3, ignore_shop_filter=True
@@ -618,7 +618,7 @@ class AITestWidget(QFrame):
             return ""
         try:
             if self._knowledge_manager is None:
-                self._knowledge_manager = KnowledgeManager()
+                self._knowledge_manager = get_knowledge_manager()
         except Exception:
             return ""
 
@@ -811,7 +811,7 @@ class AITestWidget(QFrame):
             return ""
         if self._knowledge_manager is None:
             try:
-                self._knowledge_manager = KnowledgeManager()
+                self._knowledge_manager = get_knowledge_manager()
             except Exception:
                 return ""
         products = getattr(self._knowledge_manager, "products", []) or []
@@ -875,7 +875,7 @@ class AITestWidget(QFrame):
             return ""
         if self._knowledge_manager is None:
             try:
-                self._knowledge_manager = KnowledgeManager()
+                self._knowledge_manager = get_knowledge_manager()
             except Exception:
                 return ""
         products = getattr(self._knowledge_manager, "products", []) or []
@@ -899,7 +899,7 @@ class AITestWidget(QFrame):
         self._last_budget = budget
         if self._knowledge_manager is None:
             try:
-                self._knowledge_manager = KnowledgeManager()
+                self._knowledge_manager = get_knowledge_manager()
             except Exception:
                 return ""
         products = getattr(self._knowledge_manager, "products", []) or []
@@ -925,7 +925,7 @@ class AITestWidget(QFrame):
             return ""
         if self._knowledge_manager is None:
             try:
-                self._knowledge_manager = KnowledgeManager()
+                self._knowledge_manager = get_knowledge_manager()
             except Exception:
                 return ""
         products = getattr(self._knowledge_manager, "products", []) or []
@@ -997,7 +997,7 @@ class AITestWidget(QFrame):
     def _build_knowledge_report(self) -> str:
         try:
             if self._knowledge_manager is None:
-                self._knowledge_manager = KnowledgeManager()
+                self._knowledge_manager = get_knowledge_manager()
             docs = self._knowledge_manager.get_all_contents() or []
         except Exception as e:
             return f"当前无法读取知识库，错误：{e}"
@@ -1019,7 +1019,7 @@ class AITestWidget(QFrame):
             return ""
         if self._knowledge_manager is None:
             try:
-                self._knowledge_manager = KnowledgeManager()
+                self._knowledge_manager = get_knowledge_manager()
             except Exception:
                 return ""
         products = getattr(self._knowledge_manager, "products", []) or []

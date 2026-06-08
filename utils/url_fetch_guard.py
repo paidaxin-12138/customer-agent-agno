@@ -3,12 +3,14 @@
 
 chat_image：聊天图片，沿用 utils.chat_message_html 白名单。
 pdd_asset：平台 Logo / 商品 OCR 图，允许拼多多相关 CDN 根域。
+
+连接前会再次解析 DNS 并校验 IP，缩小 DNS 重绑定窗口。
 """
 from __future__ import annotations
 
 import ipaddress
 import socket
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 from utils.chat_message_html import DEFAULT_CHAT_BUBBLE_OPTIONS
@@ -19,6 +21,14 @@ _PDD_ASSET_HOST_ROOTS = (
     "pinduoduo.com",
     "yangkeduo.com",
 )
+
+
+class BlockedFetchError(Exception):
+    """URL 或解析 IP 未通过安全校验。"""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
 
 
 def _host_on_roots(hostname: str, roots: Tuple[str, ...]) -> bool:
@@ -64,6 +74,35 @@ def _hostname_resolves_to_blocked(hostname: str) -> bool:
         if _ip_blocked(addr):
             return True
     return False
+
+
+def _assert_resolved_ips_allowed(hostname: str, port: Optional[int] = None) -> None:
+    """连接前再次解析 hostname，拒绝内网/回环等地址。"""
+    host = (hostname or "").strip().lower()
+    if not host:
+        raise BlockedFetchError("missing_host")
+    try:
+        ip = ipaddress.ip_address(host)
+        if _ip_blocked(str(ip)):
+            raise BlockedFetchError("blocked_host")
+        return
+    except ValueError:
+        pass
+
+    try:
+        infos = socket.getaddrinfo(
+            host,
+            port or 0,
+            type=socket.SOCK_STREAM,
+        )
+    except OSError as exc:
+        raise BlockedFetchError("dns_resolve_failed") from exc
+    if not infos:
+        raise BlockedFetchError("dns_empty")
+    for info in infos:
+        addr = info[4][0]
+        if _ip_blocked(addr):
+            raise BlockedFetchError("blocked_host")
 
 
 def is_url_safe_to_fetch(url: str, *, purpose: str = "chat_image") -> Tuple[bool, str]:
@@ -119,3 +158,87 @@ def filter_safe_fetch_url(url: Optional[str], *, purpose: str = "chat_image") ->
         return None
     ok, _ = is_url_safe_to_fetch(url, purpose=purpose)
     return url if ok else None
+
+
+def _parsed_port(parsed) -> int:
+    if parsed.port:
+        return int(parsed.port)
+    return 443 if (parsed.scheme or "").lower() == "https" else 80
+
+
+def safe_requests_get(
+    url: str,
+    *,
+    purpose: str = "chat_image",
+    timeout: float = 10,
+    headers: Optional[Dict[str, str]] = None,
+    **kwargs: Any,
+):
+    """requests GET：校验 URL + 连接前再次校验解析 IP。"""
+    import requests
+    from requests.adapters import HTTPAdapter
+
+    ok, reason = is_url_safe_to_fetch(url, purpose=purpose)
+    if not ok:
+        raise BlockedFetchError(reason)
+
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        raise BlockedFetchError("missing_host")
+
+    class _SafeHTTPAdapter(HTTPAdapter):
+        def send(self, request, **send_kwargs):
+            req_host = urlparse(request.url).hostname
+            req_port = _parsed_port(urlparse(request.url))
+            if req_host:
+                _assert_resolved_ips_allowed(req_host, req_port)
+            return super().send(request, **send_kwargs)
+
+    session = requests.Session()
+    adapter = _SafeHTTPAdapter()
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session.get(url, timeout=timeout, headers=headers, **kwargs)
+
+
+class SafeTCPConnector:
+    """aiohttp TCPConnector：在 DNS 解析后校验 IP。"""
+
+    @staticmethod
+    def create(**kwargs: Any):
+        import aiohttp
+
+        class _Connector(aiohttp.TCPConnector):
+            async def _resolve_host(self, host, port, traces=None):
+                results = await super()._resolve_host(host, port, traces)
+                for res in results:
+                    ip = res["host"] if isinstance(res, dict) else res[4][0]
+                    if _ip_blocked(ip):
+                        raise BlockedFetchError("blocked_host")
+                return results
+
+        return _Connector(**kwargs)
+
+
+async def aiohttp_fetch_bytes(
+    url: str,
+    *,
+    purpose: str = "chat_image",
+    headers: Optional[Dict[str, str]] = None,
+    timeout_sec: float = 12,
+) -> bytes:
+    """aiohttp GET body：校验 URL + SafeTCPConnector。"""
+    import aiohttp
+
+    ok, reason = is_url_safe_to_fetch(url, purpose=purpose)
+    if not ok:
+        raise BlockedFetchError(reason)
+
+    timeout = aiohttp.ClientTimeout(total=timeout_sec)
+    connector = SafeTCPConnector.create()
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        async with session.get(url, headers=headers) as response:
+            if response.status >= 400:
+                raise ValueError(f"HTTP {response.status}")
+            return await response.read()

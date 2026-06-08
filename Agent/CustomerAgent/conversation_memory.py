@@ -140,7 +140,6 @@ def _memory_cfg() -> Dict[str, Any]:
     except (TypeError, ValueError):
         rounds, rmin, rmax = 10, 6, 12
     rounds = max(rmin, min(rmax, rounds))
-    rounds = min(5, rounds)
     load = get_config("chat.memory.max_messages_load", 80)
     try:
         load = int(load)

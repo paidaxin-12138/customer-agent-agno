@@ -103,3 +103,36 @@ def test_list_all_accounts_for_chat(chat_db):
     assert len(rows) == 1
     assert rows[0]["platform_shop_id"] == "shop-001"
     assert rows[0]["username"] == "testuser"
+
+
+def test_add_chat_messages_batch_dedup(chat_db):
+    from dataclasses import dataclass
+
+    @dataclass
+    class _Item:
+        session_id: int
+        account_id: int
+        sender_type: str
+        content: str
+        message_id: str | None = None
+        content_type: str = "text"
+        image_url: str | None = None
+        increment_unread: bool = False
+        sent_at: object = None
+
+    acc_id = _account_id(chat_db)
+    sid = chat_db.get_or_create_chat_session(
+        acc_id, "shop-001", "testuser", "buyer_batch", "买家"
+    )
+    chat_db.add_chat_message(
+        sid, acc_id, "customer", "已有", message_id="dup-1", immediate=True
+    )
+    batch = [
+        _Item(sid, acc_id, "customer", "跳过", message_id="dup-1"),
+        _Item(sid, acc_id, "customer", "新消息", message_id="new-1"),
+        _Item(sid, acc_id, "customer", "批内重复", message_id="batch-dup"),
+        _Item(sid, acc_id, "customer", "批内重复2", message_id="batch-dup"),
+    ]
+    written = chat_db.add_chat_messages_batch(batch)
+    assert written == 2
+    assert chat_db.get_chat_message_count(sid) == 3

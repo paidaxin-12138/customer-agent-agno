@@ -90,6 +90,7 @@
     "inbound_transfer_takeover_ai_mode": true,
     "inbound_transfer_enqueue_unreplied": true,
     "inbound_transfer_gate_until_received": true,
+    "weak_supervision_enabled": false,
     "inbound_transfer_stage": "after_sales",
     "ai_allow_after_sales_stage": true,
     "transfer_auto_rose_enabled": false,

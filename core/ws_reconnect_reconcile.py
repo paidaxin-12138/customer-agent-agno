@@ -138,14 +138,14 @@ def reconcile_account_after_auth(
     if not _enqueue_unreplied_enabled():
         return 0
 
-    from Channel.pinduoduo.ws_config import queue_name_for_shop
+    from Channel.pinduoduo.ws_config import queue_name_for_account
     from utils.transfer_takeover import _build_synthetic_context
     from utils.unreplied_buyer_messages import (
         get_unreplied_buyer_messages,
         merge_unreplied_parts,
     )
 
-    queue_name = queue_name_for_shop(str(shop_id))
+    queue_name = queue_name_for_account(str(shop_id), str(user_id))
     max_parts = int(get_config("chat.unreplied_buyer_max_parts", 3) or 3)
     enqueued = 0
 
@@ -214,8 +214,12 @@ def _enqueue_context(
             if account_id is not None and int(acc.get("id") or 0) == int(account_id):
                 target_loop = getattr(thread, "loop", None)
                 break
-            if str(acc.get("shop_id") or "") == str(
-                getattr(getattr(context, "kwargs", None), "shop_id", "")
+            ku = getattr(context, "kwargs", None)
+            ctx_shop = str(getattr(ku, "shop_id", "") or "")
+            ctx_user = str(getattr(ku, "user_id", "") or "")
+            if (
+                str(acc.get("shop_id") or "") == ctx_shop
+                and str(acc.get("user_id") or "") == ctx_user
             ):
                 target_loop = getattr(thread, "loop", None)
                 break

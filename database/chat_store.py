@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import desc, func, or_
+from sqlalchemy import desc, func, or_, tuple_
 from sqlalchemy.exc import SQLAlchemyError
 
 from database.models import (
@@ -466,9 +466,9 @@ class ChatStoreMixin:
     @staticmethod
     def _default_ai_mode_for_account(account_id: int) -> bool:
         try:
-            from utils.inbound_transfer_gate import default_ai_mode_for_new_session
+            from utils.weak_supervision import default_ai_mode_for_account
 
-            return default_ai_mode_for_new_session(int(account_id))
+            return default_ai_mode_for_account(int(account_id))
         except Exception:
             return True
 
@@ -677,6 +677,27 @@ class ChatStoreMixin:
         if increment_unread and sender_type == "customer":
             cs.unread_count = (cs.unread_count or 0) + 1
 
+    @staticmethod
+    def _existing_message_id_keys(
+        session, pairs: List[Tuple[int, str]], *, chunk_size: int = 400
+    ) -> set[Tuple[int, str]]:
+        """批量查询已存在的 (session_id, message_id) 组合。"""
+        if not pairs:
+            return set()
+        unique_pairs = list(dict.fromkeys(pairs))
+        existing: set[Tuple[int, str]] = set()
+        for i in range(0, len(unique_pairs), chunk_size):
+            chunk = unique_pairs[i : i + chunk_size]
+            rows = (
+                session.query(ChatMessage.session_id, ChatMessage.message_id)
+                .filter(
+                    tuple_(ChatMessage.session_id, ChatMessage.message_id).in_(chunk)
+                )
+                .all()
+            )
+            existing.update((int(sid), str(mid)) for sid, mid in rows if mid)
+        return existing
+
     def add_chat_messages_batch(self, batch: List[Any]) -> int:
         """批量写入 chat_messages（单事务）。"""
         if not batch:
@@ -684,8 +705,17 @@ class ChatStoreMixin:
         session = self.get_session()
         written = 0
         try:
+            dedup_pairs: List[Tuple[int, str]] = []
+            for item in batch:
+                message_id = item.message_id
+                if message_id:
+                    dedup_pairs.append((int(item.session_id), str(message_id)))
+            existing_keys = self._existing_message_id_keys(session, dedup_pairs)
+            batch_seen: set[Tuple[int, str]] = set()
+
             session_latest: Dict[int, tuple] = {}
             unread_inc: Dict[int, int] = {}
+            now = now_for_db()
             for item in batch:
                 session_id = int(item.session_id)
                 account_id = int(item.account_id)
@@ -693,17 +723,10 @@ class ChatStoreMixin:
                 content = str(item.content or "")
                 message_id = item.message_id
                 if message_id:
-                    ex = (
-                        session.query(ChatMessage)
-                        .filter(
-                            ChatMessage.session_id == session_id,
-                            ChatMessage.message_id == message_id,
-                        )
-                        .first()
-                    )
-                    if ex:
+                    key = (session_id, str(message_id))
+                    if key in existing_keys or key in batch_seen:
                         continue
-                now = now_for_db()
+                    batch_seen.add(key)
                 st = item.sent_at or now
                 msg = ChatMessage(
                     session_id=session_id,
@@ -725,24 +748,31 @@ class ChatStoreMixin:
                 prev = session_latest.get(session_id)
                 if prev is None or st >= prev[0]:
                     session_latest[session_id] = (st, content, now)
-            for sid, (st, content, now) in session_latest.items():
-                cs = session.query(ChatSession).filter(ChatSession.id == sid).first()
-                if not cs:
-                    continue
-                preview = content if len(content) < 500 else content[:500] + "…"
-                if cs.last_message_time is None or st >= cs.last_message_time:
-                    cs.last_message = preview
-                    cs.last_message_time = st
-                cs.updated_at = now
-                inc = unread_inc.get(sid, 0)
-                if inc:
-                    cs.unread_count = (cs.unread_count or 0) + inc
+            if session_latest:
+                cs_by_id = {
+                    cs.id: cs
+                    for cs in session.query(ChatSession)
+                    .filter(ChatSession.id.in_(session_latest.keys()))
+                    .all()
+                }
+                for sid, (st, content, now) in session_latest.items():
+                    cs = cs_by_id.get(sid)
+                    if not cs:
+                        continue
+                    preview = content if len(content) < 500 else content[:500] + "…"
+                    if cs.last_message_time is None or st >= cs.last_message_time:
+                        cs.last_message = preview
+                        cs.last_message_time = st
+                    cs.updated_at = now
+                    inc = unread_inc.get(sid, 0)
+                    if inc:
+                        cs.unread_count = (cs.unread_count or 0) + inc
             session.commit()
             return written
         except SQLAlchemyError as e:
             session.rollback()
             self.logger.error(f"add_chat_messages_batch 失败: {e}")
-            return 0
+            raise
         finally:
             session.close()
 

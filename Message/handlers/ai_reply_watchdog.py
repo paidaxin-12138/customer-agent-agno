@@ -145,22 +145,51 @@ def mark_escalated(session_key: Optional[str], epoch: int) -> None:
         _escalated_epoch[session_key] = epoch
 
 
+def _resolve_outbound_epoch(
+    session_key: str,
+    metadata: Optional[Dict[str, Any]],
+) -> int:
+    """优先 metadata 中的 _watchdog_epoch，避免延迟出站误标当前轮次。"""
+    if metadata:
+        try:
+            wired = int(metadata.get("_watchdog_epoch") or 0)
+            if wired > 0:
+                return wired
+        except (TypeError, ValueError):
+            pass
+    return int(_epoch.get(session_key, 0) or 0)
+
+
 def notify_outbound_reply(
     context: Optional[Context] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """任意成功发给买家的消息后调用，取消当前轮次 watchdog。"""
+    """任意成功发给买家的消息后调用，取消对应轮次 watchdog。"""
     session_key = resolve_session_key(context, metadata)
     if not session_key:
         return
-    epoch = _epoch.get(session_key, 0)
-    if epoch > 0:
-        mark_delivered(session_key, epoch)
-        _turn_store.pop(session_key, None)
-        old_task = _tasks.pop(session_key, None)
-        if old_task is not None and not old_task.done():
-            old_task.cancel()
-        logger.debug("watchdog 已标记已回复: session={} epoch={}", session_key, epoch)
+    outbound_epoch = _resolve_outbound_epoch(session_key, metadata)
+    if outbound_epoch <= 0:
+        return
+    mark_delivered(session_key, outbound_epoch)
+    current_epoch = _epoch.get(session_key, 0)
+    if outbound_epoch != current_epoch:
+        logger.debug(
+            "watchdog 已标记历史轮次已回复: session={} outbound_epoch={} current={}",
+            session_key,
+            outbound_epoch,
+            current_epoch,
+        )
+        return
+    _turn_store.pop(session_key, None)
+    old_task = _tasks.pop(session_key, None)
+    if old_task is not None and not old_task.done():
+        old_task.cancel()
+    logger.debug(
+        "watchdog 已标记已回复: session={} epoch={}",
+        session_key,
+        outbound_epoch,
+    )
 
 
 async def start_inbound_watchdog(

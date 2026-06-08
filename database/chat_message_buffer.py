@@ -13,6 +13,7 @@ _log = get_logger("ChatMessageBuffer")
 
 FLUSH_INTERVAL_SEC = 0.5
 FLUSH_BATCH_SIZE = 10
+_MAX_PENDING = 5000
 
 
 @dataclass
@@ -104,6 +105,19 @@ class ChatMessageWriteBuffer:
         with self._lock:
             return self._flush_locked()
 
+    def _requeue_failed_batch(self, batch: List[_PendingChatMessage]) -> None:
+        if not batch:
+            return
+        self._pending = batch + self._pending
+        overflow = len(self._pending) - _MAX_PENDING
+        if overflow > 0:
+            self._pending = self._pending[:_MAX_PENDING]
+            _log.error(
+                "chat_messages 缓冲溢出，丢弃最旧 {} 条（当前上限 {}）",
+                overflow,
+                _MAX_PENDING,
+            )
+
     def _flush_locked(self) -> int:
         if self._timer is not None:
             self._timer.cancel()
@@ -116,6 +130,7 @@ class ChatMessageWriteBuffer:
             return self._get_db().add_chat_messages_batch(batch)
         except Exception as exc:
             _log.error("批量写入 chat_messages 失败 ({} 条): {}", len(batch), exc)
+            self._requeue_failed_batch(batch)
             return 0
 
 

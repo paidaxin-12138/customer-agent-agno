@@ -35,25 +35,15 @@ class LogoLoaderThread(QThread):
             self.logo_loaded.emit(QPixmap())
             return
         try:
-            from utils.url_fetch_guard import is_url_safe_to_fetch
+            from utils.url_fetch_guard import aiohttp_fetch_bytes
 
-            ok, reason = is_url_safe_to_fetch(self.url, purpose="pdd_asset")
-            if not ok:
-                logger.warning("店铺 Logo URL 被拒绝: url={} reason={}", self.url, reason)
-                self.logo_loaded.emit(QPixmap())
-                return
-
-            import aiohttp
-
-            async def fetch_image():
-                timeout = aiohttp.ClientTimeout(total=12)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(self.url, headers=_LOGO_HEADERS) as response:
-                        if response.status >= 400:
-                            raise ValueError(f"HTTP {response.status}")
-                        return await response.read()
-
-            image_data = asyncio.run(fetch_image())
+            image_data = asyncio.run(
+                aiohttp_fetch_bytes(
+                    self.url,
+                    purpose="pdd_asset",
+                    headers=_LOGO_HEADERS,
+                )
+            )
             if not image_data:
                 raise ValueError("empty body")
 

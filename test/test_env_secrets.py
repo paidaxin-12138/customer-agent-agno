@@ -21,3 +21,15 @@ def test_effective_secret_prefers_ui(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "from-env")
     assert effective_secret("llm.api_key", "from-ui") == "from-ui"
     assert effective_secret("llm.api_key", "") == "from-env"
+
+
+def test_write_env_quotes_special_characters(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr("utils.env_secrets.env_file_path", lambda: env_path)
+
+    secret = 'sk-test key with spaces and "quotes" #not-comment'
+    write_env_file({"LLM_API_KEY": secret})
+    text = env_path.read_text(encoding="utf-8")
+    assert "LLM_API_KEY=" in text
+    assert secret not in text or '"' in text
+    assert read_env_file()["LLM_API_KEY"] == secret

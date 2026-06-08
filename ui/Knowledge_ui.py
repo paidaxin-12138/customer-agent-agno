@@ -790,9 +790,10 @@ class KnowledgeUI(QFrame):
         if self.knowledge_manager is None:
             try:
                 # 延迟导入，避免启动时加载 Agno/LanceDB/CulturalManager 等重型模块
-                from Agent.CustomerAgent.agent_knowledge import KnowledgeManager
-                self.knowledge_manager = KnowledgeManager()
-                logger.info("✅ 知识库管理器初始化成功")
+                from Agent.CustomerAgent.agent_knowledge import get_knowledge_manager
+
+                self.knowledge_manager = get_knowledge_manager()
+                logger.info("✅ 知识库管理器初始化成功（全局单例）")
             except Exception as e:
                 logger.error(f"❌ 知识库管理器初始化失败: {e}")
                 self.knowledge_manager = None
@@ -987,6 +988,11 @@ class KnowledgeUI(QFrame):
                 self.gridLayout.addWidget(no_data_label, 0, 0)
                 self._layout_initialized = True
                 return
+
+            try:
+                self.knowledge_manager.reload_documents_from_disk()
+            except Exception as e:
+                logger.warning(f"首屏重载知识库 JSON 失败: {e}")
 
             # 显示加载指示器
             self._show_loading_indicator()

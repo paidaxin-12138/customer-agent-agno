@@ -186,9 +186,9 @@ def smoke_handler_chain() -> bool:
 def smoke_knowledge() -> bool:
     _section("5. 知识库")
     try:
-        from Agent.CustomerAgent.agent_knowledge import KnowledgeManager
+        from Agent.CustomerAgent.agent_knowledge import get_knowledge_manager
 
-        km = KnowledgeManager()
+        km = get_knowledge_manager()
         n = len(getattr(km, "documents", {}) or {})
         print(f"  文档数: {n}")
         return n >= 0

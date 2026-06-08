@@ -48,10 +48,24 @@ class SimpleMessageQueue:
             timestamp=time.time()
         )
 
-        # 检查去重
+        # 检查去重（返回空串表示未入队，与正常 message_id 区分）
         if self._should_deduplicate(message_wrapper):
-            self.logger.debug(f"Message deduplicated: {message_wrapper.message_id}")
-            return message_wrapper.message_id
+            from_uid = ""
+            try:
+                from_uid = str(
+                    getattr(
+                        getattr(message_wrapper.context, "kwargs", None), "from_uid", ""
+                    )
+                    or ""
+                )
+            except Exception:
+                pass
+            self.logger.info(
+                "[DEDUP] queue={} skipped from_uid={}",
+                self.name,
+                from_uid,
+            )
+            return ""
 
         force_enqueue = bool(get_config("chat.queue_force_enqueue", False))
         if self._queue.full():
@@ -148,7 +162,7 @@ class SimpleMessageQueue:
 
     def _should_deduplicate(self, wrapper: MessageWrapper) -> bool:
         """检查是否应该去重"""
-        if not self._deduplication_cache:
+        if self._deduplication_cache is None:
             return False
 
         raw = wrapper.context.content

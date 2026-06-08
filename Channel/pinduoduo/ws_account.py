@@ -12,7 +12,7 @@ from Channel.pinduoduo.ws_config import (
     HeartbeatConfig,
     ReconnectConfig,
     connection_key,
-    queue_name_for_shop,
+    queue_name_for_account,
 )
 from Channel.pinduoduo.ws_auth_notify import (
     clear_auth_callbacks,
@@ -88,7 +88,7 @@ async def stop_account_for_channel(channel: Any, shop_id: str, user_id: str) -> 
         status_manager=channel.status_manager,
         stop_events=channel._stop_events,
         cleanup_resources=channel._cleanup_resources,
-        queue_name=queue_name_for_shop(shop_id),
+        queue_name=queue_name_for_account(shop_id, user_id),
         logger=channel.logger,
     )
     channel.ws = None
@@ -210,7 +210,7 @@ async def run_account_ws_connect(
     """单次 WebSocket 建连 → 上线 → 心跳/消息循环。"""
     log = runtime.logger or _logger
     key = connection_key(shop_id, user_id)
-    queue_name = queue_name_for_shop(shop_id)
+    queue_name = queue_name_for_account(shop_id, user_id)
 
     try:
         stop_event = runtime.stop_events.get(key) or asyncio.Event()

@@ -53,3 +53,20 @@ def test_buffer_disabled_by_env(monkeypatch):
     from database.chat_message_buffer import _buffer_enabled
 
     assert _buffer_enabled() is False
+
+
+def test_buffer_requeues_on_flush_failure():
+    attempts = []
+
+    class FailingDb:
+        def add_chat_messages_batch(self, batch):
+            attempts.append(len(batch))
+            raise RuntimeError("db unavailable")
+
+    buf = ChatMessageWriteBuffer()
+    buf._db = FailingDb()
+    buf.enqueue(session_id=1, account_id=1, sender_type="customer", content="retry-me")
+    assert buf.flush() == 0
+    assert attempts == [1]
+    assert len(buf._pending) == 1
+    assert buf._pending[0].content == "retry-me"

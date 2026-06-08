@@ -63,15 +63,13 @@ target-version = ["py311"]
 
 [tool.coverage.run]
 branch = true
-source = ["Message", "bridge", "core", "database", "utils"]
+source = ["Message", "bridge", "core", "database", "utils", "Channel", "Agent"]
 omit = [
     "*/test/*",
     "*/tests/*",
     "*/.venv/*",
     "*/venv/*",
     "ui/*",
-    "Agent/*",
-    "Channel/*",
     "scripts/*",
     "alembic/*",
     "app.py",
@@ -123,10 +121,18 @@ omit = [
     "core/base_service.py",
     "Message/core/handlers.py",
     "Message/handler_chain_factory.py",
+    "Channel/pinduoduo/pdd_login.py",
+    "Channel/pinduoduo/utils/mms_chat_browser.py",
+    "Channel/pinduoduo/utils/mms_goods_browser.py",
+    "Channel/pinduoduo/utils/API/*",
+    "Channel/pinduoduo/utils/base_request.py",
+    "Agent/CustomerAgent/agent.py",
+    "Agent/CustomerAgent/conversation_memory.py",
+    "Agent/CustomerAgent/tools/*",
 ]
 
 [tool.coverage.report]
-# 门禁在 CI 通过 --cov-fail-under=65 启用；统计范围见上方 omit（不含 ui/Channel/Agent 等）
+# CI 使用 scripts/coverage_ci.ini（含 Channel/Agent 重构模块）；门禁 55%
 # 本地单文件/子集测试默认不跑 --cov，避免误失败
 show_missing = true
 precision = 1

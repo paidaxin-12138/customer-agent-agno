@@ -56,6 +56,47 @@ def test_buyer_notice_ai_timeout_default(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stale_outbound_does_not_cancel_current_watchdog():
+    """延迟出站携带旧 epoch 时，不得取消当前轮次 watchdog。"""
+    key = "pinduoduo:shop:seller:buyer"
+    e1 = await w.begin_watchdog_turn(key)
+    e2 = await w.begin_watchdog_turn(key)
+    assert e2 == e1 + 1
+
+    w.notify_outbound_reply(
+        metadata={
+            "shop_id": "shop",
+            "user_id": "seller",
+            "from_uid": "buyer",
+            "channel_name": "pinduoduo",
+            "_watchdog_epoch": e1,
+        }
+    )
+    assert w._is_delivered(key, e1)
+    assert not w._is_delivered(key, e2)
+    w.schedule_inbound_watchdog(key, e2)
+    assert key in w._tasks
+    assert w._epoch.get(key) == e2
+
+
+@pytest.mark.asyncio
+async def test_outbound_with_matching_epoch_cancels_watchdog():
+    key = "pinduoduo:shop2:seller2:buyer2"
+    epoch = await w.begin_watchdog_turn(key)
+    w.notify_outbound_reply(
+        metadata={
+            "shop_id": "shop2",
+            "user_id": "seller2",
+            "from_uid": "buyer2",
+            "channel_name": "pinduoduo",
+            "_watchdog_epoch": epoch,
+        }
+    )
+    assert w._is_delivered(key, epoch)
+    assert key not in w._tasks
+
+
+@pytest.mark.asyncio
 async def test_sleep_until_delivered_exits_early():
     key = "sess_early"
     e = await w.begin_watchdog_turn(key)

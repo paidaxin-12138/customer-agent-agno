@@ -14,6 +14,23 @@ _logger = get_logger("EnvSecrets")
 _ENV_LINE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
 
+def _parse_env_value(raw: str) -> str:
+    val = (raw or "").strip()
+    if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+        inner = val[1:-1]
+        if val[0] == '"':
+            return inner.replace('\\"', '"').replace("\\\\", "\\")
+        return inner
+    return val
+
+
+def _format_env_value(val: str) -> str:
+    if any(c in val for c in " \t#\"\n\r'\\"):
+        escaped = val.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return val
+
+
 def env_file_path() -> Path:
     return Path(__file__).resolve().parents[1] / ".env"
 
@@ -30,9 +47,7 @@ def read_env_file() -> Dict[str, str]:
         m = _ENV_LINE_RE.match(line)
         if not m:
             continue
-        key, val = m.group(1), m.group(2).strip()
-        if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
-            val = val[1:-1]
+        key, val = m.group(1), _parse_env_value(m.group(2))
         out[key] = val
     return out
 
@@ -64,7 +79,7 @@ def write_env_file(updates: Dict[str, Optional[str]]) -> None:
             continue
         key = m.group(1)
         if key in current:
-            preserved.append(f"{key}={current[key]}")
+            preserved.append(f"{key}={_format_env_value(current[key])}")
             seen.add(key)
         elif key in updates:
             continue
@@ -74,7 +89,7 @@ def write_env_file(updates: Dict[str, Optional[str]]) -> None:
 
     for key, val in sorted(current.items()):
         if key not in seen:
-            preserved.append(f"{key}={val}")
+            preserved.append(f"{key}={_format_env_value(val)}")
 
     if not preserved:
         preserved = [
@@ -82,7 +97,7 @@ def write_env_file(updates: Dict[str, Optional[str]]) -> None:
             "",
         ]
         for key, val in sorted(current.items()):
-            preserved.append(f"{key}={val}")
+            preserved.append(f"{key}={_format_env_value(val)}")
 
     text = "\n".join(preserved).rstrip() + "\n"
     path.write_text(text, encoding="utf-8")

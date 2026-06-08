@@ -221,19 +221,6 @@ class MessageConsumer:
                 except Exception as reset_err:
                     self.logger.debug(f"intent_stage_reset: {reset_err}")
 
-                watchdog_epoch = 0
-                try:
-                    from Message.handlers.ai_reply_watchdog import start_inbound_watchdog
-
-                    watchdog_epoch = await start_inbound_watchdog(
-                        wrapper.context,
-                        metadata,
-                        str(wrapper.context.content or ""),
-                    )
-                    metadata["_watchdog_epoch"] = watchdog_epoch
-                except Exception as wd_err:
-                    self.logger.warning(f"inbound watchdog 启动失败: {wd_err}")
-
                 try:
                     from utils.inbound_transfer_gate import (
                         should_block_handler_until_transfer,
@@ -252,6 +239,19 @@ class MessageConsumer:
                         return
                 except Exception as gate_err:
                     self.logger.debug("inbound_transfer_gate: {}", gate_err)
+
+                watchdog_epoch = 0
+                try:
+                    from Message.handlers.ai_reply_watchdog import start_inbound_watchdog
+
+                    watchdog_epoch = await start_inbound_watchdog(
+                        wrapper.context,
+                        metadata,
+                        str(wrapper.context.content or ""),
+                    )
+                    metadata["_watchdog_epoch"] = watchdog_epoch
+                except Exception as wd_err:
+                    self.logger.warning(f"inbound watchdog 启动失败: {wd_err}")
 
                 for handler in self.handlers:
                     try:
@@ -298,11 +298,10 @@ class MessageConsumer:
                             self.logger.debug(f"on_error callback: {oe}")
                         if hname in _BUSINESS_CHAIN_HANDLERS:
                             self.logger.warning(
-                                "业务 Handler {} 异常，停止责任链: {}",
+                                "业务 Handler {} 异常，继续责任链: {}",
                                 hname,
                                 e,
                             )
-                            break
                         continue
 
                 if not processed and not metadata.get("_outbound_comfort_sent"):

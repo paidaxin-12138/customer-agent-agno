@@ -60,9 +60,14 @@ async def cleanup_connection_resources(
 
     try:
         await cancel_task_set(processing_tasks, logger=log)
-        await cancel_tasks_in_registry(
-            reconnect_tasks, connection_key=connection_key, cancel_timeout=5.0, logger=log
-        )
+        # 重连场景保留 reconnect_tasks，避免取消正在执行的 connect_with_retry
+        if not keep_consumer:
+            await cancel_tasks_in_registry(
+                reconnect_tasks,
+                connection_key=connection_key,
+                cancel_timeout=5.0,
+                logger=log,
+            )
         await cancel_tasks_in_registry(
             heartbeat_tasks, connection_key=connection_key, cancel_timeout=3.0, logger=log
         )
@@ -77,12 +82,8 @@ async def cleanup_connection_resources(
             ws_connections.clear()
             stop_events.clear()
 
+        # 每账号独立队列：仅在本连接断开且非重连保活时停止对应消费者
         should_stop_consumer = not keep_consumer
-        if connection_key and not keep_consumer:
-            shop_prefix = f"{queue_name.replace('pdd_', '')}_"
-            should_stop_consumer = not any(
-                k.startswith(shop_prefix) for k in ws_connections.keys()
-            )
         if should_stop_consumer:
             try:
                 await message_consumer_manager.stop_consumer(queue_name)

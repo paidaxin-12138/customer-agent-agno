@@ -45,7 +45,7 @@ async def handle_immediate_message(
             )
         elif context.type == ContextType.WITHDRAW:
             log.info(f"收到撤回消息: {context.content}")
-            send_message.send_text(recipient_uid, "[玫瑰]")
+            await asyncio.to_thread(send_message.send_text, recipient_uid, "[玫瑰]")
         elif context.type == ContextType.SYSTEM_STATUS:
             log.debug(f"系统状态消息: {context.content}")
         elif context.type == ContextType.SYSTEM_HINT:

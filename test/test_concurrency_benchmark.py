@@ -25,6 +25,7 @@ from Message.core.handlers import MessageHandler
 from Message.core.queue import queue_manager
 from Message.models.queue_models import MessageWrapper, QueueConfig
 from Channel.pinduoduo.pdd_channel import PDDChannel
+from Channel.pinduoduo.ws_config import queue_name_for_account
 
 
 # ---------- 配置快照（与线上一致） ----------
@@ -68,10 +69,15 @@ class _SleepHandler(MessageHandler):
             self._in_flight -= 1
 
 
-def _make_context(buyer_uid: str) -> Context:
+def _make_context(
+    buyer_uid: str,
+    *,
+    shop_id: str = "shop_test",
+    user_id: str = "user_test",
+) -> Context:
     kwargs = PinduoduoKwargs(
-        shop_id="shop_test",
-        user_id="user_test",
+        shop_id=shop_id,
+        user_id=user_id,
         from_uid=buyer_uid,
         username=f"buyer_{buyer_uid}",
     )
@@ -81,6 +87,35 @@ def _make_context(buyer_uid: str) -> Context:
         channel_type=ChannelType.PINDUODUO,
         kwargs=kwargs,
     )
+
+
+class _AccountTagHandler(MessageHandler):
+    """记录处理到的 seller user_id，用于多账号队列隔离验证。"""
+
+    def __init__(self, expected_user_id: str, delay_sec: float = 0.05):
+        self.expected_user_id = str(expected_user_id)
+        self.delay_sec = delay_sec
+        self.processed_user_ids: List[str] = []
+        self.peak_in_flight = 0
+        self._in_flight = 0
+
+    def can_handle(self, context: Context) -> bool:
+        return True
+
+    async def handle(self, context: Context, metadata: dict) -> bool:
+        self._in_flight += 1
+        self.peak_in_flight = max(self.peak_in_flight, self._in_flight)
+        try:
+            uid = str(
+                metadata.get("user_id")
+                or getattr(getattr(context, "kwargs", None), "user_id", "")
+                or ""
+            )
+            self.processed_user_ids.append(uid)
+            await asyncio.sleep(self.delay_sec)
+            return True
+        finally:
+            self._in_flight -= 1
 
 
 @dataclass
@@ -208,6 +243,153 @@ async def test_different_buyers_reach_consumer_concurrency():
     )
     assert r.peak_parallel >= max_c - 1, r.as_dict()
     assert r.effective_parallel >= max_c * 0.7, r.as_dict()
+
+
+def _consumer_patch_stack():
+    return [
+        patch(
+            "Message.handlers.ai_reply_watchdog.start_inbound_watchdog",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+        patch(
+            "utils.inbound_transfer_gate.should_block_handler_until_transfer",
+            return_value=False,
+        ),
+        patch(
+            "Agent.CustomerAgent.conversation_memory.prime_session_stage_on_context",
+        ),
+        patch("utils.intent_stage_reset.try_intent_stage_reset", return_value=False),
+        patch("database.session_store.prime_metadata_session"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_same_shop_multi_account_queues_isolated():
+    """
+    同店两账号：各自独立队列与消费者，消息不串线。
+    """
+    shop_id = "570414651"
+    accounts = ("184046586", "184046587")
+    handlers = {}
+    consumers = {}
+    queues = {}
+    patches = _consumer_patch_stack()
+    for p in patches:
+        p.start()
+    try:
+        for uid in accounts:
+            qname = queue_name_for_account(shop_id, uid)
+            queue_manager.recreate_queue(qname, QueueConfig(max_size=40))
+            handler = _AccountTagHandler(expected_user_id=uid)
+            consumer = MessageConsumer(qname, max_concurrent=8)
+            consumer.handlers = [handler]
+            handlers[uid] = handler
+            consumers[uid] = consumer
+            queues[uid] = queue_manager.get_or_create_queue(qname)
+            await consumer.start()
+
+        message_count = 10
+        for uid in accounts:
+            for i in range(message_count):
+                await queues[uid].put(
+                    _make_context(f"buyer_{uid}_{i}", shop_id=shop_id, user_id=uid)
+                )
+
+        deadline = time.perf_counter() + 25.0
+        while time.perf_counter() < deadline:
+            done = all(
+                len(handlers[uid].processed_user_ids) >= message_count for uid in accounts
+            )
+            if done:
+                break
+            await asyncio.sleep(0.02)
+
+        for uid in accounts:
+            processed = handlers[uid].processed_user_ids
+            assert len(processed) == message_count, (uid, processed)
+            assert all(p == uid for p in processed), (uid, processed)
+            assert handlers[uid].peak_in_flight >= 2, uid
+    finally:
+        for uid in accounts:
+            await consumers[uid].stop()
+        for p in patches:
+            p.stop()
+
+
+@pytest.mark.perf
+@pytest.mark.asyncio
+async def test_perf_same_shop_multi_account_parallel(capsys):
+    """同店双账号并发压测（informational，写入 perf_baseline.json 扩展字段）。"""
+    shop_id = "570414651"
+    accounts = ("acc_a", "acc_b")
+    handlers = {}
+    consumers = {}
+    queues = {}
+    message_count = 16
+    patches = _consumer_patch_stack()
+    for p in patches:
+        p.start()
+    try:
+        t0 = time.perf_counter()
+        for uid in accounts:
+            qname = queue_name_for_account(shop_id, uid)
+            queue_manager.recreate_queue(qname, QueueConfig(max_size=50))
+            handler = _AccountTagHandler(expected_user_id=uid, delay_sec=0.06)
+            consumer = MessageConsumer(qname, max_concurrent=8)
+            consumer.handlers = [handler]
+            handlers[uid] = handler
+            consumers[uid] = consumer
+            queues[uid] = queue_manager.get_or_create_queue(qname)
+            await consumer.start()
+
+        for uid in accounts:
+            for i in range(message_count):
+                await queues[uid].put(
+                    _make_context(f"m_{uid}_{i}", shop_id=shop_id, user_id=uid)
+                )
+
+        deadline = time.perf_counter() + 30.0
+        while time.perf_counter() < deadline:
+            if all(
+                len(handlers[uid].processed_user_ids) >= message_count for uid in accounts
+            ):
+                break
+            await asyncio.sleep(0.02)
+        elapsed = time.perf_counter() - t0
+        peaks = {uid: handlers[uid].peak_in_flight for uid in accounts}
+        payload = {
+            "multi_account_shop_id": shop_id,
+            "accounts": list(accounts),
+            "messages_per_account": message_count,
+            "elapsed_sec": round(elapsed, 3),
+            "peak_parallel_per_account": peaks,
+        }
+        print(
+            f"\nPERF_MULTI_ACCOUNT_ELAPSED_SEC={payload['elapsed_sec']} "
+            f"peaks={peaks}"
+        )
+        try:
+            import json
+            from pathlib import Path
+
+            out = Path("logs/perf_baseline.json")
+            out.parent.mkdir(parents=True, exist_ok=True)
+            existing = {}
+            if out.is_file():
+                existing = json.loads(out.read_text(encoding="utf-8"))
+            existing["multi_account"] = payload
+            out.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        except OSError as exc:
+            print(f"PERF_MULTI_ACCOUNT_WRITE_SKIP={exc}")
+
+        for uid in accounts:
+            assert len(handlers[uid].processed_user_ids) == message_count
+    finally:
+        for uid in accounts:
+            await consumers[uid].stop()
+        for p in patches:
+            p.stop()
 
 
 @pytest.mark.asyncio
@@ -351,7 +533,7 @@ def _print_report(results: List[BenchResult], sem_peaks: dict) -> None:
         "  · 消息队列消费者：最多同时处理 16 条（不同买家；chat.message_consumer_max_concurrent）"
     )
     print("  · 同一买家多条消息：串行（per-buyer asyncio.Lock）")
-    print(f"  · 队列积压上限：{CONFIGURED_LIMITS['queue_max_size']} 条/店铺队列")
+    print(f"  · 队列积压上限：{CONFIGURED_LIMITS['queue_max_size']} 条/账号队列（pdd_{{shop}}_{{user}}）")
     print(
         "  · 真实 AI 回复并发还受 LLM API 限流、embedder、本机 CPU 影响，上列为程序内上限"
     )

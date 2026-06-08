@@ -199,9 +199,9 @@ def _enqueue_new_buyer_message(
     if context is None:
         return
 
-    from Channel.pinduoduo.ws_config import queue_name_for_shop
+    from Channel.pinduoduo.ws_config import queue_name_for_account
 
-    queue_name = queue_name_for_shop(str(shop_id))
+    queue_name = queue_name_for_account(str(shop_id), str(user_id))
 
     async def _put() -> None:
         from Message import put_message
@@ -215,7 +215,10 @@ def _enqueue_new_buyer_message(
         target_loop = None
         for thread in auto_reply_manager.running_accounts.values():
             acc = getattr(thread, "account_data", None) or {}
-            if str(acc.get("shop_id") or "") == str(shop_id):
+            if (
+                str(acc.get("shop_id") or "") == str(shop_id)
+                and str(acc.get("user_id") or "") == str(user_id)
+            ):
                 target_loop = getattr(thread, "loop", None)
                 break
         if target_loop is not None and target_loop.is_running():

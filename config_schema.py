@@ -138,6 +138,7 @@ class ChatConfig(BaseModel):
     inbound_transfer_takeover_ai_mode: bool = True
     inbound_transfer_enqueue_unreplied: bool = True
     inbound_transfer_gate_until_received: bool = True
+    weak_supervision_enabled: bool = False
     inbound_transfer_stage: str = "after_sales"
     ai_allow_after_sales_stage: bool = True
     transfer_auto_rose_enabled: bool = False
@@ -394,6 +395,7 @@ config_base = {
         "inbound_transfer_takeover_ai_mode": True,
         "inbound_transfer_enqueue_unreplied": True,
         "inbound_transfer_gate_until_received": True,
+        "weak_supervision_enabled": False,
         "inbound_transfer_stage": "after_sales",
         "ai_allow_after_sales_stage": True,
         "transfer_auto_rose_enabled": False,
