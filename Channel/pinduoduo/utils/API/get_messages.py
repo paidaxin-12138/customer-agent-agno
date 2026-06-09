@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """从拼多多 MMS 拉取会话列表 / 最近消息（供软件与网页双端展示同步）。"""
 from __future__ import annotations
 

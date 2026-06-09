@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 统一安全审计：写入 ops_security_audits（与运营看板共用表结构）。
 字段映射：action→event_type, target→user_label, operator/detail→detail+payload_json

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """WebSocket 立即处理消息（AUTH / 转接 / 快捷退款卡等，不入队）。"""
 from __future__ import annotations
 

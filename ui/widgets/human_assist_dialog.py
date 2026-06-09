@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 人工协助弹窗 - 当检测到转人工关键词时显示
 显示买家信息、账号信息和最近消息，支持一键跳转对话

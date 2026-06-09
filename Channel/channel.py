@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 from abc import ABC, abstractmethod
 from database import db_manager
 from utils.logger_loguru import get_logger

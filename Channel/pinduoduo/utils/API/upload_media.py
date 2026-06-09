@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """媒体上传适配层（预留）。
 
 当前项目尚未接入拼多多本地图片上传接口，这里提供统一入口，便于后续无缝替换。

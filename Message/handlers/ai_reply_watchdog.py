@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 买家进线后 N 秒（默认 150s）内无任何成功出站回复 → 转人工弹窗 + 买家安抚话术。
 在消息消费者层启动，覆盖人工模式跳过 AI、非 AI 处理器等场景。

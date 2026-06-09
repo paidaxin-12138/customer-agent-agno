@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 #!/usr/bin/env python3
 """全功能冒烟测试（无需 UI 操作）：单元测试 + MMS/Cookie 联调。"""
 

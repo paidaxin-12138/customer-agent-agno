@@ -1,3 +1,5 @@
+<!-- Copyright (c) 2026 paidaxin-12138 — CC BY-NC 4.0 — see LICENSE -->
+
 # Agent-Customer 构建脚本使用指南
 
 本文档介绍 `scripts/` 目录下各个构建和使用脚本的详细功能和使用方法。

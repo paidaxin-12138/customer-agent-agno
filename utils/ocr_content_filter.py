@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 OCR 文本清洗：剔除价格/库存等应由接口提供的字段，避免覆盖后台真实数据。
 """

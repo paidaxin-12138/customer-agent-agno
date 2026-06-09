@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 生产后台服务：健康检查、定时备份、生命周期清理（独立 asyncio 线程，不阻塞 Qt）。
 """

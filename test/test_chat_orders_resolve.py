@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """买家 UID 订单解析单元测试。"""
 
 from Channel.pinduoduo.utils.API.chat_orders import (

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """申请退换货处理器单元测试（无真实 MMS 调用）。"""
 
 from Message.handlers.after_sales_apply_handler import _order_sn_from_order_info

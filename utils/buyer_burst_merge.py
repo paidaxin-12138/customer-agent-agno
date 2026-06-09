@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 买家在短时间内连发多条（甚至单字一条）时，从 DB 最近记录合并为一句，供 AI 整段理解。
 

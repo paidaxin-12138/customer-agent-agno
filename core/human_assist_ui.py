@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 主窗口级人工协助弹窗：在 ChatLiveWidget 延迟加载前也能收到 assist_requested。
 """

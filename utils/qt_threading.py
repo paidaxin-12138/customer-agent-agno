@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 将 UI 相关回调调度到 Qt 主线程，避免 WebSocket/asyncio 线程直接 emit 信号或创建 QWidget 导致 macOS 崩溃。
 """

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """端到端消息管道：入队 → 消费者 → Handler → MMS 出站（无真实 WS/Cookie）。"""
 from __future__ import annotations
 

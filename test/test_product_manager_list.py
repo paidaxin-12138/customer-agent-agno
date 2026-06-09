@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """ProductManager 商品列表双通道解析。"""
 
 from Channel.pinduoduo.utils.API.product_manager import ProductManager

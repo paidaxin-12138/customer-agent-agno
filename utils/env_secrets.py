@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """读写项目根目录 .env 中的敏感配置（与 config.get_config 环境变量名对齐）。"""
 from __future__ import annotations
 

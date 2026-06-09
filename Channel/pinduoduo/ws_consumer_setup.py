@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """店铺消息队列与消费者启动（从 pdd_chnnel 抽离）。"""
 from __future__ import annotations
 

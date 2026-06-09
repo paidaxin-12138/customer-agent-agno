@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 人工协助总线：从消息处理线程（asyncio）向主界面发信号，触发弹窗、跳转实时聊天、会话结束清理等。
 """

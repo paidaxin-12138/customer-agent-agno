@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """WebSocket 连接生命周期：单账号停止、资源清理、全部停止。"""
 from __future__ import annotations
 

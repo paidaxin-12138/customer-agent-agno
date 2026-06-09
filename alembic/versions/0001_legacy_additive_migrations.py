@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """遗留 SQLite 增量补丁（记忆字段、退款日志、ops 列、时间戳）
 
 Revision ID: 0001

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """转接后买家未知 WS type 应映射为 TEXT 而非 SYSTEM_STATUS。"""
 from __future__ import annotations
 

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 WebSocket 认证成功（含重连）后的消息补偿：MMS 轮询同步 + 未回复买家消息重新入队。
 """

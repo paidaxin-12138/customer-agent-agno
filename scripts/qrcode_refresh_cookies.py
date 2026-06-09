@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 #!/usr/bin/env python3
 """拼多多商家后台扫码登录：导出二维码到桌面，扫码成功后写入 Cookie。"""
 from __future__ import annotations

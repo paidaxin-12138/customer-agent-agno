@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 买家发送图片/视频：自动回复链路中的 LLM 无法看图，默认转人工并给买家清晰说明（不引导再发图）。
 """

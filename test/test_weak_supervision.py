@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """弱监督模式：多账号 AI 优先、关闭转接前 Gate。"""
 from unittest.mock import patch
 

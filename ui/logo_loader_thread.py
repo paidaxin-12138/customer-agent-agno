@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """远程店铺 Logo 加载（QThread）。拼多多 CDN 常要求浏览器类请求头，否则返回非图片正文。"""
 
 from __future__ import annotations

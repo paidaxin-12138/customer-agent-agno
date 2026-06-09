@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """Stage 生命周期：回收、超时、await_confirm、意图重置、全阶段转人工。"""
 from __future__ import annotations
 

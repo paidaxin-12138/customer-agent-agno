@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """WebSocket 入站：预处理（Hub/文明用语/买家离开）与路由分发。"""
 from __future__ import annotations
 

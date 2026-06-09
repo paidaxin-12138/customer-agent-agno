@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 #!/usr/bin/env python3
 """
 现场测试：订单查询 → 购买天数策略 →（可选）真实发送退换货卡片。

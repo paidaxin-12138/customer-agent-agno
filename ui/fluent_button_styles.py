@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """qfluentwidgets PushButton 带图标时的全局样式补丁（避免图标与文字叠层）。"""
 
 from __future__ import annotations

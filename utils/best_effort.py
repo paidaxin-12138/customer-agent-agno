@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """非关键路径 best-effort 执行：失败不阻断主流程，但留下可检索日志。"""
 from __future__ import annotations
 

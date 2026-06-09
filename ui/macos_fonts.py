@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """主窗口布局用 macOS 风格字体与间距（全局主题见 ``ui.theme``）。"""
 from __future__ import annotations
 

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """LLM 兜底话术替换。"""
 from utils.llm_errors import sanitize_ai_reply_content, should_replace_pm_fallback_reply
 

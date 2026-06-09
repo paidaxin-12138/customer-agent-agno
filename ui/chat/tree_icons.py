@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """会话树展开箭头（SVG data URI，供 QSS branch 使用）。"""
 from __future__ import annotations
 

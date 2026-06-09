@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """健康检查就绪逻辑单元测试。"""
 from core.connection_status import ConnectionState, ConnectionStatus
 

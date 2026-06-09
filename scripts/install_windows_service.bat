@@ -1,4 +1,7 @@
 @echo off
+REM Copyright (c) 2026 paidaxin-12138
+REM Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+REM https://creativecommons.org/licenses/by-nc/4.0/
 setlocal EnableDelayedExpansion
 
 REM Customer-Agent Windows 服务注册（NSSM）

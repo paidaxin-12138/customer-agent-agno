@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 日志上下文工具 - 为向后兼容而保留
 建议直接使用 utils.logger_loguru 中的 log_with_ctx 函数

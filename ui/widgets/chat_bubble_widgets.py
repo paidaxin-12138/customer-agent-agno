@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """实时聊天消息气泡（QListWidget + 自定义 QWidget，QPainter 三角箭头）。"""
 from __future__ import annotations
 

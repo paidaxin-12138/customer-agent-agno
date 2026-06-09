@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """会话 ai_mode 查询：带重试与失败监控，避免瞬时 DB 故障误关 AI。"""
 from __future__ import annotations
 

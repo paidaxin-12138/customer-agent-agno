@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 买家改收货地址 → 解析地址 / 查单 / 话术 / 弹窗确认（MMS 改址由店主点确认后执行）。
 """

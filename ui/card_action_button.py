@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """卡片内紧凑操作按钮（与 dark_theme.qss #CardActionButton 配套）。"""
 from __future__ import annotations
 

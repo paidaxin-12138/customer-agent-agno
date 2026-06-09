@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """活跃 PDDChannel 实例弱引用注册表（供 channel_facade 读取心跳等运行时态）。"""
 from __future__ import annotations
 

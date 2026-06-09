@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """实时聊天 — 表情 / 图片 / 商品卡 / AI 辅助输入。"""
 from __future__ import annotations
 

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 会话列表与聊天记录（供自动回复界面按账号分组展示、人工回复）。
 在 WebSocket 收到可关联买家的消息时写入；发送成功时追加客服侧记录。

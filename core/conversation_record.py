@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """入站会话登记门面（Channel 层调用，避免直接依赖 UI 模块路径）。"""
 from __future__ import annotations
 

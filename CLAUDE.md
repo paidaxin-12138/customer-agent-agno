@@ -1,3 +1,5 @@
+<!-- Copyright (c) 2026 paidaxin-12138 — CC BY-NC 4.0 — see LICENSE -->
+
 # CLAUDE.md
 
 面向 Claude Code（claude.ai/code）及在本仓库内协作的助手：**Python 电商 AI 客服桌面应用**（PyQt6），当前主力渠道为**拼多多** seller WebSocket + 商家后台 HTTP Cookie；可选接入**拼多多开放平台**（`gw-api.pinduoduo.com/api/router`，签名调用）。
@@ -170,7 +172,7 @@ PyQt6、Agno、SQLAlchemy、SQLite、LanceDB（按需）、websockets、requests
 | **AI** | 回复质量受 LLM/提示词/知识库召回影响；无自动 A/B 与线上评测闭环。 |
 | **测试** | UI（PyQt）仅冒烟覆盖；覆盖率门禁针对 `Message`/`core`/`database`/`utils` 核心包，不含 `ui`/`Channel`/`Agent` 全量。 |
 | **部署** | 桌面单进程架构，水平扩展需自行拆分渠道与 Agent 服务。 |
-| **许可** | 根目录 `LICENSE` 为 NOTICE 性质，非整仓 MIT；二次分发请核对上游署名。 |
+| **许可** | 根目录 `LICENSE`（CC BY-NC 4.0）；沿用上游代码段须保留原作者许可与署名。 |
 
 ---
 

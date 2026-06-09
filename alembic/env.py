@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """Alembic 运行环境：SQLite URL 与 DatabaseManager 一致。"""
 from __future__ import annotations
 

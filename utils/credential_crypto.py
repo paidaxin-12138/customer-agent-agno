@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 账号密码 / Cookie 字段级加密（Fernet）。
 明文历史数据在读取时自动迁移为 enc: 前缀密文。

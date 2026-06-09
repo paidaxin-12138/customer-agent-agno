@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """快捷退款卡 type=19 / type=90 消息解析。"""
 
 from Channel.pinduoduo.pdd_message import MessageTypeHandler, PDDChatMessage

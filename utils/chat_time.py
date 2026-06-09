@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """聊天消息时间：统一按 Asia/Shanghai 写入与理解，避免 UTC naive 显示错位。"""
 from __future__ import annotations
 

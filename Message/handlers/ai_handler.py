@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 AI回复处理器（v2 兜底：排队降级 120s / Watchdog 150s / LLM 同步重试 1 次）
 """

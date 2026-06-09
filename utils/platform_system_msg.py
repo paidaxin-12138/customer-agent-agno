@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """拼多多等平台自动插入的系统提示（如「请文明用语」）识别。"""
 from __future__ import annotations
 

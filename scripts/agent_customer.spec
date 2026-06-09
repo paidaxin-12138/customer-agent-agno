@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec — Windows onedir 发布包。用法: pyinstaller scripts/agent_customer.spec"""
 

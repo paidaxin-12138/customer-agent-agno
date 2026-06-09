@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """WebSocket AUTH 结果通知（成功后再提示 UI；连续失败则停止重连）。"""
 from __future__ import annotations
 

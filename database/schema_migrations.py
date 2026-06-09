@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 SQLite 增量 schema 补丁（与 Alembic revision 0001 共用）。
 旧库通过 create_all 不会自动补列，此处幂等执行 ALTER / 一次性数据修正。

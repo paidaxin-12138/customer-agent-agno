@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """OCR 参数摘要（规则兜底）"""
 
 from scripts.ocr_summarize import _rule_based_summary, summarize_ocr_for_knowledge

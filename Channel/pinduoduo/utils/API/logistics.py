@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """拼多多物流：优先 MMS userAllOrder，开放平台轨迹为可选降级。
 
 开放平台文档：https://open.pinduoduo.com/application/document/api?id=pdd.logistics.ordertrace.get

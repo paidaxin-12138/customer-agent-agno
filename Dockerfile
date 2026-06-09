@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 # Customer-Agent 生产镜像（需 X11 / xvfb 才能运行 PyQt6 UI）
 FROM python:3.11-slim-bookworm
 

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 消息处理器链构建（独立模块，避免与 Message 包 __init__ 初始化顺序相关的 NameError）。
 """

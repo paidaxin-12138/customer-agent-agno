@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """拼多多开放平台 HTTP 客户端（gw-api.pinduoduo.com/api/router）。
 
 签名规则与官方文档一致：参数排序后 key+value 拼接，secret 夹心，MD5 大写。

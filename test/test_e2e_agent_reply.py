@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """端到端：AIReplyHandler 生成回复、出站并落库（mock WS/MMS/LLM）。"""
 from __future__ import annotations
 

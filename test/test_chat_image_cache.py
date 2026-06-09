@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """聊天图片 LRU 缓存测试。"""
 import pytest
 from PyQt6.QtGui import QPixmap

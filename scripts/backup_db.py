@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 #!/usr/bin/env python3
 """
 SQLite 数据库备份：customer_agent_YYYY-MM-DD.db，保留最近 N 天。

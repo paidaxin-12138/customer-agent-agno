@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """macOS 无边框窗口：统一深色顶栏，消除系统标题栏白条。"""
 from __future__ import annotations
 

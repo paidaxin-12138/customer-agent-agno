@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 物流咨询 → 优先 MMS userAllOrder（traceInfoList / 订单状态），开放平台轨迹为可选降级。
 

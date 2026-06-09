@@ -1,3 +1,5 @@
+<!-- Copyright (c) 2026 paidaxin-12138 — CC BY-NC 4.0 — see LICENSE -->
+
 # Customer-Agent · 电商 AI 客服桌面端
 
 面向拼多多商家的 **PyQt6 桌面应用**：接入店铺会话、AI 自动回复、知识库与关键词转人工，可选对接拼多多开放平台（物流轨迹等）。
@@ -191,12 +193,16 @@ QT_QPA_PLATFORM=offscreen uv run python -m pytest test/ -q \
 
 ## 许可说明
 
-本仓库为**独立维护、自行演进的分发版本**，**不以维护者名义**提供「整项目统一开源许可证（如 MIT）」。对其中**仍沿用自 L1S0NE 或上游**的代码，使用条件**以原作者及上游实际声明为准**；本仓库内**新增与修改**部分的合规与再分发，请参阅根目录 `LICENSE`（**许可与版权说明 / NOTICE**），勿将其误读为对全部代码的 MIT 式再授权。
+Copyright (c) 2026 [paidaxin-12138](https://github.com/paidaxin-12138)
+
+本仓库由当前维护者独立维护。其中**新增与修改**部分采用 [知识共享 署名-非商业性使用 4.0 国际许可协议](https://creativecommons.org/licenses/by-nc/4.0/)（CC BY-NC 4.0）进行许可：您可以自由地共享、复制、传播本作品的**非商业**用途，但须署名原作者。完整许可文本见根目录 [LICENSE](LICENSE)（安装包使用 [LICENSE.txt](LICENSE.txt)）。
+
+对其中**仍沿用自 [L1S0NE](https://github.com/L1S0NE) 或上游**的代码段，使用条件**以原作者及上游实际声明为准**，请保留合理署名并遵守相应许可。
 
 ---
 
 ## 相关链接
 
-- 问题反馈：[GitHub Issues](https://github.com/JC0v0/Customer-Agent/issues)
+- 问题反馈：[GitHub Issues](https://github.com/paidaxin-12138/customer-agent-agno/issues)
 
 若文档或截图在本地 `docs/`、`icon/` 下，克隆后即可在 README 中按需恢复插图路径。

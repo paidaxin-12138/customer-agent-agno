@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 #!/usr/bin/env python3
 """对 MMS 只读接口发请求，汇总实际可获取的全部字段与样例值。"""
 from __future__ import annotations

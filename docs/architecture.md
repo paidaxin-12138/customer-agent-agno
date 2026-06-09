@@ -1,3 +1,5 @@
+<!-- Copyright (c) 2026 paidaxin-12138 — CC BY-NC 4.0 — see LICENSE -->
+
 # Customer-Agent 架构说明
 
 本文描述桌面端 AI 客服的核心数据流与模块依赖，便于 onboarding 与二次开发。

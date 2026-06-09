@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 电商客服 AI 知识库门面。
 实现已拆分至 knowledge_storage / knowledge_indexer / knowledge_retriever。

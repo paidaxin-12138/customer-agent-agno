@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """后台看板 SaaS 风格组件（KPI / 图表 / 标签云 / 排名表）。"""
 from __future__ import annotations
 

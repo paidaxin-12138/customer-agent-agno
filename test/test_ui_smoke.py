@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """UI 冒烟：主窗口导航与聊天输入区（pytest-qt，无真实网络）。"""
 
 from __future__ import annotations

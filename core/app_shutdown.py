@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """应用退出时统一释放 WebSocket、消费者、后台服务等资源。"""
 from __future__ import annotations
 

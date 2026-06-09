@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 #!/usr/bin/env python3
 """探测本仓库已知 MMS 只读接口，汇总可获取字段（不写库、不发消息）。"""
 from __future__ import annotations

@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 # 拼多多 AI 客服助手 - 一键启动（可放在桌面，自动定位项目目录）
 
 set -e

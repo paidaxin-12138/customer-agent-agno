@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """LLM / HTTP 传输层瞬时错误判定（供 AI Handler 与 Agent 复用）。"""
 from __future__ import annotations
 

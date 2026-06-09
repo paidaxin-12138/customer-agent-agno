@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 #!/usr/bin/env python3
 """校验关键重构模块的行覆盖率下限（读取 pytest 生成的 coverage.xml）。"""
 from __future__ import annotations

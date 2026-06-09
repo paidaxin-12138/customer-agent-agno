@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """UI 与渠道层的稳定门面（查询连接状态，不依赖 PDDChannel 内部）。"""
 from __future__ import annotations
 

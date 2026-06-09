@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 人工协助弹窗单元测试（不启动事件循环，避免 sys.exit 干扰 pytest）。
 手动预览：python -m test.test_human_assist_dialog

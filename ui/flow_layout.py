@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """横向排列、宽度不足时自动换行（顶栏按钮、标签区等）。"""
 from __future__ import annotations
 

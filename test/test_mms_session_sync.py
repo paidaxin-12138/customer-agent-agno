@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 from Channel.pinduoduo.utils.API.get_messages import (
     parse_mms_conversation_item,
     preview_from_mms_item,

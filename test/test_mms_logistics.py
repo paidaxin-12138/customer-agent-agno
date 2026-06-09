@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """MMS 物流回复与 Handler 集成（开放平台降级为可选）。"""
 from __future__ import annotations
 

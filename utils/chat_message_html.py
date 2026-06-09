@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 实时聊天气泡内 HTML：段落 <p>、URL 分段、图片白名单 + 后缀判定、非 URL 块半角化。
 样式可通过 ChatBubbleHtmlOptions 覆盖；边框/链接默认 currentColor 以随文字色变化。

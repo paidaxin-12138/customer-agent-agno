@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """utils/env_secrets .env 读写。"""
 from utils.env_secrets import effective_secret, read_env_file, write_env_file
 

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 转接进线后的强制接管：重置 stage、可选切 AI、将本地未回复买家消息重新入队处理。
 

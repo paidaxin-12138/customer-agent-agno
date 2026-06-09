@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """MMS 商品浏览器风控识别与解析辅助测试。"""
 from Channel.pinduoduo.utils.mms_goods_browser import (
     is_risk_blocked_response,

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 业务 stage 与用户新意图不一致时重置为 idle（避免长期锁死在改址/物流/售后流）。
 """

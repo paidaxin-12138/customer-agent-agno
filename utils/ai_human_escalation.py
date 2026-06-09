@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 AI 回复触发本地人工协助：售后类问题且 AI 表示需产品经理跟进时转人工弹窗。
 """

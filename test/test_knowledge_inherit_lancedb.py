@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """LanceDB 检索路径的父子店 inherit 覆盖。"""
 from Agent.CustomerAgent.knowledge_retriever import KnowledgeRetrieverMixin
 

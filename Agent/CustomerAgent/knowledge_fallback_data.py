@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """默认知识库兜底数据（产品 / FAQ / 同义词）。
 
 可通过 config.json 的 knowledge_base.fallback_data_path 指向 JSON 覆盖。

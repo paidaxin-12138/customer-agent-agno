@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """Agent 工具调用二次校验（防提示注入误触发敏感操作）。"""
 from __future__ import annotations
 

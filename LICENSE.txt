@@ -1,0 +1,20 @@
+Copyright (c) 2026 paidaxin-12138
+
+本作品采用知识共享 署名-非商业性使用 4.0 国际许可协议进行许可。
+您可以自由地共享、复制、传播本作品的非商业用途，但须署名原作者。
+
+完整协议文本：
+https://creativecommons.org/licenses/by-nc/4.0/legalcode
+
+English summary:
+This work is licensed under the Creative Commons Attribution-NonCommercial 4.0
+International License. You may share and adapt this work for non-commercial
+purposes only, with attribution.
+
+To view the full license, visit:
+https://creativecommons.org/licenses/by-nc/4.0/
+
+NOTICE:
+Portions of this repository may derive from third-party or upstream contributions
+(including historical work by L1S0NE). Those portions remain subject to their
+original license and attribution requirements where applicable.

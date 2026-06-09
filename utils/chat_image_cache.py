@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """聊天图片 LRU 缓存（最多 20 张），滚动出视口后释放内存。"""
 from __future__ import annotations
 

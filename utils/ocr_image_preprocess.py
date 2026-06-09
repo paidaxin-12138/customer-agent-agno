@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 OCR 前图像预处理：适当放大、长图分片，减轻缺字与长图被过度缩小的问题。
 """

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """处理器链内统一的 MMS 文本发送（asyncio.to_thread，避免阻塞事件循环）。"""
 from __future__ import annotations
 

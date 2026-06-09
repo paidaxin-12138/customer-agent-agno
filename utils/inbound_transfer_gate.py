@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 接待专用子账号：仅在收到平台 TRANSFER 后才允许责任链截流（AI/规则处理）。
 

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """Pydantic 配置模型、默认值与校验（与 config.Config 运行时分离）。"""
 from __future__ import annotations
 

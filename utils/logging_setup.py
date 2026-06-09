@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 生产级日志：stdlib TimedRotating + Rotating，并与 loguru 对齐。
 - 控制台：INFO（生产默认）

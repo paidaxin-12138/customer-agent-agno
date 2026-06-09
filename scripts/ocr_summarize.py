@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 将 OCR 原文整理为知识库可用的商品参数摘要（优先 LLM，失败则规则兜底）。
 严禁输出价格/库存，避免覆盖接口数据。

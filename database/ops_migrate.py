@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """运营看板 SQLite 表结构迁移（create_all 不会给旧表补列）。"""
 
 from __future__ import annotations

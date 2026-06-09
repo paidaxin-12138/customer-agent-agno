@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 将 MMS latest_conversations 同步到本地 chat_sessions / chat_messages，
 使软件 UI 与浏览器商家后台会话列表保持一致（双端展示）。

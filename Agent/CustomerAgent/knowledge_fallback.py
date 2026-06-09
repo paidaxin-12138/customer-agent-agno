@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """知识库兜底数据（产品卡片、FAQ 模板、同义词）— 从 JSON 加载，可配置覆盖。"""
 
 from __future__ import annotations

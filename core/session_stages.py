@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """会话阶段常量（中性包，供 Agent / Message / utils 共享，避免循环依赖）。"""
 from __future__ import annotations
 

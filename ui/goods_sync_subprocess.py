@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """
 在独立子进程中执行商品同步（含 PaddleOCR），避免与 PyQt 主进程争用 GIL 导致界面卡死。
 """

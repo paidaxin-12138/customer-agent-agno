@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """ProductManager SKU 解析单元测试（不请求网络）。"""
 
 from Channel.pinduoduo.utils.API.product_manager import ProductManager

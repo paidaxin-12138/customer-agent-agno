@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """转人工/人工协助弹窗触发时的买家安抚话术（检测即发送，与弹窗操作解耦）。"""
 from __future__ import annotations
 

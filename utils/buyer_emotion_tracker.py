@@ -1,3 +1,6 @@
+# Copyright (c) 2026 paidaxin-12138
+# Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
+# https://creativecommons.org/licenses/by-nc/4.0/
 """按会话统计买家情绪波动预警次数（内存计数，进程重启清零）。"""
 from __future__ import annotations
 
