@@ -12,13 +12,34 @@ from utils.logger_loguru import get_logger
 _logger = get_logger("WSTaskCleanup")
 
 
-async def cancel_task_set(tasks: Set[asyncio.Task], *, logger=None) -> None:
-    """取消并等待一组在途任务完成。"""
+async def cancel_task_set(
+    tasks: Set[asyncio.Task],
+    *,
+    logger=None,
+    drain_wait_sec: float = 3.0,
+    task_payloads: Optional[Dict[asyncio.Task, object]] = None,
+    queue_name: str = "",
+    task_queue_names: Optional[Dict[asyncio.Task, str]] = None,
+) -> None:
+    """等待在途任务自然完成后再取消剩余任务；可选将 WS 帧写入 dead-letter。"""
     log = logger or _logger
     if not tasks:
         return
-    log.info(f"清理 {len(tasks)} 个处理任务")
-    for task in list(tasks):
+    payloads = task_payloads or {}
+    per_task_queues = task_queue_names or {}
+    pending = [t for t in list(tasks) if not t.done()]
+    if pending and drain_wait_sec > 0:
+        log.debug("等待 {} 个在途 WS 任务完成（最多 {}s）", len(pending), drain_wait_sec)
+        _done, still_pending = await asyncio.wait(
+            pending,
+            timeout=drain_wait_sec,
+            return_when=asyncio.ALL_COMPLETED,
+        )
+        pending = list(still_pending)
+    if pending:
+        log.info(f"清理 {len(pending)} 个处理任务")
+    for task in pending:
+        raw = payloads.get(task)
         if not task.done():
             task.cancel()
             try:
@@ -27,7 +48,19 @@ async def cancel_task_set(tasks: Set[asyncio.Task], *, logger=None) -> None:
                 pass
             except Exception as e:
                 log.error(f"清理任务失败: {e}")
+        qn = per_task_queues.get(task) or queue_name
+        if raw is not None and qn:
+            try:
+                from Message.dead_letter import persist_ws_frame_dead_letter
+
+                persist_ws_frame_dead_letter(qn, raw)
+            except Exception as exc:
+                log.debug("WS frame dead-letter 跳过: {}", exc)
     tasks.clear()
+    if payloads is not None:
+        payloads.clear()
+    if task_queue_names is not None:
+        task_queue_names.clear()
 
 
 async def cancel_tasks_in_registry(

@@ -61,6 +61,11 @@ async def test_ready_requires_token_when_configured(monkeypatch):
             ) as resp:
                 assert resp.status in (200, 503)
             async with session.get("http://127.0.0.1:18083/health") as resp:
+                assert resp.status == 401
+            async with session.get(
+                "http://127.0.0.1:18083/health",
+                headers={"Authorization": "Bearer test-health-secret"},
+            ) as resp:
                 assert resp.status == 200
     finally:
         monkeypatch.delenv("HEALTH_CHECK_TOKEN", raising=False)

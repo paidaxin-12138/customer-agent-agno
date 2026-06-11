@@ -54,15 +54,23 @@ async def cleanup_connection_resources(
     ws_connections: Dict[str, Any],
     stop_events: Dict[str, asyncio.Event],
     processing_tasks: Set[asyncio.Task],
+    processing_task_payloads: Dict[asyncio.Task, Any],
     resource_manager: Any,
     logger=None,
+    processing_task_queue_names: Optional[Dict[asyncio.Task, str]] = None,
 ) -> None:
     """清理处理任务、连接任务、WebSocket 引用与消费者（按账号或全量）。"""
     log = logger or _logger
     from Message import message_consumer_manager
 
     try:
-        await cancel_task_set(processing_tasks, logger=log)
+        await cancel_task_set(
+            processing_tasks,
+            logger=log,
+            task_payloads=processing_task_payloads,
+            queue_name=queue_name,
+            task_queue_names=processing_task_queue_names,
+        )
         # 重连场景保留 reconnect_tasks，避免取消正在执行的 connect_with_retry
         if not keep_consumer:
             await cancel_tasks_in_registry(

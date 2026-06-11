@@ -76,9 +76,10 @@ class SimpleMessageQueue:
                 dropped = 0
                 while self._queue.full():
                     try:
-                        self._queue.get_nowait()
+                        evicted = self._queue.get_nowait()
                         dropped += 1
                         self._stats.dequeue()
+                        self._persist_force_dropped(evicted)
                     except asyncio.QueueEmpty:
                         break
                 if dropped:
@@ -113,8 +114,9 @@ class SimpleMessageQueue:
             if force_enqueue:
                 while self._queue.full():
                     try:
-                        self._queue.get_nowait()
+                        evicted = self._queue.get_nowait()
                         self._stats.dequeue()
+                        self._persist_force_dropped(evicted)
                     except asyncio.QueueEmpty:
                         break
                 await self._queue.put(message_wrapper)
@@ -163,25 +165,84 @@ class SimpleMessageQueue:
         self._closed = True
         self.logger.info(f"Queue {self.name} closed")
 
+    def drain_to_dead_letter(self, reason: str) -> int:
+        """将队列中尚未消费的消息写入 dead-letter（同步，可在 stop/drain 路径调用）。"""
+        count = 0
+        while not self._queue.empty():
+            try:
+                wrapper = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            self._stats.dequeue()
+            try:
+                from Message.dead_letter import persist_dead_letter
+
+                if persist_dead_letter(self.name, wrapper.context, reason=reason):
+                    count += 1
+            except Exception as exc:
+                self.logger.warning(
+                    "drain dead-letter 写入失败 queue={}: {}",
+                    self.name,
+                    exc,
+                )
+        if count:
+            self.logger.warning(
+                "Queue {} drained {} message(s) to dead-letter reason={}",
+                self.name,
+                count,
+                reason,
+            )
+        return count
+
+    def _persist_force_dropped(self, wrapper: MessageWrapper) -> None:
+        """force_enqueue 丢弃最旧消息时写入 dead-letter，避免静默丢失。"""
+        try:
+            from Message.dead_letter import persist_dead_letter
+
+            persist_dead_letter(
+                self.name,
+                wrapper.context,
+                reason="force_enqueue_drop",
+            )
+            try:
+                from core.app_metrics import record_queue_force_dropped
+
+                record_queue_force_dropped(self.name)
+            except Exception:
+                pass
+        except Exception as exc:
+            self.logger.warning(
+                "force_enqueue 丢弃消息 dead-letter 写入失败 queue={}: {}",
+                self.name,
+                exc,
+            )
+
     def _should_deduplicate(self, wrapper: MessageWrapper) -> bool:
-        """检查是否应该去重"""
+        """检查是否应该去重；优先 platform msg_id，无 id 时回退 buyer+content。"""
         if self._deduplication_cache is None:
             return False
 
-        raw = wrapper.context.content
-        if isinstance(raw, (dict, list)):
-            import json
-
-            norm = json.dumps(raw, sort_keys=True, ensure_ascii=False)
-        else:
-            norm = str(raw or "")
         buyer_key = ""
+        msg_id = ""
         try:
             ku = getattr(wrapper.context, "kwargs", None)
             buyer_key = str(getattr(ku, "from_uid", "") or "")
+            msg_id = str(getattr(ku, "msg_id", "") or "").strip()
         except Exception:
             pass
-        dedup_key = f"{buyer_key}|{norm}"
+
+        if msg_id:
+            dedup_key = f"{buyer_key}|msg:{msg_id}"
+        else:
+            raw = wrapper.context.content
+            if isinstance(raw, (dict, list)):
+                import json
+
+                norm = json.dumps(raw, sort_keys=True, ensure_ascii=False)
+            else:
+                norm = str(raw or "")
+            dedup_key = f"{buyer_key}|{norm}"
+
         content_hash = hashlib.sha256(dedup_key.encode("utf-8")).hexdigest()[:32]
         if content_hash in self._deduplication_cache:
             return True
@@ -238,10 +299,11 @@ class QueueManager:
         return self._queues.get(name)
 
     def recreate_queue(self, name: str, config: Optional[QueueConfig] = None) -> SimpleMessageQueue:
-        """重新创建队列以绑定当前事件循环"""
+        """重新创建队列以绑定当前事件循环；旧队列未消费消息写入 dead-letter。"""
         try:
             old = self._queues.get(name)
             if old:
+                old.drain_to_dead_letter("queue_recreate")
                 old.close()
                 self._queues.pop(name, None)
         except Exception as e:

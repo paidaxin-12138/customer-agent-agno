@@ -31,14 +31,12 @@ def _configured_health_token() -> str:
 
 
 def _health_auth_ok(request: web.Request) -> bool:
-    """未配置 Token 时保持兼容；/ready、/metrics 在配置 Token 后需认证。"""
+    """未配置 Token 时保持兼容；配置 Token 后 /health、/ready、/metrics 均需 Bearer 认证。"""
     token = _configured_health_token()
     if not token:
         return True
     auth = (request.headers.get("Authorization") or "").strip()
     if auth.lower().startswith("bearer ") and auth[7:].strip() == token:
-        return True
-    if (request.query.get("token") or "").strip() == token:
         return True
     return False
 
@@ -76,15 +74,71 @@ async def _health_handler(_request: web.Request) -> web.Response:
     return web.json_response(body)
 
 
+def _readiness_require_all_connected() -> bool:
+    """True：所有已连接 WS 账号均须有 running consumer；False：至少一个即可（旧行为）。"""
+    import os
+
+    raw = os.getenv("READINESS_REQUIRE_ALL_CONNECTED", "")
+    if raw.strip():
+        return raw.strip().lower() not in ("0", "false", "no")
+    try:
+        from config import get_config
+
+        return bool(get_config("production.readiness_require_all_connected", True))
+    except Exception:
+        return True
+
+
+def _readiness_reconnect_grace_sec() -> float:
+    """WS 已连但 consumer 尚未就绪时的宽限秒数，减轻重连瞬间 503 误报。"""
+    raw = os.getenv("READINESS_RECONNECT_GRACE_SEC", "").strip()
+    if raw:
+        try:
+            return max(0.0, min(float(raw), 300.0))
+        except (TypeError, ValueError):
+            return 30.0
+    try:
+        from config import get_config
+
+        v = get_config("production.readiness_reconnect_grace_sec", 30)
+        return max(0.0, min(float(v if v is not None else 30), 300.0))
+    except (TypeError, ValueError):
+        return 30.0
+
+
+def _consumer_in_reconnect_grace(status: Any, grace_sec: float) -> bool:
+    if grace_sec <= 0:
+        return False
+    from core.connection_status import ConnectionState
+
+    if status.state == ConnectionState.RECONNECTING:
+        return True
+    ref = getattr(status, "last_connect_time", None) or getattr(
+        status, "connect_time", None
+    )
+    if ref is None:
+        return False
+    from datetime import datetime
+
+    try:
+        age = (datetime.now() - ref).total_seconds()
+    except Exception:
+        return False
+    return age <= grace_sec
+
+
 def _evaluate_readiness() -> Tuple[bool, str, Dict[str, Any]]:
     """
-    就绪条件：至少一个账号 WebSocket 已连接，且对应 pdd_{shop_id}_{user_id} 消费者正在运行。
+    就绪条件：已连接 WebSocket 账号均有对应消费者 running（可配置为至少一个）。
     所有依赖未初始化或异常时安全返回 not ready。
     """
     detail: Dict[str, Any] = {
         "ws_connected": 0,
         "ws_total": 0,
         "consumers_running": [],
+        "consumers_not_ready": [],
+        "consumers_in_grace": [],
+        "readiness_grace_sec": _readiness_reconnect_grace_sec(),
     }
     try:
         from core.connection_status import ConnectionState, ConnectionStatusManager
@@ -109,22 +163,50 @@ def _evaluate_readiness() -> Tuple[bool, str, Dict[str, Any]]:
         _logger.debug("readiness: consumer manager unavailable: {}", e)
         return False, "consumer_manager_unavailable", detail
 
+    status_by_key = {
+        (str(s.shop_id), str(s.user_id)): s for s in connected
+    }
+
     for status in connected:
         queue_name = queue_name_for_account(str(status.shop_id), str(status.user_id))
         consumer = message_consumer_manager.get_consumer(queue_name)
         running = bool(consumer and consumer.is_running())
-        detail["consumers_running"].append(
-            {
-                "shop_id": status.shop_id,
-                "user_id": status.user_id,
-                "queue_name": queue_name,
-                "running": running,
-            }
-        )
-        if running:
-            return True, "", detail
+        entry = {
+            "shop_id": status.shop_id,
+            "user_id": status.user_id,
+            "queue_name": queue_name,
+            "running": running,
+            "ws_state": status.state.value if hasattr(status.state, "value") else str(status.state),
+        }
+        detail["consumers_running"].append(entry)
+        if not running:
+            detail["consumers_not_ready"].append(entry)
 
-    return False, "no_running_consumer_for_connected_shop", detail
+    running_count = sum(1 for e in detail["consumers_running"] if e["running"])
+    if running_count == 0:
+        return False, "no_running_consumer_for_connected_shop", detail
+
+    if _readiness_require_all_connected():
+        if detail["consumers_not_ready"]:
+            grace_sec = detail["readiness_grace_sec"]
+            outside_grace: list = []
+            for entry in detail["consumers_not_ready"]:
+                st = status_by_key.get(
+                    (str(entry["shop_id"]), str(entry["user_id"]))
+                )
+                in_grace = bool(st and _consumer_in_reconnect_grace(st, grace_sec))
+                entry["in_grace"] = in_grace
+                if in_grace:
+                    detail["consumers_in_grace"].append(entry)
+                else:
+                    outside_grace.append(entry)
+            if not outside_grace and running_count >= 1:
+                detail["readiness_grace_active"] = True
+                return True, "reconnect_grace", detail
+            return False, "not_all_connected_shops_ready", detail
+        return True, "", detail
+
+    return True, "", detail
 
 
 async def _ready_handler(_request: web.Request) -> web.Response:
@@ -138,6 +220,9 @@ async def _ready_handler(_request: web.Request) -> web.Response:
             **detail,
         }
         if not ready:
+            body["reason"] = reason
+        elif reason == "reconnect_grace":
+            body["readiness_grace_active"] = True
             body["reason"] = reason
         elif not handler_ok and _require_handler_chain_for_ready():
             body["reason"] = handler_reason
@@ -178,7 +263,7 @@ async def start_health_server(host: str = "127.0.0.1", port: int = 8080) -> None
         _logger.error("{}（设置 HEALTH_CHECK_TOKEN 或绑定 127.0.0.1）", msg)
         return
     app = web.Application()
-    app.router.add_get("/health", _health_handler)
+    app.router.add_get("/health", _with_health_auth(_health_handler))
     app.router.add_get("/ready", _with_health_auth(_ready_handler))
     app.router.add_get("/metrics", _with_health_auth(_metrics_handler))
     _runner = web.AppRunner(app)

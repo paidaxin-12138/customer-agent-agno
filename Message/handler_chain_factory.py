@@ -67,6 +67,21 @@ def _load_handler(name: str, factory: Callable[[], Any]) -> Any:
         return None
 
 
+def _strict_handlers_enabled() -> bool:
+    """生产环境默认严格加载 handler；STRICT_HANDLERS=0 可关闭。"""
+    raw = os.getenv("STRICT_HANDLERS", "").strip()
+    if raw:
+        return raw.lower() not in ("0", "false", "no")
+    if os.getenv("ENVIRONMENT", "").strip().lower() == "production":
+        return True
+    try:
+        from config import get_config
+
+        return bool(get_config("production.strict_handlers", False))
+    except Exception:
+        return False
+
+
 def audit_handler_chain(*, strict: bool = False) -> Dict[str, Any]:
     """
     预加载全部 handler 并记录缺失项。
@@ -109,11 +124,7 @@ def audit_handler_chain(*, strict: bool = False) -> Dict[str, Any]:
 
     _CHAIN_AUDITED = True
     status = get_handler_chain_status()
-    strict = strict or os.getenv("STRICT_HANDLERS", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    strict = strict or _strict_handlers_enabled()
     if strict and not status["ok"]:
         raise HandlerChainError(
             "处理器链加载失败: " + ", ".join(status["missing"])

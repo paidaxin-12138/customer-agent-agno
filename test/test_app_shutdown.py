@@ -17,7 +17,13 @@ def test_shutdown_idempotent(monkeypatch):
     )
 
     class _FakeConsumerMgr:
-        async def stop_all(self):
+        def list_consumers(self):
+            return []
+
+        def get_consumer(self, _name):
+            return None
+
+        def detach_all(self):
             calls["consumer"] += 1
 
     monkeypatch.setattr(
@@ -45,6 +51,7 @@ def test_shutdown_idempotent(monkeypatch):
         "core.production_services.stop_production_background_services",
         lambda: None,
     )
+    monkeypatch.setattr("core.app_shutdown._shutdown_thread_executors", lambda: None)
 
     app_shutdown.shutdown_application()
     app_shutdown.shutdown_application()

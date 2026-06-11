@@ -4,6 +4,7 @@
 from agno.tools import tool
 from Channel.pinduoduo.utils.API.product_manager import ProductManager
 from agno.run import RunContext
+from utils.agno_tool_offload import offload_tool
 from utils.logger_loguru import get_logger
 
 logger = get_logger("GetProductListTool")
@@ -99,12 +100,14 @@ def _fetch_mall_products_paginated(
     max_pages: int = _MAX_PRODUCT_LIST_PAGES,
 ) -> tuple[list, int]:
     """拉取全店在售商品（多页）；recommendGoods 聊天场景仍用单页。"""
+    from core.turn_abort import check_turn_abort
     from scripts.sync_goods_to_kb import _should_fetch_next_goods_page
 
     all_products: list = []
     total = 0
     page = 1
     while page <= max_pages:
+        check_turn_abort()
         result = product_manager.get_product_list(
             page=page, size=_MALL_LIST_PAGE_SIZE
         )
@@ -132,6 +135,7 @@ def _fetch_mall_products_paginated(
     name="get_shop_products",
     description="获取店铺在售商品列表（实时 API），含各商品 SKU 名称、价格、库存。无需先同步知识库。",
 )
+@offload_tool
 def get_shop_products(run_context: RunContext) -> str:
     """
     获取店铺商品列表（实时），并逐个拉取详情中的 SKU 明细。
@@ -171,6 +175,9 @@ def get_shop_products(run_context: RunContext) -> str:
 
         sku_by_goods_id: dict = {}
         for product in products:
+            from core.turn_abort import check_turn_abort
+
+            check_turn_abort()
             gid = product.get("goods_id")
             if not gid:
                 continue
@@ -186,6 +193,10 @@ def get_shop_products(run_context: RunContext) -> str:
         )
 
     except Exception as e:
+        from core.turn_abort import TurnAborted
+
+        if isinstance(e, TurnAborted):
+            raise
         logger.error(f"工具执行异常: {str(e)}")
         return f"获取商品列表时发生异常: {str(e)}"
 
@@ -194,6 +205,7 @@ def get_shop_products(run_context: RunContext) -> str:
     name="get_product_skus",
     description="根据商品 goods_id 实时查询该商品全部 SKU 的名称、价格、库存。",
 )
+@offload_tool
 def get_product_skus(run_context: RunContext, goods_id: str) -> str:
     """按商品 ID 查询 SKU 明细（实时，无需同步知识库）。"""
     try:

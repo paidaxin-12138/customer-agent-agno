@@ -166,41 +166,44 @@ class KnowledgeIndexerMixin:
 
     def add_document(self, doc: Dict) -> None:
         """向后兼容 - 旧 UI 代码使用"""
-        self.documents.append(doc)
-        self._save_documents()
-        self._last_sync_signature = None
-        doc_id = str(doc.get("id", "") or "").strip()
-        if doc_id:
-            self._lancedb_delete_by_id(doc_id)
-        self._add_doc_to_lancedb(doc)
+        with self._global_io_lock:
+            self.documents.append(doc)
+            self._save_documents()
+            self._last_sync_signature = None
+            doc_id = str(doc.get("id", "") or "").strip()
+            if doc_id:
+                self._lancedb_delete_by_id(doc_id)
+            self._add_doc_to_lancedb(doc)
 
     def remove_document(self, doc_id: str) -> None:
         """向后兼容 - 旧 UI 代码使用"""
-        self.documents = [d for d in self.documents if d.get("id") != doc_id]
-        self._save_documents()
-        self._last_sync_signature = None
-        self._lancedb_delete_by_id(str(doc_id))
+        with self._global_io_lock:
+            self.documents = [d for d in self.documents if d.get("id") != doc_id]
+            self._save_documents()
+            self._last_sync_signature = None
+            self._lancedb_delete_by_id(str(doc_id))
 
     def update_document(self, doc_id: str, updates: Dict[str, Any]) -> bool:
         """更新文档（UI 编辑）；正文变更时清除表格类 display_payload。"""
         doc_id = str(doc_id)
-        for i, doc in enumerate(self.documents):
-            if str(doc.get("id")) != doc_id:
-                continue
-            merged = dict(doc)
-            for k, v in (updates or {}).items():
-                if k == "display_payload" and v is None:
-                    merged.pop("display_payload", None)
+        with self._global_io_lock:
+            for i, doc in enumerate(self.documents):
+                if str(doc.get("id")) != doc_id:
                     continue
-                merged[k] = v
-            if "content" in (updates or {}):
-                merged.pop("display_payload", None)
-            self.documents[i] = merged
-            self._save_documents()
-            self._lancedb_delete_by_id(doc_id)
-            self._add_doc_to_lancedb(merged)
-            self._last_sync_signature = None
-            return True
+                merged = dict(doc)
+                for k, v in (updates or {}).items():
+                    if k == "display_payload" and v is None:
+                        merged.pop("display_payload", None)
+                        continue
+                    merged[k] = v
+                if "content" in (updates or {}):
+                    merged.pop("display_payload", None)
+                self.documents[i] = merged
+                self._save_documents()
+                self._lancedb_delete_by_id(doc_id)
+                self._add_doc_to_lancedb(merged)
+                self._last_sync_signature = None
+                return True
         return False
 
     async def add_content_from_file(

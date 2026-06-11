@@ -7,15 +7,19 @@
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, FrozenSet
+from typing import Dict, Any, FrozenSet, Optional
 from bridge.context import Context
 from utils.logger_loguru import get_logger
 
 
-def stage_allowed_for_context(context: Context, allowed_stages: FrozenSet[str]) -> bool:
+def stage_allowed_for_context(
+    context: Context,
+    allowed_stages: FrozenSet[str],
+    metadata: Optional[Dict[str, Any]] = None,
+) -> bool:
     from Agent.CustomerAgent.conversation_memory import get_current_stage
 
-    return get_current_stage(context) in allowed_stages
+    return get_current_stage(context, metadata) in allowed_stages
 
 
 class MessageHandler(ABC):
@@ -25,7 +29,9 @@ class MessageHandler(ABC):
         self.logger = get_logger(self.__class__.__name__)
 
     @abstractmethod
-    def can_handle(self, context: Context) -> bool:
+    def can_handle(
+        self, context: Context, metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
         """
         判断是否能处理该消息
 
@@ -69,7 +75,9 @@ class TypeBasedHandler(MessageHandler):
         super().__init__()
         self.supported_types = supported_types
 
-    def can_handle(self, context: Context) -> bool:
+    def can_handle(
+        self, context: Context, metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
         """检查消息类型"""
         return context.type in self.supported_types
 
@@ -81,7 +89,9 @@ class ChannelBasedHandler(MessageHandler):
         super().__init__()
         self.supported_channels = supported_channels
 
-    def can_handle(self, context: Context) -> bool:
+    def can_handle(
+        self, context: Context, metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
         """检查渠道类型"""
         # 处理 channel_type 可能为 None 的情况
         channel_type = context.channel_type
@@ -108,8 +118,10 @@ class CatchAllHandler(MessageHandler):
     def __init__(self):
         super().__init__()
 
-    def can_handle(self, context: Context) -> bool:
-        if not stage_allowed_for_context(context, self.allowed_stages):
+    def can_handle(
+        self, context: Context, metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        if not stage_allowed_for_context(context, self.allowed_stages, metadata):
             return False
         return True
 

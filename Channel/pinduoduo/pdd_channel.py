@@ -84,6 +84,8 @@ class PDDChannel(Channel):
         self.max_concurrent_messages = max_concurrent_messages
         self.message_semaphore = asyncio.Semaphore(max_concurrent_messages)
         self.processing_tasks: Set[asyncio.Task[Any]] = set()
+        self.processing_task_payloads: Dict[asyncio.Task[Any], Any] = {}
+        self.processing_task_queue_names: Dict[asyncio.Task[Any], str] = {}
         self.resource_manager = WebSocketResourceManager()
 
         from core.pdd_channel_registry import register_pdd_channel
@@ -131,7 +133,12 @@ class PDDChannel(Channel):
         )
 
     async def cleanup_processing_tasks(self) -> None:
-        await cancel_task_set(self.processing_tasks, logger=self.logger)
+        await cancel_task_set(
+            self.processing_tasks,
+            logger=self.logger,
+            task_payloads=self.processing_task_payloads,
+            task_queue_names=self.processing_task_queue_names,
+        )
 
     def request_stop(self) -> None:
         if self._stop_event:
@@ -175,6 +182,8 @@ class PDDChannel(Channel):
             ws_connections=self._ws_connections,
             stop_events=self._stop_events,
             processing_tasks=self.processing_tasks,
+            processing_task_payloads=self.processing_task_payloads,
+            processing_task_queue_names=self.processing_task_queue_names,
             resource_manager=self.resource_manager,
             logger=self.logger,
         )

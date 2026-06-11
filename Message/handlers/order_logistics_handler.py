@@ -120,7 +120,9 @@ class OrderLogisticsHandler(BaseHandler):
                 str(from_uid),
                 order_sn,
             )
-            await self._send_reply(shop_id, user_id, from_uid, reply)
+            await self._send_reply(
+                shop_id, user_id, from_uid, reply, context=context, metadata=metadata
+            )
         except Exception as e:
             self.logger.error(f"物流查询失败: {e}")
             await self._send_reply(
@@ -128,6 +130,8 @@ class OrderLogisticsHandler(BaseHandler):
                 user_id,
                 from_uid,
                 "亲，物流查询遇到一点问题，请稍后再试或联系人工客服帮您查单。",
+                context=context,
+                metadata=metadata,
             )
             self._commit_logistics_state(context, metadata, release_stage=True)
             return True
@@ -146,10 +150,17 @@ class OrderLogisticsHandler(BaseHandler):
         user_id: Any,
         from_uid: Any,
         reply: str,
+        *,
+        context: Optional[Context] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         ok = await self.send_text_to_buyer(
-            shop_id, user_id, from_uid, reply, metadata=metadata
+            shop_id,
+            user_id,
+            from_uid,
+            reply,
+            context=context,
+            metadata=metadata,
         )
         if not ok:
             self.logger.error("物流话术发送失败")

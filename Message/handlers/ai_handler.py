@@ -23,6 +23,7 @@ from utils.llm_errors import (
 from utils.human_transfer_intent import has_explicit_transfer_intent
 
 from Message.ai_queue_load import get_ai_queue_tracker
+from core.turn_abort import TurnAborted, reset_current_turn_abort, set_current_turn_abort, turn_abort_registry
 from Message.handlers.ai_reply_watchdog import (
     escalate_to_human,
     is_escalated,
@@ -37,6 +38,15 @@ _FAILURE_PLACEHOLDER_MARKERS = (
     "抱歉，我现在无法回复",
     "AI客服初始化失败",
 )
+_TURN_ABORT_SILENT_REASONS = frozenset(
+    {
+        "superseded_by_new_inbound",
+        "registry_evicted",
+        "consumer_stop",
+        "shutdown",
+        "escalated",
+    }
+)
 
 
 class AIReplyHandler(BaseHandler):
@@ -44,13 +54,15 @@ class AIReplyHandler(BaseHandler):
 
     allowed_stages = frozenset({"idle", "product_qa", "recommend"})
 
-    def _stage_allowed(self, context: Context) -> bool:
+    def _stage_allowed(
+        self, context: Context, metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
         from Agent.CustomerAgent.conversation_memory import get_current_stage
 
         stages = set(self.allowed_stages)
         if bool(config.get("chat.ai_allow_after_sales_stage", True)):
             stages.add("after_sales")
-        return get_current_stage(context) in stages
+        return get_current_stage(context, metadata) in stages
 
     def __init__(self, bot: Bot = None, auto_reply_types: set = None):
         super().__init__("AIReplyHandler")
@@ -110,10 +122,10 @@ class AIReplyHandler(BaseHandler):
             self.logger.debug("_resolve_buyer_uid parse_peer: {}", e)
             return None
 
-    def _is_ai_mode_enabled(self, context: Context, metadata: Dict[str, Any]) -> bool:
+    async def _is_ai_mode_enabled(self, context: Context, metadata: Dict[str, Any]) -> bool:
         from utils.ai_mode_check import is_ai_mode_enabled
 
-        return is_ai_mode_enabled(context, metadata)
+        return await asyncio.to_thread(is_ai_mode_enabled, context, metadata)
 
     @staticmethod
     def _guess_intent(text: str) -> str:
@@ -123,6 +135,25 @@ class AIReplyHandler(BaseHandler):
 
     def _should_escalate_to_human(self, text: str) -> bool:
         return has_explicit_transfer_intent(text)
+
+    async def _handle_turn_aborted_silent(
+        self,
+        context: Context,
+        metadata: Dict[str, Any],
+        exc: TurnAborted,
+    ) -> bool:
+        """Turn 已作废：不发出站、不兜底话术；若有 watchdog 则取消。"""
+        self.logger.info("Turn 已 abort ({}), 静默跳过", exc.reason)
+        if int(metadata.get("_watchdog_epoch") or 0):
+            try:
+                from Message.handlers.channel_send import notify_outbound_from_metadata
+
+                notify_outbound_from_metadata(context, metadata)
+                metadata["_watchdog_resolved_without_outbound"] = True
+            except Exception as e:
+                self.logger.debug("turn abort dismiss watchdog: {}", e)
+        metadata["_turn_aborted"] = exc.reason or "aborted"
+        return True
 
     async def _handle_unknown_ai_failure(
         self,
@@ -271,7 +302,7 @@ class AIReplyHandler(BaseHandler):
         epoch = 0
         ai_t0 = time.perf_counter()
         try:
-            if not self._is_ai_mode_enabled(context, metadata):
+            if not await self._is_ai_mode_enabled(context, metadata):
                 await self._maybe_send_manual_mode_notice(context, metadata)
                 await self.log_message(context, "AI跳过", "会话处于人工模式(ai_mode=False)")
                 return False
@@ -339,10 +370,37 @@ class AIReplyHandler(BaseHandler):
             epoch = watchdog_epoch if watchdog_epoch > 0 else 0
 
             ai_t0 = time.perf_counter()
-            async with tracker.ai_inflight():
-                reply = await self._get_ai_reply_with_sync_retry(
-                    processed_content, context, metadata
+            abort_token = None
+            turn_signal = None
+            if session_key:
+                turn_signal = turn_abort_registry.begin_turn(session_key)
+                if turn_signal:
+                    metadata["_turn_id"] = turn_signal.turn_id
+                    abort_token = set_current_turn_abort(turn_signal)
+
+            try:
+                async with tracker.ai_inflight():
+                    reply = await self._get_ai_reply_with_sync_retry(
+                        processed_content, context, metadata
+                    )
+            except TurnAborted as exc:
+                if (exc.reason or "") in _TURN_ABORT_SILENT_REASONS:
+                    return await self._handle_turn_aborted_silent(
+                        context, metadata, exc
+                    )
+                return await self._handle_unknown_ai_failure(
+                    context,
+                    metadata,
+                    processed_content,
+                    session_key,
+                    epoch,
+                    "ai_timeout" if exc.reason == "arun_timeout" else "ai_failed",
                 )
+            finally:
+                if abort_token is not None:
+                    reset_current_turn_abort(abort_token)
+                if session_key and turn_signal is not None:
+                    turn_abort_registry.end_turn(session_key, turn_signal.turn_id)
 
             if is_escalated(session_key, epoch):
                 self.logger.info("会话已转人工，跳过发送 AI 正文")
@@ -376,7 +434,10 @@ class AIReplyHandler(BaseHandler):
                 except Exception as e:
                     self.logger.debug(f"ops telemetry finish: {e}")
                 self._stats["ai_ok"] += 1
-                await self.log_message(context, "AI回复发送成功", f"回复: {reply[:120]}...")
+                from utils.log_redact import redact_log_payload
+
+                safe_reply = redact_log_payload(str(reply or "")[:120])
+                await self.log_message(context, "AI回复发送成功", f"回复: {safe_reply}...")
                 await self._maybe_escalate_pm_reply(
                     context, metadata, processed_content, reply
                 )
@@ -478,16 +539,49 @@ class AIReplyHandler(BaseHandler):
         delay = max(0.1, min(delay, 10.0))
         max_tries = 2 if enabled else 1
 
+        try:
+            from Agent.CustomerAgent.agent import _llm_arun_timeout_sec
+
+            arun_timeout = _llm_arun_timeout_sec()
+        except Exception:
+            arun_timeout = 120.0
+        try:
+            total_budget = float(
+                config.get("chat.llm_sync_retry_max_total_sec", arun_timeout + 15) or 0
+            )
+        except (TypeError, ValueError):
+            total_budget = arun_timeout + 15.0
+        total_budget = max(arun_timeout, min(total_budget, 140.0))
+        deadline = time.monotonic() + total_budget
+
         last_err: Optional[Exception] = None
         for attempt in range(1, max_tries + 1):
+            if time.monotonic() >= deadline:
+                self.logger.warning(
+                    "LLM 重试总时长已达上限 {:.0f}s，停止重试",
+                    total_budget,
+                )
+                break
             try:
                 content = await self._call_bot_once(query, context, metadata)
                 if not self._is_invalid_ai_content(content):
                     return content
                 last_err = ValueError("empty or placeholder reply")
+            except asyncio.TimeoutError as e:
+                last_err = e
+                self.logger.warning("LLM arun 超时，不再同步重试: {}", e)
+                break
+            except TurnAborted as e:
+                last_err = e
+                self.logger.warning("LLM turn abort: {}", e)
+                raise
             except Exception as e:
                 last_err = e
-                if attempt < max_tries and is_transient_llm_transport_error(e):
+                if (
+                    attempt < max_tries
+                    and is_transient_llm_transport_error(e)
+                    and time.monotonic() + delay < deadline
+                ):
                     self.logger.warning(
                         "LLM 瞬时失败，{}s 后同步重试 ({}/{}): {}",
                         delay,

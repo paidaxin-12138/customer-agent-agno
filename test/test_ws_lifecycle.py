@@ -88,6 +88,8 @@ async def test_cleanup_keeps_consumer_when_requested():
             ws_connections=ws_connections,
             stop_events=stop_events,
             processing_tasks=processing,
+            processing_task_payloads={},
+            processing_task_queue_names={},
             resource_manager=MagicMock(),
         )
 
@@ -117,6 +119,8 @@ async def test_run_connected_session_stops_on_event():
             heartbeat_config=MagicMock(enable_heartbeat=False),
             heartbeat_tasks={},
             processing_tasks=set(),
+            processing_task_payloads={},
+            processing_task_queue_names={},
             status_manager=status,
             on_message=AsyncMock(),
             on_cleanup=cleanup,

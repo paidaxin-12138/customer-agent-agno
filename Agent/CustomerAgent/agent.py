@@ -20,10 +20,22 @@ from Agent.CustomerAgent.tools.get_product_list import get_shop_products, get_pr
 from Agent.CustomerAgent.tools.send_goods_link import send_goods_link
 from config import get_config
 import asyncio
+import concurrent.futures
+from contextlib import suppress
 from contextvars import ContextVar, Token
+from functools import partial
 from typing import Any, Dict, List, Optional
 from utils.logger_loguru import get_logger
 from pydantic import BaseModel, Field
+
+from core.turn_abort import (
+    TurnAborted,
+    get_current_turn_abort,
+    reset_current_turn_abort,
+    set_current_turn_abort,
+    turn_abort_registry,
+)
+from core.turn_abort_loop import run_coroutine_on_private_loop_abortable
 
 # 与 config 里长「角色+示例」并存时，用于压过「每条都自我介绍」的仿写倾向
 _NATURAL_STYLE_INSTRUCTIONS: List[str] = [
@@ -49,6 +61,32 @@ _knowledge_retrieval_enabled: ContextVar[bool] = ContextVar(
 )
 
 _RAG_MAX_DOCUMENTS = 3
+
+
+def _llm_arun_timeout_sec() -> float:
+    """LLM arun 硬超时，默认 120s（应小于 watchdog 默认 150s）。"""
+    try:
+        raw = get_config("chat.llm_arun_timeout_sec", 120)
+        v = float(raw if raw is not None else 120)
+        return max(10.0, min(v, 600.0))
+    except (TypeError, ValueError):
+        return 120.0
+
+
+from core.arun_executor import ARUN_EXECUTOR as _ARUN_EXECUTOR
+
+
+def _run_coroutine_on_private_loop(coro):
+    """在独立 event loop 中执行 coroutine（供 asyncio.to_thread 调用，释放 WS loop）。"""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
+        loop.close()
 
 
 def set_knowledge_retrieval_enabled(enabled: bool) -> Token:
@@ -216,6 +254,50 @@ class CustomerAgent(Bot):
         self._agent: Optional[Agent] = None  # 延迟初始化
         self.logger = get_logger("CustomerAgent")
         self._is_initialized = False
+        self._arun_locks: Dict[int, asyncio.Lock] = {}
+
+    def _arun_lock_for_current_loop(self) -> asyncio.Lock:
+        """单例 Agent 按 event loop 串行 arun，避免多 Worker 并发 corrupt 内部状态。"""
+        loop = asyncio.get_running_loop()
+        key = id(loop)
+        lock = self._arun_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._arun_locks[key] = lock
+        return lock
+
+    def _run_agent_arun_blocking(
+        self,
+        user_id: str,
+        session_id: str,
+        ar_input: str,
+        dependencies: Dict[str, str],
+        signal: Optional[Any] = None,
+    ) -> RunOutput:
+        """在 worker 线程的独立 event loop 中运行 Agno arun（含 sync tools）。"""
+        abort_token = set_current_turn_abort(signal) if signal else None
+        try:
+            if signal and signal.is_aborted():
+                raise TurnAborted(signal.reason(), signal.turn_id)
+
+            async def _do() -> RunOutput:
+                if signal and signal.is_aborted():
+                    raise TurnAborted(signal.reason(), signal.turn_id)
+                return await self._agent.arun(
+                    user_id=user_id,
+                    session_id=session_id,
+                    input=ar_input,
+                    dependencies=dependencies,
+                )
+
+            result = run_coroutine_on_private_loop_abortable(_do, signal)
+            if signal and signal.is_aborted():
+                turn_abort_registry.record_stale_dropped()
+                raise TurnAborted(signal.reason(), signal.turn_id)
+            return result
+        finally:
+            if abort_token is not None:
+                reset_current_turn_abort(abort_token)
 
     def _build_input_with_transcript(self, query: str, context: Optional[Context]) -> str:
         """三层记忆组装：短期原文 + 任务状态 + 长期摘要。"""
@@ -346,13 +428,43 @@ class CustomerAgent(Bot):
                     enrich_from_agent_input(query, ar_input, transcript_lines=tlines)
                 except ImportError:
                     pass
-                # v2：链路内同步重试由 AIReplyHandler 负责；此处单次 arun
-                response: RunOutput = await self._agent.arun(
-                    user_id=agent_user_id,
-                    session_id=session_id,
-                    input=ar_input,
-                    dependencies=dependencies,
-                )
+                # v2：链路内同步重试由 AIReplyHandler 负责；arun 在 worker 线程执行，避免阻塞 WS loop
+                timeout_sec = _llm_arun_timeout_sec()
+                loop = asyncio.get_running_loop()
+                signal = get_current_turn_abort()
+                if signal and signal.is_aborted():
+                    turn_abort_registry.record_stale_dropped()
+                    raise TurnAborted(signal.reason(), signal.turn_id)
+                async with self._arun_lock_for_current_loop():
+                    try:
+                        response: RunOutput = await asyncio.wait_for(
+                            loop.run_in_executor(
+                                _ARUN_EXECUTOR,
+                                partial(
+                                    self._run_agent_arun_blocking,
+                                    agent_user_id,
+                                    session_id,
+                                    ar_input,
+                                    dependencies,
+                                    signal,
+                                ),
+                            ),
+                            timeout=timeout_sec,
+                        )
+                    except asyncio.TimeoutError:
+                        if signal:
+                            signal.abort("arun_timeout")
+                        self.logger.error(
+                            "CustomerAgent arun 超时 ({:.0f}s)",
+                            timeout_sec,
+                        )
+                        raise TurnAborted(
+                            "arun_timeout",
+                            signal.turn_id if signal else "",
+                        ) from None
+                if signal and signal.is_aborted():
+                    turn_abort_registry.record_stale_dropped()
+                    raise TurnAborted(signal.reason(), signal.turn_id)
                 try:
                     from core.ops_telemetry import get_current_turn, record_llm_usage
 

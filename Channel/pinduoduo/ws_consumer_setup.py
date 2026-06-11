@@ -45,7 +45,13 @@ async def setup_message_consumer(
 
     max_ai = int(get_config("chat.message_consumer_max_concurrent", 16) or 16)
     max_ai = max(1, min(max_ai, 50))
-    consumer = message_consumer_manager.create_consumer(queue_name, max_concurrent=max_ai)
+    consumer = message_consumer_manager.get_consumer(queue_name)
+    if consumer is None:
+        consumer = message_consumer_manager.create_consumer(
+            queue_name, max_concurrent=max_ai
+        )
+    else:
+        consumer.clear_handlers()
 
     try:
         from core.di_container import container
@@ -58,4 +64,12 @@ async def setup_message_consumer(
         consumer.add_handler(handler)
 
     await message_consumer_manager.start_consumer(queue_name)
+    try:
+        from Message.dead_letter import replay_pending_for_queue
+
+        replayed = await replay_pending_for_queue(queue_name)
+        if replayed:
+            log.info(f"dead-letter 重放 {replayed} 条: {queue_name}")
+    except Exception as exc:
+        log.debug(f"dead-letter 重放跳过: {queue_name}, {exc}")
     log.debug(f"消息消费者已启动: {queue_name}")

@@ -241,12 +241,67 @@ class KnowledgeRetrieverMixin:
                 best = p
         return best if best_score >= 6 else None
 
+    def _is_comparative_price_intent(self, question: str) -> bool:
+        """比较型价格意图（最贵/最便宜等），不应套通用价格区间 FAQ。"""
+        ql = (question or "").strip().lower()
+        if not ql:
+            return False
+        markers = (
+            "最贵",
+            "最便宜",
+            "最高价",
+            "最低价",
+            "哪个贵",
+            "哪个便宜",
+            "贵的呢",
+            "便宜的呢",
+            "高端款",
+            "顶配",
+        )
+        return any(m in ql for m in markers)
+
+    def _answer_extreme_price_question(self, question: str) -> Optional[str]:
+        """回答「最贵/最便宜」类比较问题，基于结构化产品数据。"""
+        if not self._is_comparative_price_intent(question):
+            return None
+        if not self.products:
+            return None
+
+        ql = (question or "").strip().lower()
+        wants_max = any(k in ql for k in ("最贵", "最高价", "哪个贵", "贵的呢", "高端", "顶配"))
+        wants_min = any(k in ql for k in ("最便宜", "最低价", "哪个便宜", "便宜的呢", "最实惠"))
+        if wants_max and wants_min:
+            return None
+
+        def _price_num(p: Dict[str, Any]) -> float:
+            try:
+                return float(p.get("price_num", 0) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        if wants_min:
+            pick = min(self.products, key=_price_num)
+            label = "最便宜"
+        else:
+            pick = max(self.products, key=_price_num)
+            label = "最贵"
+
+        features = "、".join((pick.get("features") or [])[:3]) or "见商品详情"
+        return (
+            f"亲，目前在售参考数据里**{label}**的是 **{pick.get('name', '该款')}**，"
+            f"标价 **{pick.get('price', '未知')}**（{pick.get('power', '未知功率')}）。\n"
+            f"主要特点：{features}。\n"
+            "最终以您当前商品详情页、下单结算页标价为准哦~ 😊"
+        )
+
     def _answer_price_or_currency_question(self, question: str) -> Optional[str]:
         """
         针对「是不是卖 299」「多少钱」类：先正面回应币种/口径，避免套错 FAQ 模板。
         """
         q = (question or "").strip()
         if not q:
+            return None
+        if self._is_comparative_price_intent(q):
             return None
         ql = q.lower()
         price_hint = any(
@@ -260,8 +315,6 @@ class KnowledgeRetrieverMixin:
                 "$",
                 "多少钱",
                 "价位",
-                "贵",
-                "便宜",
                 "标价",
                 "定价",
                 "包邮",
@@ -383,6 +436,10 @@ class KnowledgeRetrieverMixin:
             for kw in ["怎么用", "如何使用", "操作", "教程", "用法"]
         ):
             return self._answer_usage_question()
+
+        extreme_price_reply = self._answer_extreme_price_question(question)
+        if extreme_price_reply:
+            return extreme_price_reply
 
         price_reply = self._answer_price_or_currency_question(question)
         if price_reply:
@@ -534,14 +591,14 @@ class KnowledgeRetrieverMixin:
 
                 if query_vec:
                     # 使用 LanceDB 进行向量检索
+                    lance_limit = limit * (4 if ignore_shop_filter else 2)
                     results = (
                         self._knowledge_table.search(query_vec)
-                        .limit(limit * 2)
+                        .limit(lance_limit)
                         .to_pandas()
                     )
 
                     if not results.empty:
-                        # 过滤店铺可见性
                         eff_shop = (
                             explicit_shop
                             if explicit_shop is not None
@@ -561,18 +618,20 @@ class KnowledgeRetrieverMixin:
                                 "filename": row.get("filename", ""),
                                 "source": row.get("source", ""),
                             }
-                            if self._doc_visible_for_shop(doc, eff_shop):
+                            if ignore_shop_filter or self._doc_visible_for_shop(
+                                doc, eff_shop
+                            ):
                                 filtered.append((row.get("_distance", 0), doc))
 
-                        # 按距离排序（越小越相关），并应用父子店 inherit 覆盖
                         filtered.sort(key=lambda x: x[0])
                         pool = self._documents_for_retrieval(
                             ignore_shop_filter=ignore_shop_filter,
                             platform_shop_id=eff_shop,
                         )
-                        filtered = self._apply_parent_override_filter(
-                            filtered, pool, eff_shop
-                        )
+                        if not ignore_shop_filter:
+                            filtered = self._apply_parent_override_filter(
+                                filtered, pool, eff_shop
+                            )
                         top = filtered[:limit]
 
                         self.logger.debug(
@@ -685,15 +744,16 @@ class KnowledgeRetrieverMixin:
                 ranked.append((best, d))
 
         ranked.sort(key=lambda x: x[0], reverse=True)
-        ranked = self._apply_parent_override_filter(
-            ranked,
-            pool,
-            (
-                explicit_shop
-                if explicit_shop is not None
-                else get_current_platform_shop_id()
-            ),
-        )
+        if not ignore_shop_filter:
+            ranked = self._apply_parent_override_filter(
+                ranked,
+                pool,
+                (
+                    explicit_shop
+                    if explicit_shop is not None
+                    else get_current_platform_shop_id()
+                ),
+            )
         top_ranked = ranked[:limit]
         out_ranked: List[DocumentLike] = []
         for score_val, d in top_ranked:

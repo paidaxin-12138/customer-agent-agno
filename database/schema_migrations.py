@@ -182,6 +182,48 @@ def migrate_chat_messages_unread_index(engine: Engine, logger: Any = None) -> in
         conn.close()
 
 
+def migrate_message_dead_letters_table(engine: Engine, logger: Any = None) -> int:
+    path = _db_path(engine)
+    if not path:
+        return 0
+    conn = sqlite3.connect(path)
+    try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='message_dead_letters'"
+        )
+        if cur.fetchone():
+            return 0
+        conn.execute(
+            """
+            CREATE TABLE message_dead_letters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                queue_name TEXT NOT NULL,
+                context_json TEXT NOT NULL,
+                reason TEXT,
+                from_uid TEXT,
+                msg_id TEXT,
+                created_at REAL NOT NULL,
+                replayed_at REAL,
+                status TEXT NOT NULL DEFAULT 'pending'
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mdl_queue_status "
+            "ON message_dead_letters (queue_name, status)"
+        )
+        conn.commit()
+        if logger:
+            logger.info("message_dead_letters 表已创建")
+        return 1
+    except Exception as e:
+        if logger:
+            logger.warning(f"message_dead_letters 迁移失败: {e}")
+        return 0
+    finally:
+        conn.close()
+
+
 def apply_legacy_migrations(engine: Engine, logger: Any = None) -> int:
     """幂等执行全部遗留补丁，返回大致变更计数。"""
     total = 0
@@ -190,4 +232,5 @@ def apply_legacy_migrations(engine: Engine, logger: Any = None) -> int:
     total += migrate_ops_schema(engine, logger)
     total += migrate_utc_timestamps_to_shanghai(engine, logger)
     total += migrate_chat_messages_unread_index(engine, logger)
+    total += migrate_message_dead_letters_table(engine, logger)
     return total

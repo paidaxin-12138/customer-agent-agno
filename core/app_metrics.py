@@ -17,6 +17,11 @@ _messages_processed = 0
 _messages_failed = 0
 _ws_reconnects = 0
 _cookie_refresh_failures = 0
+_queue_enqueue_dropped = 0
+_queue_dead_letters = 0
+_queue_force_dropped = 0
+_turn_abort_by_reason: Dict[str, int] = {}
+_turn_stale_dropped = 0
 _started_at = time.time()
 
 
@@ -42,6 +47,75 @@ def record_cookie_refresh_failure() -> None:
     global _cookie_refresh_failures
     with _lock:
         _cookie_refresh_failures += 1
+
+
+def record_queue_enqueue_dropped(queue_name: str = "") -> None:
+    global _queue_enqueue_dropped
+    with _lock:
+        _queue_enqueue_dropped += 1
+    _log.warning("队列入队失败已记录 queue={}", queue_name or "?")
+
+
+def record_queue_dead_letter(queue_name: str = "") -> None:
+    global _queue_dead_letters
+    with _lock:
+        _queue_dead_letters += 1
+    _log.warning("dead-letter 已记录 queue={}", queue_name or "?")
+
+
+def record_queue_force_dropped(queue_name: str = "") -> None:
+    global _queue_force_dropped
+    with _lock:
+        _queue_force_dropped += 1
+    _log.warning("force_enqueue 丢弃已记录 queue={}", queue_name or "?")
+
+
+def record_turn_abort(reason: str = "aborted") -> None:
+    """Turn 协作取消计数（按 reason 分桶）。"""
+    key = str(reason or "aborted").strip() or "aborted"
+    with _lock:
+        _turn_abort_by_reason[key] = _turn_abort_by_reason.get(key, 0) + 1
+
+
+def record_turn_stale_dropped() -> None:
+    global _turn_stale_dropped
+    with _lock:
+        _turn_stale_dropped += 1
+
+
+def get_turn_abort_metrics() -> Dict[str, Any]:
+    with _lock:
+        by_reason = dict(_turn_abort_by_reason)
+        stale = _turn_stale_dropped
+    active_sessions = 0
+    registry_aborted = 0
+    registry_stale = 0
+    try:
+        from core.turn_abort import turn_abort_registry
+
+        snap = turn_abort_registry.snapshot_stats()
+        active_sessions = int(snap.get("active_sessions", 0))
+        registry_aborted = int(snap.get("aborted_total", 0))
+        registry_stale = int(snap.get("stale_dropped_total", 0))
+    except Exception as exc:
+        _log.debug("turn_abort registry 快照失败: {}", exc)
+
+    arun_pending = -1
+    try:
+        from core.arun_executor import arun_executor_pending
+
+        arun_pending = arun_executor_pending()
+    except Exception as exc:
+        _log.debug("arun executor 队列深度读取失败: {}", exc)
+
+    return {
+        "by_reason": by_reason,
+        "stale_dropped_total": stale,
+        "registry_aborted_total": registry_aborted,
+        "registry_stale_dropped_total": registry_stale,
+        "active_sessions": active_sessions,
+        "arun_executor_pending": arun_pending,
+    }
 
 
 def get_queue_depth_snapshot() -> int:
@@ -107,11 +181,15 @@ def get_cache_sizes() -> Dict[str, int]:
 
 
 def get_metrics_payload() -> Dict[str, Any]:
+    turn_abort = get_turn_abort_metrics()
     with _lock:
         processed = _messages_processed
         failed = _messages_failed
         ws_reconnects = _ws_reconnects
         cookie_refresh_failures = _cookie_refresh_failures
+        queue_enqueue_dropped = _queue_enqueue_dropped
+        queue_dead_letters = _queue_dead_letters
+        queue_force_dropped = _queue_force_dropped
     uptime = max(0.0, time.time() - _started_at)
     handler_chain = get_handler_chain_metrics()
     return {
@@ -120,6 +198,10 @@ def get_metrics_payload() -> Dict[str, Any]:
         "queue_depth_approx": get_queue_depth_snapshot(),
         "ws_reconnects": ws_reconnects,
         "cookie_refresh_failures": cookie_refresh_failures,
+        "queue_enqueue_dropped": queue_enqueue_dropped,
+        "queue_dead_letters": queue_dead_letters,
+        "queue_force_dropped": queue_force_dropped,
+        "turn_abort": turn_abort,
         "handler_chain_ok": handler_chain.get("ok", False),
         "handler_chain_missing": handler_chain.get("missing", []),
         "uptime_seconds": round(uptime, 1),

@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import time
 from typing import Dict, List
 
 from utils.buyer_lock_registry import BuyerLockRegistry
@@ -33,6 +34,38 @@ _BUSINESS_CHAIN_HANDLERS = frozenset(
 )
 
 
+def _invoke_can_handle(handler: MessageHandler, context: Context, metadata: Dict) -> bool:
+    """兼容旧 Handler 仅声明 can_handle(context) 的签名。"""
+    try:
+        return handler.can_handle(context, metadata)
+    except TypeError:
+        return handler.can_handle(context)
+
+
+def _dismiss_watchdog_if_handler_resolved_without_outbound(
+    context: Context,
+    metadata: Dict,
+    *,
+    processed: bool,
+) -> None:
+    """业务 Handler 已消费消息但未出站时，取消误触发的 inbound watchdog。"""
+    if not processed:
+        return
+    if not int(metadata.get("_watchdog_epoch") or 0):
+        return
+    if metadata.get("_outbound_comfort_sent"):
+        return
+    if not metadata.get("_handler_resolved_without_outbound"):
+        return
+    try:
+        from Message.handlers.channel_send import notify_outbound_from_metadata
+
+        notify_outbound_from_metadata(context, metadata)
+        metadata["_watchdog_resolved_without_outbound"] = True
+    except Exception as exc:
+        logger.debug("watchdog resolve without outbound: {}", exc)
+
+
 class MessageConsumer:
     """消息消费者 - 有界 worker 池，避免 create_task 无限堆积"""
 
@@ -45,11 +78,46 @@ class MessageConsumer:
         self._worker_tasks: List[asyncio.Task] = []
         self.logger = get_logger(f"Consumer.{queue_name}")
         self._buyer_locks = BuyerLockRegistry(max_keys=5000)
+        self._last_dead_letter_replay = 0.0
+
+    def _dead_letter_replay_interval_sec(self) -> float:
+        try:
+            v = float(get_config("chat.dead_letter_replay_interval_sec", 60) or 60)
+            return max(10.0, min(v, 600.0))
+        except (TypeError, ValueError):
+            return 60.0
+
+    async def _maybe_replay_dead_letters(self, worker_id: int) -> None:
+        if worker_id != 0:
+            return
+        if not bool(get_config("chat.dead_letter_periodic_replay_enabled", True)):
+            return
+        interval = self._dead_letter_replay_interval_sec()
+        now = time.monotonic()
+        if now - self._last_dead_letter_replay < interval:
+            return
+        self._last_dead_letter_replay = now
+        try:
+            from Message.dead_letter import replay_pending_for_queue
+
+            replayed = await replay_pending_for_queue(self.queue_name)
+            if replayed:
+                self.logger.info(
+                    "idle dead-letter 重放 {} 条 queue={}",
+                    replayed,
+                    self.queue_name,
+                )
+        except Exception as exc:
+            self.logger.debug("idle dead-letter 重放跳过: {}", exc)
 
     def add_handler(self, handler: MessageHandler):
         """添加处理器"""
         self.handlers.append(handler)
         self.logger.debug(f"Added handler: {handler.__class__.__name__}")
+
+    def clear_handlers(self) -> None:
+        """清空处理器链（重连重建消费者前调用，避免重复挂载）。"""
+        self.handlers.clear()
 
     def is_running(self) -> bool:
         """检查消费者是否正在运行"""
@@ -62,6 +130,7 @@ class MessageConsumer:
             return
 
         self.running = True
+        self._owner_loop = asyncio.get_running_loop()
         self.consumer_task = asyncio.create_task(self._consume_loop())
         if get_config("chat.queue_force_enqueue", False):
             self.logger.warning(
@@ -91,6 +160,7 @@ class MessageConsumer:
                 await asyncio.sleep(0.1)
                 continue
             if not wrapper:
+                await self._maybe_replay_dead_letters(worker_id)
                 continue
             try:
                 await self._process_message(wrapper)
@@ -98,30 +168,71 @@ class MessageConsumer:
                 self.logger.error(
                     f"Consumer worker {worker_id} process error: {e}"
                 )
-            finally:
-                self._buyer_locks.prune_idle()
 
     async def stop(self):
-        """停止消费者并等待在途消息处理完成"""
+        """停止消费者：先停接新消息， drain 队列，等待在途 worker 结束。"""
         self.running = False
+
+        try:
+            from core.turn_abort import turn_abort_registry
+
+            aborted = turn_abort_registry.abort_all_active("consumer_stop")
+            if aborted:
+                self.logger.info(
+                    "Consumer {} stop: aborted {} in-flight turn(s)",
+                    self.queue_name,
+                    aborted,
+                )
+        except Exception as exc:
+            self.logger.debug("consumer stop turn abort skipped: {}", exc)
+
+        try:
+            queue = queue_manager.get_queue(self.queue_name)
+            if queue:
+                drained = queue.drain_to_dead_letter("consumer_stop")
+                if drained:
+                    self.logger.info(
+                        "Consumer {} stop: drained {} queued message(s) to dead-letter",
+                        self.queue_name,
+                        drained,
+                    )
+        except Exception as exc:
+            self.logger.debug("consumer stop drain skipped: {}", exc)
+
+        if self._worker_tasks:
+            _done, pending = await asyncio.wait(
+                self._worker_tasks,
+                timeout=5.0,
+                return_when=asyncio.ALL_COMPLETED,
+            )
+            for wt in pending:
+                wt.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
 
         task = getattr(self, "consumer_task", None)
         if task is not None:
-            task.cancel()
+            if not task.done():
+                task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
                 pass
             self.consumer_task = None
 
-        for wt in self._worker_tasks:
-            if not wt.done():
-                wt.cancel()
-        if self._worker_tasks:
-            await asyncio.gather(*self._worker_tasks, return_exceptions=True)
         self._worker_tasks.clear()
         self._buyer_locks.clear()
         self.logger.debug(f"Consumer {self.queue_name} workers and locks cleared")
+
+    def _persist_process_failure_dead_letter(self, context: Context) -> None:
+        try:
+            from Message.dead_letter import persist_dead_letter
+
+            persist_dead_letter(
+                self.queue_name, context, reason="process_failure"
+            )
+        except Exception as exc:
+            self.logger.debug("process_failure dead-letter: {}", exc)
 
     def _record_process_failure(
         self,
@@ -145,7 +256,6 @@ class MessageConsumer:
     async def _process_message(self, wrapper: MessageWrapper):
         """处理单个消息"""
         user_key = self._extract_user_id(wrapper.context)
-        lock = self._buyer_locks.lock_for(user_key)
         processed = False
         metadata: Dict = {}
         ctx_type = getattr(wrapper.context.type, "value", wrapper.context.type)
@@ -156,8 +266,7 @@ class MessageConsumer:
             ctx_type,
             user_key,
         )
-        await lock.acquire()
-        try:
+        async with self._buyer_locks.hold(user_key):
             try:
                 metadata = wrapper.to_metadata()
                 try:
@@ -178,10 +287,13 @@ class MessageConsumer:
                     from database.session_store import prime_metadata_session
 
                     await asyncio.to_thread(
-                        prime_metadata_session, wrapper.context, metadata
+                        prime_metadata_session, metadata, wrapper.context
                     )
                 except Exception as prime_err:
-                    self.logger.debug(f"prime_metadata_session: {prime_err}")
+                    self.logger.warning(
+                        "prime_metadata_session 失败，责任链将回退查 DB: {}",
+                        prime_err,
+                    )
                 try:
                     ku = getattr(wrapper.context, "kwargs", None)
                     raw = getattr(ku, "raw_data", None) if ku else None
@@ -258,7 +370,7 @@ class MessageConsumer:
 
                 for handler in self.handlers:
                     try:
-                        if handler.can_handle(wrapper.context):
+                        if _invoke_can_handle(handler, wrapper.context, metadata):
                             success = await handler.handle(wrapper.context, metadata)
                             if success:
                                 processed = True
@@ -307,6 +419,10 @@ class MessageConsumer:
                             )
                         continue
 
+                _dismiss_watchdog_if_handler_resolved_without_outbound(
+                    wrapper.context, metadata, processed=processed
+                )
+
                 if not processed and not metadata.get("_outbound_comfort_sent"):
                     try:
                         from Agent.CustomerAgent.conversation_memory import (
@@ -344,21 +460,28 @@ class MessageConsumer:
 
                 if not processed:
                     self._record_process_failure(metadata)
+                    await asyncio.to_thread(
+                        self._persist_process_failure_dead_letter,
+                        wrapper.context,
+                    )
 
             except Exception as e:
                 self.logger.error(f"Failed to process message {wrapper.message_id}: {e}")
                 self._record_process_failure(metadata, error=e)
-        finally:
-            lock.release()
-            handled_by = metadata.get("handled_by", "")
-            self.logger.info(
-                "[DONE] queue={} msg_id={} processed={} handled_by={} user_key={}",
-                self.queue_name,
-                wrapper.message_id,
-                processed,
-                handled_by or "-",
-                user_key,
-            )
+                await asyncio.to_thread(
+                    self._persist_process_failure_dead_letter,
+                    wrapper.context,
+                )
+            finally:
+                handled_by = metadata.get("handled_by", "")
+                self.logger.info(
+                    "[DONE] queue={} msg_id={} processed={} handled_by={} user_key={}",
+                    self.queue_name,
+                    wrapper.message_id,
+                    processed,
+                    handled_by or "-",
+                    user_key,
+                )
 
     def _extract_user_id(self, context: Context) -> str:
         """提取用户ID"""
@@ -412,13 +535,20 @@ class MessageConsumerManager:
         else:
             self.logger.error(f"Consumer {queue_name} not found")
 
-    async def stop_consumer(self, queue_name: str):
-        """停止消费者"""
+    async def stop_consumer(self, queue_name: str, *, remove: bool = True):
+        """停止消费者；remove=True 时从注册表移除，便于重连后创建新实例。"""
         consumer = self.get_consumer(queue_name)
         if consumer:
             await consumer.stop()
+            if remove:
+                self._consumers.pop(queue_name, None)
         else:
             self.logger.error(f"Consumer {queue_name} not found")
+
+    def detach_all(self) -> None:
+        """仅清空注册表（AutoReply 线程已在其 event loop 内停止消费者后调用）。"""
+        self._consumers.clear()
+        self.logger.info("All consumers detached from registry")
 
     def list_consumers(self) -> List[str]:
         """列出所有消费者"""
@@ -426,9 +556,31 @@ class MessageConsumerManager:
 
     async def stop_all(self):
         """停止所有消费者"""
-        for consumer in self._consumers.values():
+        for consumer in list(self._consumers.values()):
             await consumer.stop()
+        self._consumers.clear()
         self.logger.info("All consumers stopped")
+
+    def stop_all_cross_loop(self, timeout: float = 6.0) -> None:
+        """在各自启动时的 event loop 上停止消费者（GUI 退出路径）。"""
+        for queue_name, consumer in list(self._consumers.items()):
+            loop = getattr(consumer, "_owner_loop", None)
+            if loop is not None and loop.is_running():
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        consumer.stop(), loop
+                    ).result(timeout=timeout)
+                except Exception as exc:
+                    self.logger.warning(
+                        "跨 loop 停止消费者 {} 失败: {}", queue_name, exc
+                    )
+            elif consumer.is_running():
+                self.logger.warning(
+                    "消费者 {} 仍在运行但 owner loop 不可用，跳过异步 stop",
+                    queue_name,
+                )
+        self._consumers.clear()
+        self.logger.info("All consumers stopped (cross-loop)")
 
 
 message_consumer_manager = MessageConsumerManager()

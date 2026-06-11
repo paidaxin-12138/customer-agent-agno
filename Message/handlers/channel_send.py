@@ -122,6 +122,9 @@ async def transfer_to_available_cs_async(
     from_uid: Any,
     *,
     exclude_self: bool = True,
+    context: Optional[Context] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    notify_watchdog: bool = True,
 ) -> bool:
     """转接给可用客服：优先 config 中售后子账号，否则按负载最低。"""
     cs_list = await get_cs_list_async(shop_id, user_id)
@@ -135,4 +138,9 @@ async def transfer_to_available_cs_async(
     if not cs_uid:
         return False
     result = await move_conversation_async(shop_id, user_id, from_uid, cs_uid)
-    return isinstance(result, dict) and bool(result.get("success"))
+    if isinstance(result, dict) and bool(result.get("success")):
+        if notify_watchdog and metadata is not None:
+            metadata["_outbound_comfort_sent"] = True
+            notify_outbound_from_metadata(context, metadata)
+        return True
+    return False

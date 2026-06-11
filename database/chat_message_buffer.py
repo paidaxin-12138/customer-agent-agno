@@ -89,6 +89,13 @@ class ChatMessageWriteBuffer:
         )
         with self._lock:
             self._pending.append(item)
+            if len(self._pending) >= _MAX_PENDING:
+                _log.error(
+                    "chat_messages 缓冲达上限 {}，强制 flush",
+                    _MAX_PENDING,
+                )
+                self._flush_locked()
+                return
             if len(self._pending) >= FLUSH_BATCH_SIZE:
                 self._flush_locked()
                 return
@@ -112,13 +119,13 @@ class ChatMessageWriteBuffer:
         if not batch:
             return
         self._pending = batch + self._pending
-        overflow = len(self._pending) - _MAX_PENDING
-        if overflow > 0:
-            self._pending = self._pending[:_MAX_PENDING]
+        if len(self._pending) > _MAX_PENDING:
+            dropped = len(self._pending) - _MAX_PENDING
+            self._pending = self._pending[-_MAX_PENDING:]
             _log.error(
-                "chat_messages 缓冲溢出，丢弃最旧 {} 条（当前上限 {}）",
-                overflow,
+                "chat_messages 缓冲超过上限 {}，丢弃最旧 {} 条待写消息",
                 _MAX_PENDING,
+                dropped,
             )
 
     def _flush_locked(self) -> int:

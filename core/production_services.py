@@ -62,6 +62,17 @@ async def _lifecycle_loop() -> None:
             _logger.error("生命周期清理失败: {}", e)
 
 
+async def _arun_backlog_watch_loop() -> None:
+    try:
+        from core.turn_abort_watchdog import run_arun_backlog_watch_loop
+
+        await run_arun_backlog_watch_loop()
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        _logger.debug("arun backlog watch 退出: {}", e)
+
+
 async def _async_main() -> None:
     if bool(_cfg("production.health_enabled", True)):
         from core.health_server import start_health_server
@@ -73,6 +84,7 @@ async def _async_main() -> None:
     tasks = [
         asyncio.create_task(_backup_loop(), name="db_backup_loop"),
         asyncio.create_task(_lifecycle_loop(), name="lifecycle_loop"),
+        asyncio.create_task(_arun_backlog_watch_loop(), name="arun_backlog_watch"),
     ]
     await asyncio.gather(*tasks)
 

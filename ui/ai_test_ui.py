@@ -76,8 +76,9 @@ class AITestWidget(QFrame):
         self._streaming = False
         self._current_product: Dict[str, Any] | None = None
         self._last_budget: float | None = None
-        # 开启本地检索（知识库摘录 + 与正式客服一致的约束）；规格/FAQ 另有关键路径直答
+        # 开启本地检索（全库：公共父库 + 全部店铺子库，ignore_shop_filter）
         self._use_local_retrieval = True
+        self._knowledge_search_limit = 5
         self._video_extensions = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
         self._build_ui()
 
@@ -221,7 +222,11 @@ class AITestWidget(QFrame):
                 self._messages.append({"role": "assistant", "content": catalog_hit})
                 return
 
-        local_faq_reply = self._build_local_kb_reply(text)
+        local_faq_reply = (
+            ""
+            if self._should_defer_to_llm(text)
+            else self._build_local_kb_reply(text)
+        )
         if local_faq_reply.strip():
             self._append("user", text)
             self.input_box.clear()
@@ -454,16 +459,22 @@ class AITestWidget(QFrame):
         scored.sort(key=lambda x: x[0], reverse=True)
         return [r for _, r in scored]
 
+    def _search_all_knowledge(self, query: str, *, limit: int | None = None):
+        """AI 测试：检索全部知识（不按店铺隔离）。"""
+        if self._knowledge_manager is None:
+            self._knowledge_manager = get_knowledge_manager()
+        return self._knowledge_manager.search_knowledge(
+            query,
+            limit=limit or self._knowledge_search_limit,
+            ignore_shop_filter=True,
+        )
+
     def _build_knowledge_context(self, query: str) -> str:
-        """按当前问题检索知识库，并将结果作为强约束上下文传给模型。"""
+        """按当前问题检索全库知识，并将结果作为强约束上下文传给模型。"""
         embedder_ok = self._is_embedder_configured()
         try:
-            if self._knowledge_manager is None:
-                self._knowledge_manager = get_knowledge_manager()
             results = (
-                self._knowledge_manager.search_knowledge(
-                    query, limit=3, ignore_shop_filter=True
-                )
+                self._search_all_knowledge(query)
                 if embedder_ok
                 else []
             )
@@ -611,6 +622,23 @@ class AITestWidget(QFrame):
             parts.append(f"- 主要特点：{('、'.join(features) if features else '当前资料未标注')}")
         return "\n".join(parts)
 
+    def _should_defer_to_llm(self, query: str) -> bool:
+        """比较型/追问类价格问题交给模型结合检索回答，避免套通用价格区间硬模板。"""
+        normalized = self._normalize_text(query)
+        comparative_keys = (
+            "最贵",
+            "最便宜",
+            "最高价",
+            "最低价",
+            "哪个贵",
+            "哪个便宜",
+            "贵的呢",
+            "便宜的呢",
+            "高端款",
+            "顶配",
+        )
+        return any(k in normalized for k in comparative_keys)
+
     def _build_local_kb_reply(self, query: str) -> str:
         """
         知识库本地直答入口：
@@ -650,7 +678,11 @@ class AITestWidget(QFrame):
 
     def _is_kb_generic_fallback(self, reply: str) -> bool:
         """识别 knowledge_manager.answer_question 的兜底寒暄，避免抢占应由模型或检索回答的问题。"""
-        markers = ("小美理解您的问题", "有什么问题尽管问我")
+        markers = (
+            "小美理解您的问题",
+            "有什么问题尽管问我",
+            "价格区间是",
+        )
         return any(m in reply for m in markers)
 
     def _is_embedder_configured(self) -> bool:
@@ -685,12 +717,7 @@ class AITestWidget(QFrame):
         try:
             docs = self._knowledge_manager.get_all_contents() or []
             if not docs:
-                docs = (
-                    self._knowledge_manager.search_knowledge(
-                        "", limit=200, ignore_shop_filter=True
-                    )
-                    or []
-                )
+                docs = self._search_all_knowledge("", limit=200) or []
         except Exception as e:
             self.logger.warning(f"关键词兜底读取知识库失败: {e}")
             return []

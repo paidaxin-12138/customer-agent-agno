@@ -75,6 +75,8 @@ class ImageVideoHumanHandler(BaseHandler):
         )
         if not ok:
             self.logger.error("图片/视频转人工后发送买家提示失败")
+        else:
+            metadata["_handler_resolved_without_outbound"] = True
 
         await self.log_message(context, "图片/视频已转人工", q[:120])
         return True

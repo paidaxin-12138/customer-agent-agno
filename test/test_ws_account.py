@@ -32,6 +32,8 @@ def _runtime(**overrides) -> PDDChannelRuntime:
     ch._heartbeat_tasks = {}
     ch._ws_connections = {}
     ch.processing_tasks = set()
+    ch.processing_task_payloads = {}
+    ch.processing_task_queue_names = {}
     ch.resource_manager = MagicMock()
     ch.businessHours = None
     ch.message_semaphore = asyncio.Semaphore(4)

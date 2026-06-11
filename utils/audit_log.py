@@ -46,7 +46,13 @@ def audit_log(
         "ip_address": ip_address or _local_ip(),
     }
     if extra:
-        payload.update(extra)
+        from utils.log_redact import redact_log_payload
+
+        redacted = redact_log_payload(extra)
+        if isinstance(redacted, dict):
+            payload.update(redacted)
+        else:
+            payload["extra"] = redacted
     row = {
         "event_type": (action or "unknown")[:50],
         "user_label": (target or "")[:200] or None,

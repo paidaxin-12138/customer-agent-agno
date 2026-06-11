@@ -43,6 +43,8 @@ async def run_connected_session(
     heartbeat_config: HeartbeatConfig,
     heartbeat_tasks: Dict[str, asyncio.Task],
     processing_tasks: Set[asyncio.Task],
+    processing_task_payloads: Dict[asyncio.Task, Any],
+    processing_task_queue_names: Dict[asyncio.Task, str],
     status_manager: ConnectionStatusManager,
     on_message: MessageHandlerFn,
     on_cleanup: CleanupFn,
@@ -82,6 +84,8 @@ async def run_connected_session(
             stop_event=stop_event,
             on_message=on_message,
             processing_tasks=processing_tasks,
+            task_payloads=processing_task_payloads,
+            task_queue_names=processing_task_queue_names,
             max_inflight=load_ws_message_concurrency(),
             logger=log,
         )

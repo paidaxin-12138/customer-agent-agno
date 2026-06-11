@@ -6,7 +6,12 @@ import os
 
 import pytest
 
-from database.chat_message_buffer import FLUSH_BATCH_SIZE, ChatMessageWriteBuffer
+from database.chat_message_buffer import (
+    FLUSH_BATCH_SIZE,
+    ChatMessageWriteBuffer,
+    _MAX_PENDING,
+    _PendingChatMessage,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -73,3 +78,37 @@ def test_buffer_requeues_on_flush_failure():
     assert attempts == [1]
     assert len(buf._pending) == 1
     assert buf._pending[0].content == "retry-me"
+
+
+def test_buffer_caps_pending_without_recursive_flush():
+    attempts = []
+
+    class FailingDb:
+        def add_chat_messages_batch(self, batch):
+            attempts.append(len(batch))
+            raise RuntimeError("db unavailable")
+
+    buf = ChatMessageWriteBuffer()
+    buf._db = FailingDb()
+    buf._pending = [
+        _PendingChatMessage(
+            session_id=1,
+            account_id=1,
+            sender_type="customer",
+            content=f"old-{i}",
+        )
+        for i in range(_MAX_PENDING)
+    ]
+    batch = [
+        _PendingChatMessage(
+            session_id=1,
+            account_id=1,
+            sender_type="customer",
+            content="new-fail",
+        )
+    ]
+    buf._requeue_failed_batch(batch)
+    assert len(buf._pending) == _MAX_PENDING
+    assert attempts == []
+    assert buf._pending[0].content == "old-0"
+    assert all(p.content != "new-fail" for p in buf._pending)

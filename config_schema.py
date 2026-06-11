@@ -123,6 +123,15 @@ class ChatConfig(BaseModel):
     queue_stats_min_samples: int = 10
     llm_sync_retry_enabled: bool = True
     llm_sync_retry_delay_sec: float = 1.5
+    llm_arun_timeout_sec: float = 120.0
+    agno_tool_timeout_sec: float = 90.0
+    turn_abort_enabled: bool = True
+    turn_abort_supersede_on_new_inbound: bool = True
+    turn_abort_registry_max_sessions: int = 5000
+    turn_abort_loop_stop_grace_ms: int = 500
+    turn_abort_arun_backlog_watch_enabled: bool = True
+    turn_abort_arun_backlog_warn_sec: float = 30.0
+    turn_abort_arun_backlog_poll_sec: float = 5.0
     after_sales_apply_enabled: bool = True
     session_idle_resolve_enabled: bool = True
     session_idle_resolve_minutes: int = 5
@@ -369,6 +378,15 @@ config_base = {
         "ws_reconnect_reconcile_cooldown_sec": 120,
         "llm_sync_retry_enabled": True,
         "llm_sync_retry_delay_sec": 1.5,
+        "llm_arun_timeout_sec": 120,
+        "agno_tool_timeout_sec": 90,
+        "turn_abort_enabled": True,
+        "turn_abort_supersede_on_new_inbound": True,
+        "turn_abort_registry_max_sessions": 5000,
+        "turn_abort_loop_stop_grace_ms": 500,
+        "turn_abort_arun_backlog_watch_enabled": True,
+        "turn_abort_arun_backlog_warn_sec": 30,
+        "turn_abort_arun_backlog_poll_sec": 5,
         "after_sales_apply_enabled": True,
         "after_sales_apply_return_refund_days": 7,
         "after_sales_apply_card_valid_hours": 48,

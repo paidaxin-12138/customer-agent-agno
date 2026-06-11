@@ -13,7 +13,7 @@ _logger = get_logger("AppShutdown")
 _lock = threading.Lock()
 _done = False
 
-SHUTDOWN_TIMEOUT_SEC = 5.0
+SHUTDOWN_TIMEOUT_SEC = 12.0
 
 
 async def stop_all_services() -> None:
@@ -41,9 +41,23 @@ async def stop_all_services() -> None:
     try:
         from Message.core.consumer import message_consumer_manager
 
-        await message_consumer_manager.stop_all()
+        still_running = [
+            name
+            for name in message_consumer_manager.list_consumers()
+            if (c := message_consumer_manager.get_consumer(name)) and c.is_running()
+        ]
+        if still_running:
+            _logger.warning(
+                "退出时仍有消费者运行中（{}），尝试 cross-loop stop_all",
+                still_running,
+            )
+            try:
+                message_consumer_manager.stop_all_cross_loop()
+            except Exception as e:
+                _logger.warning("stop_all 消费者失败: {}", e)
+        message_consumer_manager.detach_all()
     except Exception as e:
-        _logger.debug("停止消息消费者: {}", e)
+        _logger.debug("清理消息消费者注册表: {}", e)
 
     try:
         from Message.handlers.ai_reply_watchdog import cancel_all_watchdogs
@@ -90,4 +104,28 @@ def shutdown_application() -> None:
     except Exception as exc:
         _logger.debug("chat_messages 缓冲刷新跳过: {}", exc)
     run_stop_all_services_sync(SHUTDOWN_TIMEOUT_SEC)
+    _shutdown_thread_executors()
     _logger.info("应用退出清理完成")
+
+
+def _shutdown_thread_executors() -> None:
+    try:
+        from core.turn_abort import turn_abort_registry
+
+        n = turn_abort_registry.abort_all_active("shutdown")
+        if n:
+            _logger.info("退出前协作 abort {} 个在途 turn", n)
+    except Exception as exc:
+        _logger.debug("turn abort shutdown: {}", exc)
+    try:
+        from core.arun_executor import shutdown_arun_executor
+
+        shutdown_arun_executor(wait=False)
+    except Exception as exc:
+        _logger.debug("shutdown arun executor: {}", exc)
+    try:
+        from utils.agno_tool_offload import shutdown_tool_executor
+
+        shutdown_tool_executor(wait=False)
+    except Exception as exc:
+        _logger.debug("shutdown tool executor: {}", exc)

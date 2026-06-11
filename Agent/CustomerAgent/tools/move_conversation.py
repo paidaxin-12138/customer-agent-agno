@@ -5,6 +5,7 @@ from agno.run import RunContext
 from agno.tools import tool
 from Channel.pinduoduo.utils.API.send_message import SendMessage
 from utils.agent_tool_guard import allow_transfer_tool_call, bind_tool_session_params
+from utils.agno_tool_offload import offload_tool
 from utils.logger_loguru import get_logger
 
 logger = get_logger("TransferConversationTool")
@@ -40,6 +41,7 @@ def _select_best_cs_uid(cs_list: dict, my_cs_uid: str) -> str | None:
     return candidates[0][1]
 
 @tool(name="transfer_conversation", description="将当前会话转接给人工客服。")
+@offload_tool
 def transfer_conversation(
     run_context: RunContext,
     shop_id: str,
@@ -79,6 +81,9 @@ def transfer_conversation(
         if cs_list and isinstance(cs_list, dict):
             cs_uid = _select_best_cs_uid(cs_list, my_cs_uid)
             if cs_uid:
+                from core.turn_abort import check_turn_abort
+
+                check_turn_abort()
                 # 转移会话
                 transfer_result = sender.move_conversation(recipient_uid, cs_uid)
                 if transfer_result and transfer_result.get('success'):

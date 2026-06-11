@@ -162,7 +162,7 @@ async def dispatch_inbound_message(
         except RuntimeError as qerr:
             if "Queue is full" in str(qerr):
                 log.error(
-                    "{} 队列已满，消息丢弃 queue={} msg_id={} from_uid={}",
+                    "{} 队列已满且 dead-letter 未写入，消息丢失 queue={} msg_id={} from_uid={}",
                     tag,
                     queue_name,
                     pdd_message.msg_id,
@@ -177,6 +177,15 @@ async def dispatch_inbound_message(
                 queue_name,
                 pdd_message.msg_id,
                 from_uid,
+            )
+            return
+        if str(wrapper_id).startswith("dead-letter:"):
+            log.warning(
+                "{} 已写入 dead-letter queue={} msg_id={} id={}",
+                tag,
+                queue_name,
+                pdd_message.msg_id,
+                wrapper_id,
             )
             return
         log.info(

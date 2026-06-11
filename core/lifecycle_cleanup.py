@@ -235,5 +235,12 @@ def run_lifecycle_cleanup() -> Dict[str, int]:
             except OSError as e:
                 _logger.error("删除临时文件失败 {}: {}", f, e)
 
+    try:
+        from Message.dead_letter import purge_old_dead_letters
+
+        stats["dead_letters_purged"] = purge_old_dead_letters()
+    except Exception as e:
+        _logger.debug("dead-letter 清理跳过: {}", e)
+
     _logger.info("生命周期清理完成: {}", stats)
     return stats

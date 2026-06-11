@@ -5,12 +5,14 @@ from agno.run import RunContext
 from agno.tools import tool
 from Channel.pinduoduo.utils.API.send_message import SendMessage
 from utils.agent_tool_guard import bind_tool_session_params, validate_shop_goods_id
+from utils.agno_tool_offload import offload_tool
 from utils.logger_loguru import get_logger
 
 logger = get_logger("SendGoodsLinkTool")
 
 
 @tool(name="send_goods_link", description="向用户发送商品卡片链接，用于客服主动推荐商品。")
+@offload_tool
 def send_goods_link(
     run_context: RunContext,
     recipient_uid: str,
@@ -55,6 +57,10 @@ def send_goods_link(
         if not valid:
             logger.info("send_goods_link 商品校验未通过 goods_id={}: {}", goods_id, verify_msg)
             return f"发送失败：{verify_msg}"
+
+        from core.turn_abort import check_turn_abort
+
+        check_turn_abort()
 
         sender = SendMessage(shop_id, user_id)
         result = sender.send_mallGoodsCard(recipient_uid, goods_id, biz_type=2)

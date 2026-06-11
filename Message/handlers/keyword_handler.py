@@ -150,17 +150,20 @@ class KeywordDetectionHandler(BaseHandler):
                 except Exception as e:
                     self.logger.debug(f"emit_human_assist 跳过: {e}")
                 if not all([shop_id, user_id, from_uid]):
+                    metadata["_handler_resolved_without_outbound"] = True
                     return True
 
             if not all([shop_id, user_id, from_uid]):
                 return False
 
-            if await transfer_to_available_cs_async(shop_id, user_id, from_uid):
+            if await transfer_to_available_cs_async(
+                shop_id, user_id, from_uid, context=context, metadata=metadata
+            ):
                 self.logger.info("会话已成功转接给其他客服")
                 return True
 
             if wants_bus:
-                await send_text_to_buyer(
+                ok = await send_text_to_buyer(
                     shop_id,
                     user_id,
                     from_uid,
@@ -168,7 +171,7 @@ class KeywordDetectionHandler(BaseHandler):
                     context=context,
                     metadata=metadata,
                 )
-                return True
+                return bool(ok)
 
             return False
 

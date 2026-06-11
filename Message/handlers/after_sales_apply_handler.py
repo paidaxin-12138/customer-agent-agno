@@ -588,12 +588,16 @@ class AfterSalesApplyHandler(BaseHandler):
             self.logger.debug(f"emit_human_assist: {e}")
 
         if notice:
-            await self._send_text(shop_id, user_id, from_uid, notice, metadata)
+            await self._send_text(
+                shop_id, user_id, from_uid, notice, metadata=metadata, context=context
+            )
 
         try:
             from Message.handlers.channel_send import transfer_to_available_cs_async
 
-            await transfer_to_available_cs_async(shop_id, user_id, from_uid)
+            await transfer_to_available_cs_async(
+                shop_id, user_id, from_uid, context=context, metadata=metadata
+            )
         except Exception as e:
             self.logger.debug(f"转接会话: {e}")
 
@@ -604,11 +608,18 @@ class AfterSalesApplyHandler(BaseHandler):
         from_uid: Any,
         reply: str,
         metadata: Optional[Dict[str, Any]] = None,
+        *,
+        context: Optional[Context] = None,
     ) -> None:
         if not reply:
             return
         ok = await self.send_text_to_buyer(
-            shop_id, user_id, from_uid, reply, metadata=metadata
+            shop_id,
+            user_id,
+            from_uid,
+            reply,
+            context=context,
+            metadata=metadata,
         )
         if not ok:
             self.logger.error("售后话术发送失败")

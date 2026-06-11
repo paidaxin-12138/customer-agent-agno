@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import threading
+from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
@@ -302,17 +303,25 @@ class KnowledgeStorageMixin:
         doc["created_at"] = datetime.now().isoformat(timespec="seconds")
 
     def _save_documents(self) -> None:
-        """将文档数据持久化到本地 JSON。"""
+        """将文档数据持久化到本地 JSON（原子 replace）。"""
         with self._global_io_lock:
+            tmp_path = None
             try:
                 for d in self.documents:
                     self._ensure_doc_created_at(d)
                 self._store_file.parent.mkdir(parents=True, exist_ok=True)
-                self._store_file.write_text(
-                    json.dumps(self.documents, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
+                payload = json.dumps(self.documents, ensure_ascii=False, indent=2)
+                tmp_path = self._store_file.with_suffix(
+                    self._store_file.suffix + ".tmp"
                 )
+                tmp_path.write_text(payload, encoding="utf-8")
+                import os
+
+                os.replace(tmp_path, self._store_file)
             except OSError as exc:
+                if tmp_path is not None:
+                    with suppress(OSError):
+                        tmp_path.unlink(missing_ok=True)
                 self.logger.warning("知识库 JSON 保存失败: {}", exc)
 
     def _init_embedder_client(self) -> Optional[OpenAI]:

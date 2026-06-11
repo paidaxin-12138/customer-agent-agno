@@ -87,6 +87,10 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
         self._hub.list_changed.connect(self._on_hub_list_changed)
         self._hub.message_logged.connect(self._on_hub_message_logged)
 
+        self._hub_refresh_timer = QTimer(self)
+        self._hub_refresh_timer.setSingleShot(True)
+        self._hub_refresh_timer.timeout.connect(self._do_hub_list_refresh)
+
         from core.chat_sync import ChatSyncService
         from config import get_config
 
@@ -166,11 +170,15 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
 
     def closeEvent(self, event):
         try:
+            self._hub_refresh_timer.stop()
+        except Exception:
+            pass
+        try:
             self._sync.stop()
             self._hub.list_changed.disconnect(self._on_hub_list_changed)
             self._hub.message_logged.disconnect(self._on_hub_message_logged)
             self._human_bus.buyer_conversation_ended.disconnect(self._on_buyer_conversation_ended)
-        except TypeError as e:
+        except (TypeError, RuntimeError) as e:
             self.logger.debug("closeEvent 断开 hub 信号: {}", e)
         try:
             self.input_edit.removeEventFilter(self)
@@ -635,6 +643,14 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
         self._refresh_session_trees()
 
     def _on_hub_list_changed(self, _account_key: str):
+        try:
+            debounce_ms = int(get_config("ui.hub_list_refresh_debounce_ms", 300) or 300)
+        except (TypeError, ValueError):
+            debounce_ms = 300
+        debounce_ms = max(50, min(debounce_ms, 2000))
+        self._hub_refresh_timer.start(debounce_ms)
+
+    def _do_hub_list_refresh(self):
         self._reload_accounts_from_db()
         self.account_list.reload(self._filter_account_id)
         self._refresh_session_trees()

@@ -87,7 +87,9 @@ class BuyerEmotionHandler(BaseHandler):
                 self.logger.debug(f"emit_human_assist(buyer_emotion_escalate): {e}")
 
             if all([shop_id, user_id, from_uid]):
-                if await transfer_to_available_cs_async(shop_id, user_id, from_uid):
+                if await transfer_to_available_cs_async(
+                    shop_id, user_id, from_uid, context=context, metadata=metadata
+                ):
                     self.logger.info("情绪波动达阈值，会话已转接")
                     return True
             await self.log_message(
@@ -95,6 +97,8 @@ class BuyerEmotionHandler(BaseHandler):
                 "情绪波动转人工",
                 f"count={count} text={text[:80]}",
             )
+            if metadata.get("_outbound_comfort_sent"):
+                metadata["_handler_resolved_without_outbound"] = True
             return True
 
         try:

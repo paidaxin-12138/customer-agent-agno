@@ -19,13 +19,17 @@ class BaseHandler(MessageHandler):
         super().__init__()
         self.name = name or self.__class__.__name__
 
-    def _stage_allowed(self, context: Context) -> bool:
+    def _stage_allowed(
+        self, context: Context, metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
         from Message.core.handlers import stage_allowed_for_context
 
-        return stage_allowed_for_context(context, self.allowed_stages)
+        return stage_allowed_for_context(context, self.allowed_stages, metadata)
 
-    def can_handle(self, context: Context) -> bool:
-        if not self._stage_allowed(context):
+    def can_handle(
+        self, context: Context, metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        if not self._stage_allowed(context, metadata):
             return False
         return self._can_handle_impl(context)
 

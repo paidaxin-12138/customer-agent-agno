@@ -34,6 +34,12 @@ def _clear_qt_process_singletons() -> None:
         ChatImageCache._instance = None
     except Exception:
         pass
+    try:
+        import core.human_assist_bus as hab_mod
+
+        hab_mod._BUS = None
+    except Exception:
+        pass
 
 
 @pytest.fixture(autouse=True)

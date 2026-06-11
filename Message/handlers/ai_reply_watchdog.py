@@ -69,11 +69,16 @@ def resolve_session_key(
     shop_id = str(meta.get("shop_id") or "")
     user_id = str(meta.get("user_id") or "")
     buyer_uid = meta.get("from_uid")
-    if not buyer_uid and context is not None:
+    if context is not None:
         try:
             ku = getattr(context, "kwargs", None)
-            if ku and getattr(ku, "from_uid", None):
-                buyer_uid = ku.from_uid
+            if ku:
+                if not shop_id:
+                    shop_id = str(getattr(ku, "shop_id", None) or "")
+                if not user_id:
+                    user_id = str(getattr(ku, "user_id", None) or "")
+                if not buyer_uid and getattr(ku, "from_uid", None):
+                    buyer_uid = ku.from_uid
         except Exception:
             pass
     if not buyer_uid and context is not None:

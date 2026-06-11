@@ -333,7 +333,7 @@ class ConversationHub(QObject):
                 if st0 is not None and (st0.nickname or "").strip():
                     buyer_nick_for_db = st0.nickname
 
-        synced = False
+        persisted = False
         try:
             from database.chat_persist import (
                 persist_customer_from_context,
@@ -379,17 +379,19 @@ class ConversationHub(QObject):
                     ts,
                     context=context,
                 )
-            synced = self._sync_from_db(
-                account_key, channel_name, shop_id, user_id, peer_uid
-            )
+            persisted = True
+            try:
+                from database.chat_message_buffer import flush_chat_message_buffer
+
+                flush_chat_message_buffer()
+            except Exception as flush_exc:
+                _hub_log.debug("record_from_context flush 跳过: {}", flush_exc)
         except Exception as e:
             _hub_log.warning("persist from context 失败: {}", e)
 
         with self._lock:
             self._prune_memory_cache()
-        if synced:
-            self._emit_hub_updates(account_key, peer_uid, role, preview, ts)
-        else:
+        if persisted:
             self._refresh_or_touch(
                 account_key,
                 channel_name,
@@ -400,7 +402,14 @@ class ConversationHub(QObject):
                 preview=preview,
                 role=role,
                 ts=ts,
+                default_nickname="买家",
                 mall_cs=is_mall_cs,
+            )
+        else:
+            _hub_log.warning(
+                "persist 未成功，Hub 跳过内存更新 account={} peer={}",
+                account_key,
+                peer_uid,
             )
 
     def _emit_hub_updates(
@@ -471,17 +480,11 @@ class ConversationHub(QObject):
                 ts=ts,
             )
         except Exception as e:
-            _hub_log.warning("persist platform civility 失败: {}", e)
-            self._refresh_or_touch(
+            _hub_log.warning(
+                "persist platform civility 失败，Hub 跳过内存更新 account={} peer={}: {}",
                 account_key,
-                channel_name,
-                shop_id,
-                user_id,
                 peer_uid,
-                nickname=nickname or "买家",
-                preview=raw_preview,
-                role="system",
-                ts=ts,
+                e,
             )
 
     def notify_persisted_message(
@@ -523,26 +526,26 @@ class ConversationHub(QObject):
         try:
             from database.chat_persist import persist_human_message
 
-            if persist_human_message(
+            sid = persist_human_message(
                 channel_name,
                 shop_id,
                 seller_user_id,
                 username,
                 customer_uid,
                 text,
-            ) is not None:
+            )
+            if sid is not None:
                 return
+            _hub_log.warning(
+                "persist_human_message 返回 None，Hub 跳过内存更新 buyer={}",
+                customer_uid,
+            )
         except Exception as e:
-            _hub_log.warning("persist_human_message 失败: {}", e)
-        self.notify_persisted_message(
-            channel_name,
-            shop_id,
-            seller_user_id,
-            username,
-            customer_uid,
-            text,
-            role="agent",
-        )
+            _hub_log.warning(
+                "persist_human_message 失败，Hub 跳过内存更新 buyer={}: {}",
+                customer_uid,
+                e,
+            )
 
     def get_conversation_rows(self, account_key: str) -> List[Dict[str, Any]]:
         account_id = self._account_id_by_key.get(account_key)

@@ -111,6 +111,8 @@ class PDDChannelRuntime:
     heartbeat_tasks: Dict[str, asyncio.Task]
     ws_connections: Dict[str, Any]
     processing_tasks: Set[asyncio.Task]
+    processing_task_payloads: Dict[asyncio.Task, Any]
+    processing_task_queue_names: Dict[asyncio.Task, str]
     resource_manager: Any
     business_hours: Any
     message_semaphore: asyncio.Semaphore
@@ -147,6 +149,8 @@ def runtime_from_channel(channel: Any) -> PDDChannelRuntime:
         heartbeat_tasks=channel._heartbeat_tasks,
         ws_connections=channel._ws_connections,
         processing_tasks=channel.processing_tasks,
+        processing_task_payloads=channel.processing_task_payloads,
+        processing_task_queue_names=channel.processing_task_queue_names,
         resource_manager=channel.resource_manager,
         business_hours=channel.businessHours,
         message_semaphore=channel.message_semaphore,
@@ -282,6 +286,8 @@ async def run_account_ws_connect(
                 heartbeat_config=runtime.heartbeat_config,
                 heartbeat_tasks=runtime.heartbeat_tasks,
                 processing_tasks=runtime.processing_tasks,
+                processing_task_payloads=runtime.processing_task_payloads,
+                processing_task_queue_names=runtime.processing_task_queue_names,
                 status_manager=runtime.status_manager,
                 on_message=lambda msg: on_inbound(
                     msg, shop_id, user_id, username, queue_name

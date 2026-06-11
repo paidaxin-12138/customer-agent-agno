@@ -40,10 +40,15 @@ class HumanAssistBus(QObject):
 
 def get_human_assist_bus(parent=None) -> HumanAssistBus:
     global _BUS
+    if _BUS is not None:
+        try:
+            if parent is not None and _BUS.parent() is None:
+                _BUS.setParent(parent)
+        except RuntimeError:
+            _BUS = None
     if _BUS is None:
         _BUS = HumanAssistBus(parent)
         try:
-            from PyQt6.QtCore import QThread
             from PyQt6.QtWidgets import QApplication
 
             app = QApplication.instance()
@@ -51,8 +56,6 @@ def get_human_assist_bus(parent=None) -> HumanAssistBus:
                 _BUS.moveToThread(app.thread())
         except Exception:
             pass
-    elif parent is not None and _BUS.parent() is None:
-        _BUS.setParent(parent)
     return _BUS
 
 

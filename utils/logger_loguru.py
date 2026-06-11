@@ -152,6 +152,17 @@ def get_business_logger(module_name: str) -> BusinessLogger:
     """获取业务日志记录器实例"""
     return BusinessLogger(module_name)
 
+
+def _ui_log_redact_filter(record) -> bool:
+    """UI 日志 sink 脱敏（与 production loguru filter 一致）。"""
+    try:
+        from utils.logging_setup import _loguru_redact_filter
+
+        return _loguru_redact_filter(record)
+    except Exception:
+        return True
+
+
 # UI集成部分
 class UILogHandler(QObject):
     """UI日志处理器：延迟注册 loguru sink，销毁时自动卸载。"""
@@ -190,7 +201,12 @@ class UILogHandler(QObject):
             except RuntimeError:
                 inst.uninstall()
 
-        self.handler_id = logger.add(ui_sink, level="DEBUG", catch=True)
+        self.handler_id = logger.add(
+            ui_sink,
+            level="DEBUG",
+            catch=True,
+            filter=_ui_log_redact_filter,
+        )
 
     def uninstall(self) -> None:
         """从 loguru 移除 sink，避免 Qt 对象销毁后仍被回调。"""
