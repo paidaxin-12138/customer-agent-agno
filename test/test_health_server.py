@@ -23,11 +23,15 @@ async def test_health_endpoint():
 
 
 @pytest.mark.asyncio
-async def test_ready_endpoint_returns_json():
+async def test_ready_endpoint_returns_json(monkeypatch):
     from aiohttp import ClientSession
 
     from core.health_server import start_health_server, stop_health_server
 
+    monkeypatch.setattr(
+        "core.health_server._protect_sensitive_health_endpoints",
+        lambda: False,
+    )
     await start_health_server("127.0.0.1", 18082)
     try:
         async with ClientSession() as session:
@@ -69,4 +73,32 @@ async def test_ready_requires_token_when_configured(monkeypatch):
                 assert resp.status == 200
     finally:
         monkeypatch.delenv("HEALTH_CHECK_TOKEN", raising=False)
+        await stop_health_server()
+
+
+@pytest.mark.asyncio
+async def test_ready_metrics_denied_without_token_when_protected(monkeypatch):
+    from aiohttp import ClientSession
+
+    from core.health_server import start_health_server, stop_health_server
+
+    monkeypatch.delenv("HEALTH_CHECK_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "core.health_server._protect_sensitive_health_endpoints",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "core.health_server._configured_health_token",
+        lambda: "",
+    )
+    await start_health_server("127.0.0.1", 18084)
+    try:
+        async with ClientSession() as session:
+            async with session.get("http://127.0.0.1:18084/health") as resp:
+                assert resp.status == 200
+            async with session.get("http://127.0.0.1:18084/ready") as resp:
+                assert resp.status == 401
+            async with session.get("http://127.0.0.1:18084/metrics") as resp:
+                assert resp.status == 401
+    finally:
         await stop_health_server()

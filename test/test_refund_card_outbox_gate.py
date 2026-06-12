@@ -131,6 +131,46 @@ def test_note_refund_card_mms_success_records_pending(refund_db):
     assert row["api_success"] is True
 
 
+def test_retry_refund_card_not_skipped_by_text_receipt(outbox_db, monkeypatch):
+    """同会话有文本回执时，退货卡仍应尝试 MMS（或门禁），不能误 mark_sent。"""
+    from database.outbound_outbox import create_pending, get_row, mark_failed
+
+    oid = create_pending(
+        session_id=21,
+        account_id=10,
+        channel_name="pinduoduo",
+        shop_id="s1",
+        user_id="u1",
+        buyer_uid="b1",
+        content="[refund_apply] order=O1",
+        message_kind="refund_apply_card",
+        payload={
+            "order_sn": "O1",
+            "after_sales_type": 1,
+            "question_type": 0,
+            "refund_amount": 100,
+            "user_ship_status": 0,
+        },
+    )
+    row = get_row(int(oid))
+    assert row is not None
+    mark_failed(int(oid), "prev")
+    row = get_row(int(oid))
+
+    monkeypatch.setattr(
+        "utils.outbound_receipt.has_recent_outbound_receipt",
+        lambda *args, **kwargs: True,
+    )
+    execute_mock = MagicMock(return_value=(True, REFUND_GATE_SKIP_PREFIX))
+    with patch(
+        "utils.outbound_mms_dispatch.execute_outbox_mms_send",
+        execute_mock,
+    ):
+        ok = retry_outbox_row_sync(row)
+    assert ok is True
+    execute_mock.assert_called_once()
+
+
 def test_retry_abandons_when_gate_blocked(outbox_db, monkeypatch):
     from database.outbound_outbox import create_pending, get_row, mark_failed
 

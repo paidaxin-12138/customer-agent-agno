@@ -19,8 +19,19 @@ STATUS_PENDING = "pending"
 STATUS_EXPIRED = "expired"
 STATUS_FAILED = "failed"
 
-# send 成功但尚未收到 type=19 时，短时内视为已提交，避免连发
-_PENDING_STUB_SEC = 120
+def _pending_stub_sec() -> float:
+    """send 成功但尚未收到 type=19 时，视为已提交的最长等待（秒）。"""
+    try:
+        raw = config.get("chat.after_sales_apply_pending_stub_sec")
+        if raw is not None and str(raw).strip() != "":
+            return max(120.0, min(float(raw), 172800.0))
+    except (TypeError, ValueError):
+        pass
+    try:
+        hours = int(config.get("chat.after_sales_apply_card_valid_hours", 48) or 48)
+    except (TypeError, ValueError):
+        hours = 48
+    return max(120.0, min(float(max(1, hours)) * 3600.0, 172800.0))
 
 
 class RefundApplyGate(str, Enum):
@@ -99,8 +110,15 @@ def check_refund_apply_gate(shop_id: str, order_sn: str) -> RefundApplyGate:
             )
             return RefundApplyGate.EXPIRED_NOTICE
         # 已 send、尚未收到 type=19 的 valid_time
-        if now - _created_ts(row.get("created_at")) < _PENDING_STUB_SEC:
+        age = now - _created_ts(row.get("created_at"))
+        if age < _pending_stub_sec():
             return RefundApplyGate.PENDING_NOTICE
+        db_manager.mark_refund_apply_expired(
+            shop_id,
+            order_sn,
+            buyer_uid=row.get("buyer_uid"),
+        )
+        return RefundApplyGate.EXPIRED_NOTICE
 
     return RefundApplyGate.SEND
 
@@ -111,6 +129,19 @@ def gate_notice(gate: RefundApplyGate) -> str:
     if gate == RefundApplyGate.EXPIRED_NOTICE:
         return _expired_notice()
     return ""
+
+
+def refund_card_action_notice(action: RefundCardSendAction) -> str:
+    """evaluate_refund_card_send_gate 非 SEND 时的买家提示。"""
+    if action == RefundCardSendAction.SKIP_ALREADY_SENT:
+        return _pending_notice()
+    if action == RefundCardSendAction.BLOCK_EXPIRED:
+        return _expired_notice()
+    return ""
+
+
+def is_refund_gate_skip_error(err: Optional[str]) -> bool:
+    return str(err or "") == REFUND_GATE_SKIP_PREFIX
 
 
 def evaluate_refund_card_send_gate(

@@ -122,11 +122,7 @@ def _prepare_outbox(
     payload: Optional[Dict[str, Any]] = None,
 ) -> Optional[int]:
     try:
-        from database.outbound_outbox import (
-            claim_for_send,
-            create_pending,
-            outbox_enabled,
-        )
+        from database.outbound_outbox import create_pending, outbox_enabled
 
         if not outbox_enabled():
             return None
@@ -155,11 +151,22 @@ def _prepare_outbox(
         )
         if outbox_id:
             metadata["_outbound_outbox_id"] = outbox_id
-            claim_for_send(int(outbox_id))
         return outbox_id
     except Exception as e:
         _logger.debug("outbox create 跳过: {}", e)
         return None
+
+
+def _claim_outbox_before_mms(outbox_id: Optional[int]) -> None:
+    """MMS 调用前 claim，避免长时间卡在 processing（claim 不再放在 create 后）。"""
+    if not outbox_id:
+        return
+    try:
+        from database.outbound_outbox import claim_for_send
+
+        claim_for_send(int(outbox_id))
+    except Exception as e:
+        _logger.debug("outbox claim 跳过: {}", e)
 
 
 def _finalize_outbox_success(
@@ -174,6 +181,7 @@ def _finalize_outbox_success(
     sender_type: str,
     notify_watchdog: bool,
     message_kind: str = "text",
+    record_receipt: bool = True,
 ) -> None:
     meta["_outbound_comfort_sent"] = True
 
@@ -208,24 +216,25 @@ def _finalize_outbox_success(
         except Exception as e:
             _logger.debug("outbox mark_sent: {}", e)
 
-    try:
-        from Message.handlers.ai_reply_watchdog import resolve_session_key
-        from utils.outbound_receipt import record_outbound_receipt
+    if record_receipt:
+        try:
+            from Message.handlers.ai_reply_watchdog import resolve_session_key
+            from utils.outbound_receipt import record_outbound_receipt
 
-        send_meta = build_send_metadata(
-            shop_id, user_id, from_uid, metadata=meta
-        )
-        session_key = resolve_session_key(context, send_meta)
-        if session_key:
-            record_outbound_receipt(
-                session_key,
-                buyer_uid=str(from_uid),
-                shop_id=str(shop_id),
-                user_id=str(user_id),
-                channel_name=str(send_meta.get("channel_name") or "pinduoduo"),
+            send_meta = build_send_metadata(
+                shop_id, user_id, from_uid, metadata=meta
             )
-    except Exception as e:
-        _logger.debug("record_outbound_receipt: {}", e)
+            session_key = resolve_session_key(context, send_meta)
+            if session_key:
+                record_outbound_receipt(
+                    session_key,
+                    buyer_uid=str(from_uid),
+                    shop_id=str(shop_id),
+                    user_id=str(user_id),
+                    channel_name=str(send_meta.get("channel_name") or "pinduoduo"),
+                )
+        except Exception as e:
+            _logger.debug("record_outbound_receipt: {}", e)
 
     if notify_watchdog:
         try:
@@ -271,6 +280,7 @@ async def send_structured_outbound(
     )
 
     try:
+        _claim_outbox_before_mms(outbox_id)
         from utils.outbound_mms_dispatch import execute_outbox_mms_send
 
         row = {
@@ -295,6 +305,18 @@ async def send_structured_outbound(
                 mark_failed(int(outbox_id), err or "send_failed")
             return False, {"success": False, "error_msg": err}
 
+        from utils.merchant_refund_apply_record import is_refund_gate_skip_error
+
+        skipped_duplicate = (
+            message_kind == "refund_apply_card" and is_refund_gate_skip_error(err)
+        )
+        if skipped_duplicate:
+            _logger.info(
+                "send_structured_outbound 退货卡跳过重复 buyer={} kind={}",
+                from_uid,
+                message_kind,
+            )
+
         _finalize_outbox_success(
             outbox_id=outbox_id,
             shop_id=shop_id,
@@ -304,10 +326,14 @@ async def send_structured_outbound(
             meta=meta,
             context=context,
             sender_type=sender_type,
-            notify_watchdog=notify_watchdog,
+            notify_watchdog=notify_watchdog and not skipped_duplicate,
             message_kind=message_kind,
+            record_receipt=not skipped_duplicate,
         )
-        return True, {"success": True}
+        result: Dict[str, Any] = {"success": True, "skipped_duplicate": skipped_duplicate}
+        if skipped_duplicate and isinstance(payload, dict):
+            result["order_sn"] = payload.get("order_sn")
+        return True, result
     except Exception as e:
         _logger.error("send_structured_outbound 异常 kind={}: {}", message_kind, e)
         if outbox_id:
@@ -461,8 +487,10 @@ def send_outbound_sync(
         "sender_type": sender_type,
         "login_username": meta.get("username") or meta.get("login_username") or "",
     }
+    from utils.merchant_refund_apply_record import is_refund_gate_skip_error
     from utils.outbound_mms_dispatch import execute_outbox_mms_send
 
+    _claim_outbox_before_mms(outbox_id)
     ok, err = execute_outbox_mms_send(row)
     if not ok:
         if outbox_id:
@@ -470,6 +498,9 @@ def send_outbound_sync(
 
             mark_failed(int(outbox_id), err or "send_failed")
         return False, err or "send_failed"
+    skipped_duplicate = (
+        message_kind == "refund_apply_card" and is_refund_gate_skip_error(err)
+    )
     _finalize_outbox_success(
         outbox_id=outbox_id,
         shop_id=shop_id,
@@ -479,8 +510,9 @@ def send_outbound_sync(
         meta=meta,
         context=context,
         sender_type=sender_type,
-        notify_watchdog=notify_watchdog,
+        notify_watchdog=notify_watchdog and not skipped_duplicate,
         message_kind=message_kind,
+        record_receipt=not skipped_duplicate,
     )
     return True, ""
 

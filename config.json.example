@@ -192,6 +192,7 @@
     "health_host": "127.0.0.1",
     "health_port": 8080,
     "health_token": "",
+    "health_protect_sensitive_endpoints": true,
     "backup_enabled": true,
     "backup_hour": 2,
     "backup_minute": 0,

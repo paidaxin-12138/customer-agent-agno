@@ -423,21 +423,23 @@ class AfterSalesApplyHandler(BaseHandler):
             return self._finish(context, metadata, release_stage=True)
 
         from utils.merchant_refund_apply_record import (
-            RefundApplyGate,
-            check_refund_apply_gate,
-            gate_notice,
+            RefundCardSendAction,
+            evaluate_refund_card_send_gate,
+            refund_card_action_notice,
             save_failed_apply,
-            save_pending_after_send,
         )
 
-        gate = check_refund_apply_gate(str(shop_id), order_sn)
-        if gate != RefundApplyGate.SEND:
-            notice = gate_notice(gate)
+        gate_action = evaluate_refund_card_send_gate(
+            str(shop_id), str(from_uid), order_sn
+        )
+        if gate_action != RefundCardSendAction.SEND:
+            notice = refund_card_action_notice(gate_action)
             self.logger.info(
-                f"跳过发卡 order_sn={order_sn} gate={gate.value} "
-                f"（本地已有代申请记录）"
+                f"跳过发卡 order_sn={order_sn} gate_action={gate_action.value} "
+                f"（本地/内存已有代申请记录）"
             )
-            await self._send_text(shop_id, user_id, from_uid, notice)
+            if notice:
+                await self._send_text(shop_id, user_id, from_uid, notice)
             return self._finish(context, metadata, release_stage=True)
 
         from Channel.pinduoduo.utils.API.chat_orders import build_ask_refund_apply_params
@@ -511,21 +513,24 @@ class AfterSalesApplyHandler(BaseHandler):
             ok = False
 
         if ok:
-            record_id = save_pending_after_send(
-                str(shop_id),
-                str(from_uid),
-                order_sn,
-                after_sales_type=card_params.after_sales_type,
-                refund_amount_fen=card_params.refund_amount,
+            skipped_dup = (
+                isinstance(result, dict) and result.get("skipped_duplicate") is True
             )
-            self.logger.info(
-                f"代申请已提交 pending order_sn={order_sn} record_id={record_id} "
-                f"（待 type=19 补全 valid_time）"
-            )
-            _set_cooldown(str(shop_id), str(from_uid), cooldown_sec)
-            from Message.handlers.channel_send import notify_outbound_from_metadata
+            if skipped_dup:
+                self.logger.info(
+                    f"退货卡 MMS 跳过重复 order_sn={order_sn} "
+                    f"（outbox/内存门禁，未再次调用平台）"
+                )
+                _set_cooldown(str(shop_id), str(from_uid), cooldown_sec)
+            else:
+                self.logger.info(
+                    f"代申请已提交 order_sn={order_sn} "
+                    f"（pending 由 MMS 成功路径记录，待 type=19 补全 valid_time）"
+                )
+                _set_cooldown(str(shop_id), str(from_uid), cooldown_sec)
+                from Message.handlers.channel_send import notify_outbound_from_metadata
 
-            notify_outbound_from_metadata(context=context, metadata=metadata)
+                notify_outbound_from_metadata(context=context, metadata=metadata)
             # 跟发文案改在 type=19 下行确认卡片未过期后再发，避免「先教操作、卡却已过期」
         else:
             err_msg = None

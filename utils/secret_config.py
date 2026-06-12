@@ -73,7 +73,20 @@ def check_health_exposure(*, strict: bool = False) -> tuple[List[str], List[str]
         os.getenv("HEALTH_CHECK_TOKEN", "").strip()
         or str(get_config("production.health_token") or "").strip()
     )
-    if host in ("127.0.0.1", "::1", "localhost") or token:
+    if host in ("127.0.0.1", "::1", "localhost"):
+        try:
+            protect = bool(
+                get_config("production.health_protect_sensitive_endpoints", True)
+            )
+        except Exception:
+            protect = True
+        if protect and not token:
+            warnings.append(
+                "未设置 HEALTH_CHECK_TOKEN：/ready 与 /metrics 将拒绝匿名访问；"
+                "PM2/探活请配置 Token 或设 production.health_protect_sensitive_endpoints=false"
+            )
+        return errors, warnings
+    if token:
         return errors, warnings
     msg = (
         "production.health_host 已绑定非本机地址且未设置 HEALTH_CHECK_TOKEN；"

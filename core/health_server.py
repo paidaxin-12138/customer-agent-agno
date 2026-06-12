@@ -30,20 +30,39 @@ def _configured_health_token() -> str:
         return ""
 
 
-def _health_auth_ok(request: web.Request) -> bool:
-    """未配置 Token 时保持兼容；配置 Token 后 /health、/ready、/metrics 均需 Bearer 认证。"""
+def _protect_sensitive_health_endpoints() -> bool:
+    """无 Token 时是否拒绝 /ready、/metrics（/health 仍可匿名，仅存活探测）。"""
+    try:
+        from config import get_config
+
+        return bool(
+            get_config("production.health_protect_sensitive_endpoints", True)
+        )
+    except Exception:
+        return True
+
+
+def _health_auth_ok(request: web.Request, path: str) -> bool:
+    """
+    Bearer 认证。
+    未配置 Token 时：/health 允许匿名；/ready、/metrics 默认 401（防泄露 shop_id 等指标）。
+    """
     token = _configured_health_token()
-    if not token:
+    if token:
+        auth = (request.headers.get("Authorization") or "").strip()
+        if auth.lower().startswith("bearer ") and auth[7:].strip() == token:
+            return True
+        return False
+    if path == "/health":
         return True
-    auth = (request.headers.get("Authorization") or "").strip()
-    if auth.lower().startswith("bearer ") and auth[7:].strip() == token:
-        return True
-    return False
+    if _protect_sensitive_health_endpoints():
+        return False
+    return True
 
 
-def _with_health_auth(handler):
+def _with_health_auth(handler, *, path: str):
     async def wrapped(request: web.Request) -> web.Response:
-        if not _health_auth_ok(request):
+        if not _health_auth_ok(request, path):
             return web.json_response(
                 {"error": "unauthorized", "timestamp": int(time.time())},
                 status=401,
@@ -263,19 +282,25 @@ async def start_health_server(host: str = "127.0.0.1", port: int = 8080) -> None
         _logger.error("{}（设置 HEALTH_CHECK_TOKEN 或绑定 127.0.0.1）", msg)
         return
     app = web.Application()
-    app.router.add_get("/health", _with_health_auth(_health_handler))
-    app.router.add_get("/ready", _with_health_auth(_ready_handler))
-    app.router.add_get("/metrics", _with_health_auth(_metrics_handler))
+    app.router.add_get("/health", _with_health_auth(_health_handler, path="/health"))
+    app.router.add_get("/ready", _with_health_auth(_ready_handler, path="/ready"))
+    app.router.add_get("/metrics", _with_health_auth(_metrics_handler, path="/metrics"))
     _runner = web.AppRunner(app)
     await _runner.setup()
     _site = web.TCPSite(_runner, host, port)
     await _site.start()
+    token_hint = "（/ready /metrics 需 Bearer）" if _configured_health_token() else (
+        "（/ready /metrics 默认需 HEALTH_CHECK_TOKEN）"
+        if _protect_sensitive_health_endpoints()
+        else "（/ready /metrics 匿名开放）"
+    )
     _logger.info(
-        "健康检查已启动 http://{}:{}/health , http://{}:{}/ready",
+        "健康检查已启动 http://{}:{}/health , http://{}:{}/ready {}",
         host,
         port,
         host,
         port,
+        token_hint,
     )
 
 

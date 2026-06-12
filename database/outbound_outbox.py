@@ -175,12 +175,18 @@ def mark_sent(outbox_id: int, *, chat_message_id: Optional[int] = None) -> None:
         _log.debug("mark_sent 失败 id={}: {}", outbox_id, e)
 
 
+def _sanitize_error_detail(error: str) -> str:
+    from utils.log_redact import redact_string_value
+
+    return str(redact_string_value(str(error or "")))[:500]
+
+
 def mark_abandoned(outbox_id: int, reason: str = "") -> None:
     """业务上不可再试（如退货卡门禁），标记 dead 且不触发 dead 告警。"""
     path = _db_path()
     if not path or not outbox_id:
         return
-    err = str(reason or "")[:500]
+    err = _sanitize_error_detail(reason)
     try:
         conn = sqlite3.connect(path, timeout=30.0)
         try:
@@ -204,7 +210,7 @@ def mark_failed(outbox_id: int, error: str = "") -> str:
     path = _db_path()
     if not path or not outbox_id:
         return _STATUS_FAILED
-    err = str(error or "")[:500]
+    err = _sanitize_error_detail(error)
     final = _STATUS_FAILED
     try:
         conn = sqlite3.connect(path, timeout=30.0)

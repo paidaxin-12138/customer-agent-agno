@@ -223,6 +223,7 @@ class ProductionConfig(BaseModel):
     health_host: str = "127.0.0.1"
     health_port: int = 8080
     health_token: str = ""
+    health_protect_sensitive_endpoints: bool = True
     backup_enabled: bool = True
     backup_hour: int = 2
     backup_minute: int = 0
@@ -410,6 +411,7 @@ config_base = {
         "after_sales_apply_enabled": True,
         "after_sales_apply_return_refund_days": 7,
         "after_sales_apply_card_valid_hours": 48,
+        "after_sales_apply_pending_stub_sec": None,
         "after_sales_apply_send_card_valid_time": True,
         "after_sales_apply_exchange_max_days": 90,
         "after_sales_apply_after_sales_type": 3,
@@ -593,6 +595,7 @@ config_base = {
         "health_host": "127.0.0.1",
         "health_port": 8080,
         "health_token": "",
+        "health_protect_sensitive_endpoints": True,
         "backup_enabled": True,
         "backup_hour": 2,
         "backup_minute": 0,

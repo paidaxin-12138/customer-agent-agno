@@ -87,6 +87,15 @@ def audit_keyword_change(action: str, keyword: str, *, operator: str = "ui") -> 
     audit_log(action, keyword, f"关键词 {action}: {keyword}", operator=operator)
 
 
+def _mask_identifier(value: str, *, tail: int = 4) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) <= tail:
+        return "***"
+    return f"***{raw[-tail:]}"
+
+
 def audit_refund_card(
     order_sn: str,
     *,
@@ -97,11 +106,15 @@ def audit_refund_card(
 ) -> None:
     audit_log(
         "refund_apply_card_send",
-        order_sn,
+        _mask_identifier(order_sn, tail=6),
         detail or ("发送成功" if success else "发送失败"),
         operator="system",
         severity="info" if success else "warn",
-        extra={"shop_id": shop_id, "buyer_uid": buyer_uid, "api_success": success},
+        extra={
+            "shop_id": shop_id,
+            "buyer_uid": _mask_identifier(buyer_uid),
+            "api_success": success,
+        },
     )
 
 

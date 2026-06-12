@@ -32,17 +32,30 @@ def lock_session_to_human(
         return False
 
     try:
-        from database.session_store import lock_session_human_atomic, refresh_metadata_session
+        from database.session_store import lock_session_human_atomic
 
         ok = lock_session_human_atomic(int(sid))
-        if metadata is not None:
-            refresh_metadata_session(metadata, int(sid))
-            metadata["_human_locked"] = True
-            metadata["ai_mode"] = False
-            metadata["_session_stage"] = "idle"
     except Exception as e:
         _log.warning("lock_session_to_human 失败 session={} reason={}: {}", sid, reason, e)
         return False
+    if not ok:
+        return False
+
+    if metadata is not None:
+        try:
+            from database.session_store import refresh_metadata_session
+
+            refresh_metadata_session(metadata, int(sid))
+        except Exception as e:
+            _log.warning(
+                "lock_session_to_human refresh 失败 session={} reason={}: {}",
+                sid,
+                reason,
+                e,
+            )
+        metadata["_human_locked"] = True
+        metadata["ai_mode"] = False
+        metadata["_session_stage"] = "idle"
 
     try:
         from Message.handlers.ai_reply_watchdog import resolve_session_key

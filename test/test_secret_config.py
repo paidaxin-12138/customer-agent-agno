@@ -56,13 +56,16 @@ def test_health_exposure_warns_without_token(monkeypatch):
     assert any("HEALTH_CHECK_TOKEN" in m for m in msgs)
 
 
-def test_health_localhost_ok(monkeypatch):
+def test_health_localhost_warns_without_token(monkeypatch):
     monkeypatch.delenv("HEALTH_CHECK_TOKEN", raising=False)
     monkeypatch.setattr(
         "utils.secret_config.get_config",
         lambda key, default=None: {
             "production.health_host": "127.0.0.1",
             "production.health_token": "",
+            "production.health_protect_sensitive_endpoints": True,
         }.get(key, default),
     )
-    assert check_health_exposure() == ([], [])
+    errors, warnings = check_health_exposure()
+    assert not errors
+    assert any("HEALTH_CHECK_TOKEN" in w for w in warnings)

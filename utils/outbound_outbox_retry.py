@@ -95,25 +95,30 @@ def retry_outbox_row_sync(row: Dict[str, Any]) -> bool:
         return False
 
     session_key = _session_key_from_row(row)
-    try:
-        from utils.outbound_receipt import has_recent_outbound_receipt
+    kind = str(row.get("message_kind") or "text").strip() or "text"
+    # 结构化卡片（退货卡/商品卡）须走 execute + 订单级门禁，不能因同会话文本回执而跳过。
+    if kind in ("text", "image"):
+        try:
+            from utils.outbound_receipt import has_recent_outbound_receipt
 
-        if session_key and has_recent_outbound_receipt(session_key, within_sec=21600.0):
-            _log.info(
-                "outbox 重试跳过 MMS（已有出站回执）id={} buyer={}",
-                oid,
-                row.get("buyer_uid"),
-            )
-            msg_id = _persist_outbox_content(row)
-            mark_sent(oid, chat_message_id=msg_id)
-            return True
-    except Exception as e:
-        _log.debug("outbox receipt 检查: {}", e)
+            if session_key and has_recent_outbound_receipt(
+                session_key, within_sec=21600.0
+            ):
+                _log.info(
+                    "outbox 重试跳过 MMS（已有出站回执）id={} buyer={} kind={}",
+                    oid,
+                    row.get("buyer_uid"),
+                    kind,
+                )
+                msg_id = _persist_outbox_content(row)
+                mark_sent(oid, chat_message_id=msg_id)
+                return True
+        except Exception as e:
+            _log.debug("outbox receipt 检查: {}", e)
 
     shop_id = str(row.get("shop_id") or "")
     user_id = str(row.get("user_id") or "")
     buyer_uid = str(row.get("buyer_uid") or "")
-    kind = str(row.get("message_kind") or "text").strip() or "text"
     content = str(row.get("content") or "").strip()
     if not all([shop_id, user_id, buyer_uid]):
         mark_failed(oid, "缺少会话参数")
@@ -138,19 +143,22 @@ def retry_outbox_row_sync(row: Dict[str, Any]) -> bool:
             )
             return False
         if ok:
-            try:
-                from utils.outbound_receipt import record_outbound_receipt
+            from utils.merchant_refund_apply_record import is_refund_gate_skip_error
 
-                if session_key:
-                    record_outbound_receipt(
-                        session_key,
-                        buyer_uid=buyer_uid,
-                        shop_id=shop_id,
-                        user_id=user_id,
-                        channel_name=str(row.get("channel_name") or "pinduoduo"),
-                    )
-            except Exception:
-                pass
+            if not is_refund_gate_skip_error(err):
+                try:
+                    from utils.outbound_receipt import record_outbound_receipt
+
+                    if session_key:
+                        record_outbound_receipt(
+                            session_key,
+                            buyer_uid=buyer_uid,
+                            shop_id=shop_id,
+                            user_id=user_id,
+                            channel_name=str(row.get("channel_name") or "pinduoduo"),
+                        )
+                except Exception:
+                    pass
             msg_id = None
             if kind in ("text", "image"):
                 msg_id = _persist_outbox_content(row)
