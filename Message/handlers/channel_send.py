@@ -157,16 +157,20 @@ def _prepare_outbox(
         return None
 
 
-def _claim_outbox_before_mms(outbox_id: Optional[int]) -> None:
-    """MMS 调用前 claim，避免长时间卡在 processing（claim 不再放在 create 后）。"""
+def _claim_outbox_before_mms(outbox_id: Optional[int]) -> bool:
+    """MMS 调用前 claim；失败时勿并发发送。"""
     if not outbox_id:
-        return
+        return True
     try:
         from database.outbound_outbox import claim_for_send
 
-        claim_for_send(int(outbox_id))
+        ok = claim_for_send(int(outbox_id))
+        if not ok:
+            _logger.warning("outbox claim 失败 id={}（可能并发处理中）", outbox_id)
+        return bool(ok)
     except Exception as e:
-        _logger.debug("outbox claim 跳过: {}", e)
+        _logger.debug("outbox claim 异常 id={}: {}", outbox_id, e)
+        return False
 
 
 def _finalize_outbox_success(
@@ -182,8 +186,10 @@ def _finalize_outbox_success(
     notify_watchdog: bool,
     message_kind: str = "text",
     record_receipt: bool = True,
+    mark_comfort_sent: bool = True,
 ) -> None:
-    meta["_outbound_comfort_sent"] = True
+    if mark_comfort_sent:
+        meta["_outbound_comfort_sent"] = True
 
     chat_msg_id: Optional[int] = None
     if outbox_id and not meta.get("_outbox_skip_persist") and message_kind in (
@@ -280,7 +286,11 @@ async def send_structured_outbound(
     )
 
     try:
-        _claim_outbox_before_mms(outbox_id)
+        if outbox_id and not _claim_outbox_before_mms(outbox_id):
+            from database.outbound_outbox import mark_failed
+
+            mark_failed(int(outbox_id), "outbox_claim_failed")
+            return False, {"success": False, "error_msg": "outbox_claim_failed"}
         from utils.outbound_mms_dispatch import execute_outbox_mms_send
 
         row = {
@@ -329,6 +339,7 @@ async def send_structured_outbound(
             notify_watchdog=notify_watchdog and not skipped_duplicate,
             message_kind=message_kind,
             record_receipt=not skipped_duplicate,
+            mark_comfort_sent=not skipped_duplicate,
         )
         result: Dict[str, Any] = {"success": True, "skipped_duplicate": skipped_duplicate}
         if skipped_duplicate and isinstance(payload, dict):
@@ -490,7 +501,11 @@ def send_outbound_sync(
     from utils.merchant_refund_apply_record import is_refund_gate_skip_error
     from utils.outbound_mms_dispatch import execute_outbox_mms_send
 
-    _claim_outbox_before_mms(outbox_id)
+    if outbox_id and not _claim_outbox_before_mms(outbox_id):
+        from database.outbound_outbox import mark_failed
+
+        mark_failed(int(outbox_id), "outbox_claim_failed")
+        return False, "outbox_claim_failed"
     ok, err = execute_outbox_mms_send(row)
     if not ok:
         if outbox_id:
@@ -513,6 +528,7 @@ def send_outbound_sync(
         notify_watchdog=notify_watchdog and not skipped_duplicate,
         message_kind=message_kind,
         record_receipt=not skipped_duplicate,
+        mark_comfort_sent=not skipped_duplicate,
     )
     return True, ""
 

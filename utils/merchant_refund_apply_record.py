@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, Optional
 
@@ -18,20 +17,6 @@ from database.db_manager import db_manager
 STATUS_PENDING = "pending"
 STATUS_EXPIRED = "expired"
 STATUS_FAILED = "failed"
-
-def _pending_stub_sec() -> float:
-    """send 成功但尚未收到 type=19 时，视为已提交的最长等待（秒）。"""
-    try:
-        raw = config.get("chat.after_sales_apply_pending_stub_sec")
-        if raw is not None and str(raw).strip() != "":
-            return max(120.0, min(float(raw), 172800.0))
-    except (TypeError, ValueError):
-        pass
-    try:
-        hours = int(config.get("chat.after_sales_apply_card_valid_hours", 48) or 48)
-    except (TypeError, ValueError):
-        hours = 48
-    return max(120.0, min(float(max(1, hours)) * 3600.0, 172800.0))
 
 
 class RefundApplyGate(str, Enum):
@@ -71,12 +56,6 @@ def _expired_notice() -> str:
     )
 
 
-def _created_ts(created_at: Any) -> float:
-    if isinstance(created_at, datetime):
-        return created_at.timestamp()
-    return time.time()
-
-
 def check_refund_apply_gate(shop_id: str, order_sn: str) -> RefundApplyGate:
     """
     发卡前检查该 order_sn 最近一条记录。
@@ -109,16 +88,8 @@ def check_refund_apply_gate(shop_id: str, order_sn: str) -> RefundApplyGate:
                 buyer_uid=row.get("buyer_uid"),
             )
             return RefundApplyGate.EXPIRED_NOTICE
-        # 已 send、尚未收到 type=19 的 valid_time
-        age = now - _created_ts(row.get("created_at"))
-        if age < _pending_stub_sec():
-            return RefundApplyGate.PENDING_NOTICE
-        db_manager.mark_refund_apply_expired(
-            shop_id,
-            order_sn,
-            buyer_uid=row.get("buyer_uid"),
-        )
-        return RefundApplyGate.EXPIRED_NOTICE
+        # 已 send、尚未收到 type=19 的 valid_time：持续拦截重复发卡，不自动标 expired
+        return RefundApplyGate.PENDING_NOTICE
 
     return RefundApplyGate.SEND
 

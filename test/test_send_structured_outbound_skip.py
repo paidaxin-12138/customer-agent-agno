@@ -39,3 +39,4 @@ async def test_refund_card_skipped_duplicate_flag():
     assert result.get("order_sn") == "O1"
     assert finalize_kwargs.get("record_receipt") is False
     assert finalize_kwargs.get("notify_watchdog") is False
+    assert finalize_kwargs.get("mark_comfort_sent") is False

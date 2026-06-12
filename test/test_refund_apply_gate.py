@@ -63,17 +63,16 @@ def test_gate_send_when_no_record(refund_db):
     assert check_refund_apply_gate("s1", "new-order") == RefundApplyGate.SEND
 
 
-def test_gate_pending_without_valid_time_expires_after_stub(refund_db, monkeypatch):
+def test_gate_pending_without_valid_time_stays_blocked(refund_db, monkeypatch):
     shop, buyer, order = "s1", "b1", "260527-stub"
-    monkeypatch.setattr(rec_mod, "_pending_stub_sec", lambda: 30.0)
     t0 = time.time()
     monkeypatch.setattr(rec_mod.time, "time", lambda: t0)
     refund_db.record_merchant_refund_apply(
         shop, buyer, order, api_success=True, status=STATUS_PENDING
     )
     assert check_refund_apply_gate(shop, order) == RefundApplyGate.PENDING_NOTICE
-    monkeypatch.setattr(rec_mod.time, "time", lambda: t0 + 60.0)
-    assert check_refund_apply_gate(shop, order) == RefundApplyGate.EXPIRED_NOTICE
+    monkeypatch.setattr(rec_mod.time, "time", lambda: t0 + 999999.0)
+    assert check_refund_apply_gate(shop, order) == RefundApplyGate.PENDING_NOTICE
 
 
 def test_update_from_card_push(refund_db):
