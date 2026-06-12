@@ -2,6 +2,7 @@
 # Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
 # https://creativecommons.org/licenses/by-nc/4.0/
 """买家离线自动结案单元测试。"""
+import time
 from unittest.mock import MagicMock, patch
 
 from core.session_idle_closer import SessionIdleCloserService
@@ -30,8 +31,19 @@ def test_idle_closer_run_once_closes_and_notifies():
                     "ui.conversation_hub.get_conversation_hub",
                     return_value=hub,
                 ):
-                    n = svc.run_once()
-    assert n == 1
+                    with patch(
+                        "utils.qt_threading.run_on_main_thread",
+                        side_effect=lambda fn: fn(),
+                    ):
+                        n = svc.run_once()
+                        for _ in range(200):
+                            if (
+                                not svc._scan_running
+                                and hub.list_changed.emit.called
+                            ):
+                                break
+                            time.sleep(0.01)
+    assert n == 0
     mock_close.assert_called_once()
     assert mock_close.call_args.kwargs["idle_seconds"] == 300
     hub.list_changed.emit.assert_called_once_with("pinduoduo:shop:cs")

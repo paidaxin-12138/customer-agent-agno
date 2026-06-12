@@ -67,6 +67,7 @@ class TaskState:
     stage: str = "idle"
     flow_node: str = "idle"
     stage_updated_at: float = 0.0
+    stage_history: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -85,6 +86,9 @@ class TaskState:
             stage_updated_at = float(raw_ts) if raw_ts is not None else 0.0
         except (TypeError, ValueError):
             stage_updated_at = 0.0
+        hist = data.get("stage_history")
+        if not isinstance(hist, list):
+            hist = []
         return cls(
             intent=str(data.get("intent") or "general"),
             last_intent=str(data.get("last_intent") or ""),
@@ -93,6 +97,7 @@ class TaskState:
             stage=stage,
             flow_node=stage,
             stage_updated_at=stage_updated_at,
+            stage_history=list(hist)[-5:],
         )
 
 
@@ -272,6 +277,48 @@ def _touch_stage_timestamp(task: TaskState, new_stage: str) -> None:
         task.stage_updated_at = time.time()
 
 
+def _slots_fingerprint(slots: Dict[str, str]) -> str:
+    if not slots:
+        return ""
+    items = sorted((str(k), str(v)) for k, v in slots.items() if v)
+    return json.dumps(items, ensure_ascii=False)
+
+
+def _append_stage_history(task: TaskState, stage: str) -> None:
+    entry = {
+        "stage": normalize_session_stage(stage),
+        "at": time.time(),
+        "slots_fp": _slots_fingerprint(task.slots),
+    }
+    hist = list(task.stage_history or [])
+    hist.append(entry)
+    task.stage_history = hist[-5:]
+
+
+def _detect_stage_cycle(task: TaskState, new_stage: str) -> bool:
+    """短时间反复进入同一 stage 且无 slots 进展 → 判定为环。"""
+    if not bool(get_config("chat.stage_cycle_detect_enabled", True)):
+        return False
+    try:
+        window = float(get_config("chat.stage_cycle_window_sec", 120) or 120)
+        threshold = int(get_config("chat.stage_cycle_repeat_threshold", 3) or 3)
+    except (TypeError, ValueError):
+        window, threshold = 120.0, 3
+    threshold = max(2, min(threshold, 10))
+    st = normalize_session_stage(new_stage)
+    fp = _slots_fingerprint(task.slots)
+    now = time.time()
+    recent = [
+        h
+        for h in (task.stage_history or [])
+        if isinstance(h, dict)
+        and normalize_session_stage(str(h.get("stage") or "")) == st
+        and now - float(h.get("at") or 0) <= window
+        and str(h.get("slots_fp") or "") == fp
+    ]
+    return len(recent) + 1 >= threshold
+
+
 def _clear_flow_state(task: TaskState) -> None:
     """业务流结束或超时回收时清空槽位与待确认项。"""
     task.slots = {}
@@ -392,6 +439,39 @@ def load_task_state(session_id: int) -> TaskState:
         return TaskState()
 
 
+def transition_session_stage(
+    session_id: int,
+    *,
+    stage: str,
+    source_handler: str,
+    intent: Optional[str] = None,
+    last_intent: Optional[str] = None,
+    slots: Optional[Dict[str, Any]] = None,
+    pending_confirm: Optional[List[str]] = None,
+    clear_flow_state: bool = False,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> TaskState:
+    """Handler 改 stage 的统一入口；必须提供 source_handler。"""
+    handler = str(source_handler or "").strip() or "unknown"
+    if not str(source_handler or "").strip():
+        logger.warning(
+            "transition_session_stage 缺少 source_handler session={} stage={}",
+            session_id,
+            stage,
+        )
+    return update_session_state(
+        session_id,
+        intent=intent,
+        last_intent=last_intent,
+        slots=slots,
+        stage=stage,
+        pending_confirm=pending_confirm,
+        clear_flow_state=clear_flow_state,
+        source_handler=handler,
+        metadata=metadata,
+    )
+
+
 def update_session_state(
     session_id: int,
     *,
@@ -425,7 +505,17 @@ def update_session_state(
             if v is not None and str(v).strip():
                 task.slots[str(k)] = str(v).strip()
     if stage is not None:
-        st = str(stage).strip() or "idle"
+        st = normalize_session_stage(str(stage).strip() or "idle")
+        if _detect_stage_cycle(task, st):
+            logger.warning(
+                "stage 短周期环检测 session={} stage={} → 强制 idle handler={}",
+                session_id,
+                st,
+                source_handler or "?",
+            )
+            st = "idle"
+            _clear_flow_state(task)
+        _append_stage_history(task, st)
         _touch_stage_timestamp(task, st)
         task.stage = st
         task.flow_node = st
@@ -501,13 +591,13 @@ def commit_handler_session_from_context(
             )
         except Exception as e:
             logger.debug(f"commit_handler_session_from_context read prev: {e}")
-    update_session_state(
+    transition_session_stage(
         sid,
         intent=intent,
         stage=effective_stage,
         slots=None if release_stage else slots,
         clear_flow_state=clear_slots,
-        source_handler=source_handler,
+        source_handler=source_handler or "commit_handler_session",
         metadata=metadata,
     )
     ku = getattr(context, "kwargs", None)

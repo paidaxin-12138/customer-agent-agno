@@ -84,6 +84,12 @@ async def connect_with_retry(
                 log.info(
                     f"WebSocket 重连 ({attempt + 1}/{label}): {shop_id}-{username}"
                 )
+            try:
+                from core.ws_reconnect_reconcile import set_auth_connect_is_reconnect
+
+                set_auth_connect_is_reconnect(key, is_reconnect=(attempt > 0))
+            except Exception:
+                pass
             await connect_attempt(
                 shop_id, user_id, username, on_success, on_failure
             )

@@ -6,9 +6,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-from utils.human_transfer_intent import has_explicit_transfer_intent
-
-
 def buyer_message_from_dependencies(deps: Optional[Dict[str, Any]]) -> str:
     if not deps:
         return ""
@@ -54,13 +51,18 @@ def bind_tool_session_params(
 
 def allow_transfer_tool_call(deps: Optional[Dict[str, Any]]) -> Tuple[bool, str]:
     """
-    仅当买家当前轮消息含明确转人工意图时，允许 transfer_conversation 工具。
+    允许模型在判断需转人工时调用 transfer_conversation。
+    仍校验会话上下文完整，防止无绑定或跨会话误转接。
     """
-    text = buyer_message_from_dependencies(deps)
-    if not text:
-        return False, "缺少买家消息上下文，拒绝自动转接"
-    if not has_explicit_transfer_intent(text):
-        return False, "买家未明确要求转人工，拒绝自动转接"
+    dep = deps or {}
+    if not str(dep.get("shop_id") or "").strip():
+        return False, "缺少 shop_id 会话上下文，拒绝转接"
+    if not str(dep.get("user_id") or "").strip():
+        return False, "缺少 user_id 会话上下文，拒绝转接"
+    if not str(dep.get("from_uid") or "").strip():
+        return False, "缺少买家会话上下文，拒绝转接"
+    if not buyer_message_from_dependencies(deps):
+        return False, "缺少买家消息上下文，拒绝转接"
     return True, ""
 
 

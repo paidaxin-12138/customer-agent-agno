@@ -168,6 +168,7 @@ def emit_human_assist(
         "buyer_emotion_alert": "买家情绪波动预警",
         "buyer_emotion_escalate": "买家情绪波动（已转人工）",
         "order_address_change": "买家申请改地址（需确认）",
+        "outbound_dead": "出站消息发送失败（已耗尽重试）",
     }
     note = f"[系统] {labels.get(reason, reason)}"
     meta_copy = dict(metadata) if metadata else {}
@@ -201,6 +202,61 @@ def emit_human_assist(
     from utils.qt_threading import run_on_main_thread
 
     run_on_main_thread(_emit_on_main)
+
+
+def emit_outbox_dead_alert(row: Dict[str, Any]) -> None:
+    """出站 outbox 进入 dead 时通知人工接手。"""
+    try:
+        from database.db_manager import db_manager
+
+        account_id = int(row.get("account_id") or 0)
+        if not account_id:
+            return
+        acc_row = db_manager.get_account_row_by_id(account_id)
+        if not acc_row:
+            return
+        content = str(row.get("content") or "").strip()
+        preview = content[:120] + ("…" if len(content) > 120 else "")
+        err = str(row.get("error_detail") or "").strip()
+        question = f"出站消息发送失败（已耗尽重试）。预览：{preview or '（空）'}"
+        if err:
+            question += f" 错误：{err[:200]}"
+        payload = {
+            "reason": "outbound_dead",
+            "account_id": account_id,
+            "channel_name": acc_row.get("channel_name") or row.get("channel_name") or "pinduoduo",
+            "platform_shop_id": acc_row.get("platform_shop_id") or row.get("shop_id") or "",
+            "seller_user_id": acc_row.get("seller_user_id") or row.get("user_id") or "",
+            "login_username": acc_row.get("username") or row.get("login_username") or "",
+            "shop_name": acc_row.get("shop_name") or "",
+            "buyer_uid": str(row.get("buyer_uid") or ""),
+            "buyer_nickname": "买家",
+            "question": question,
+            "summary": question,
+            "context_type": "outbox_dead",
+            "outbox_id": int(row.get("id") or 0),
+        }
+        note = "[系统] 出站消息发送失败（已耗尽重试）"
+
+        def _emit_on_main() -> None:
+            get_human_assist_bus().assist_requested.emit(payload)
+            _bus_log.info(
+                "已发出出站 dead 告警: outbox_id={} buyer={}",
+                payload.get("outbox_id"),
+                payload.get("buyer_uid"),
+            )
+            try:
+                from database.chat_persist import persist_escalation_system_note
+
+                persist_escalation_system_note(payload, note)
+            except Exception as e:
+                _bus_log.warning("outbox dead persist_escalation_system_note 失败: {}", e)
+
+        from utils.qt_threading import run_on_main_thread
+
+        run_on_main_thread(_emit_on_main)
+    except Exception as e:
+        _bus_log.warning("emit_outbox_dead_alert 失败: {}", e)
 
 
 def emit_buyer_conversation_ended(

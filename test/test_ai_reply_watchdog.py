@@ -21,6 +21,17 @@ async def test_watchdog_epoch_increments_and_mark_delivered():
     w.mark_delivered(key, e2)
     assert w._is_delivered(key, e2)
     assert not w._is_delivered(key, e2 + 1)
+    assert w.was_recently_replied(key, within_sec=300)
+
+
+def test_was_recently_replied_expires(monkeypatch):
+    key = "pinduoduo:s:u:b"
+    base = 1000.0
+    monkeypatch.setattr(w.time, "monotonic", lambda: base)
+    w.mark_delivered(key, 1)
+    assert w.was_recently_replied(key, within_sec=60) is True
+    monkeypatch.setattr(w.time, "monotonic", lambda: base + 61.0)
+    assert w.was_recently_replied(key, within_sec=60) is False
 
 
 def test_escalate_default_150_sec(monkeypatch):

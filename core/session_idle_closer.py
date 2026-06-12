@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import threading
 from typing import List, Tuple
 
 from PyQt6.QtCore import QObject, QTimer
@@ -24,6 +25,8 @@ class SessionIdleCloserService(QObject):
         self._timer = QTimer(self)
         self._timer.setInterval(interval_ms)
         self._timer.timeout.connect(self.run_once)
+        self._scan_lock = threading.Lock()
+        self._scan_running = False
 
     def start(self) -> None:
         if not config.get("chat.session_idle_resolve_enabled", True):
@@ -35,21 +38,44 @@ class SessionIdleCloserService(QObject):
         self._timer.stop()
 
     def run_once(self) -> int:
+        """后台扫描 DB，避免阻塞 Qt 主线程导致界面无响应。"""
         if not config.get("chat.session_idle_resolve_enabled", True):
             return 0
+        with self._scan_lock:
+            if self._scan_running:
+                return 0
+            self._scan_running = True
+
         minutes = int(config.get("chat.session_idle_resolve_minutes", 5) or 5)
         idle_seconds = max(60, minutes * 60)
-        try:
-            closed = db_manager.close_idle_chat_sessions(idle_seconds=idle_seconds)
-        except Exception as e:
-            self.logger.error(f"自动结案扫描失败: {e}")
-            return 0
-        if not closed:
-            return 0
+
+        def _work() -> None:
+            closed: List[Tuple[int, str, str]] = []
+            try:
+                closed = db_manager.close_idle_chat_sessions(idle_seconds=idle_seconds)
+            except Exception as e:
+                self.logger.error(f"自动结案扫描失败: {e}")
+            finally:
+                with self._scan_lock:
+                    self._scan_running = False
+            if not closed:
+                return
+            try:
+                from utils.qt_threading import run_on_main_thread
+
+                run_on_main_thread(lambda: self._after_close(closed, minutes))
+            except Exception as e:
+                self.logger.debug(f"结案 UI 回调调度失败: {e}")
+
+        threading.Thread(target=_work, daemon=True, name="SessionIdleClose").start()
+        return 0
+
+    def _after_close(
+        self, closed: List[Tuple[int, str, str]], minutes: int
+    ) -> None:
         self.logger.info(f"买家离线 {minutes} 分钟，已结案 {len(closed)} 个会话")
         self._notify_ui(closed)
         self._sync_ops_sessions()
-        return len(closed)
 
     def _sync_ops_sessions(self) -> None:
         try:

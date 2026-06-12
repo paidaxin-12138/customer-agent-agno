@@ -18,6 +18,7 @@ _log = get_logger("ChatImageCache")
 
 MAX_CACHED_IMAGES = 20
 _QPIXMAP_CACHE_KB = 20480  # ~20MB
+_THREAD_DRAIN_MS = 8000
 
 _IMAGE_HEADERS = {
     "User-Agent": (
@@ -33,8 +34,8 @@ class _ImageFetchThread(QThread):
     loaded = pyqtSignal(str, QPixmap)
     failed = pyqtSignal(str)
 
-    def __init__(self, url: str):
-        super().__init__()
+    def __init__(self, url: str, parent: Optional[QObject] = None):
+        super().__init__(parent)
         self._url = (url or "").strip()
 
     def run(self) -> None:
@@ -108,14 +109,16 @@ class ChatImageCache(QObject):
         with self._lock:
             if key in self._cache or key in self._loading or key in self._failed:
                 return
+            existing = self._threads.get(key)
+            if existing is not None and existing.isRunning():
+                return
             self._loading.add(key)
-        thread = _ImageFetchThread(key)
-        self._threads[key] = thread
+
+        thread = _ImageFetchThread(key, self)
 
         def _done(u: str, pm: QPixmap) -> None:
             with self._lock:
                 self._loading.discard(u)
-                self._threads.pop(u, None)
                 self._put_locked(u, pm)
             if on_loaded:
                 on_loaded(u)
@@ -125,11 +128,19 @@ class ChatImageCache(QObject):
             with self._lock:
                 self._loading.discard(u)
                 self._failed.add(u)
-                self._threads.pop(u, None)
             self.pixmap_failed.emit(u)
+
+        def _thread_finished(u: str = key) -> None:
+            with self._lock:
+                self._threads.pop(u, None)
 
         thread.loaded.connect(_done)
         thread.failed.connect(_fail)
+        thread.finished.connect(_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+
+        with self._lock:
+            self._threads[key] = thread
         thread.start()
 
     def retain_only(self, urls: Set[str]) -> None:
@@ -149,15 +160,20 @@ class ChatImageCache(QObject):
             old_key, _old_pm = self._cache.popitem(last=False)
             QPixmapCache.remove(old_key)
 
+    def drain_running_threads(self, wait_ms: int = _THREAD_DRAIN_MS) -> None:
+        """等待进行中的拉取线程结束，避免 QThread 在 run() 期间被销毁。"""
+        with self._lock:
+            threads = list(self._threads.values())
+        for thread in threads:
+            if thread.isRunning():
+                thread.wait(max(0, int(wait_ms)))
+
     def clear(self) -> None:
+        self.drain_running_threads()
         with self._lock:
             self._cache.clear()
             self._loading.clear()
             self._failed.clear()
-            for t in list(self._threads.values()):
-                if t.isRunning():
-                    t.quit()
-                    t.wait(200)
             self._threads.clear()
 
 

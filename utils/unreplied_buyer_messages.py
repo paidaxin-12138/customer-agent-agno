@@ -4,7 +4,7 @@
 """
 合并会话中尚未被 AI/人工回复的买家消息，供 LLM 一次性作答。
 
-「未回复」= 出现在最后一条有效出站回复（ai/human，不含平台文明提示）之后的买家消息。
+「未回复」= 出现在最后一条有效出站回复（ai/human/agent，不含平台文明提示）之后的买家消息。
 """
 from __future__ import annotations
 
@@ -23,7 +23,8 @@ def _is_platform_civility_row(row: Dict[str, Any]) -> bool:
 
 def _is_effective_reply_row(row: Dict[str, Any]) -> bool:
     st = row.get("sender_type") or ""
-    if st not in ("ai", "human"):
+    # agent：MMS 会话同步写入的商家侧回复（与 ai/human 等价）
+    if st not in ("ai", "human", "agent"):
         return False
     return not _is_platform_civility_row(row)
 

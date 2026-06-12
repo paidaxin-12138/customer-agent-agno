@@ -3,13 +3,17 @@
 # https://creativecommons.org/licenses/by-nc/4.0/
 """QListView 消息列表模型/委托测试。"""
 import pytest
+from PyQt6.QtGui import QColor, QPixmap
 
 from utils.chat_image_cache import ChatImageCache
 
+from ui.widgets.chat_bubble_widgets import _BUBBLE_MAX_W
 from ui.widgets.chat_message_list_view import (
     ChatMessageListModel,
     ChatMessageListView,
     ChatMessageRow,
+    _BubbleMetrics,
+    _image_bubble_dimensions,
 )
 
 
@@ -32,6 +36,35 @@ def test_loading_placeholder_row(qtbot):
     assert row.is_loading_placeholder is True
     view.set_loading_placeholder(False)
     assert model.rowCount() == 0
+
+
+def test_image_bubble_dimensions_fits_tall_screenshot(qapp):
+    pm = QPixmap(390, 844)
+    pm.fill(QColor("#FF6B6B"))
+    bubble_w, bubble_h = _image_bubble_dimensions(
+        pm, list_inner_max=_BUBBLE_MAX_W, loaded=True
+    )
+    assert bubble_w < _BUBBLE_MAX_W
+    assert bubble_h > bubble_w
+
+
+def test_bubble_metrics_image_narrower_than_text_max(qapp):
+    pm = QPixmap(390, 844)
+    pm.fill(QColor("#FF6B6B"))
+    url = "https://example.com/phone-shot.jpeg"
+    cache = ChatImageCache.instance()
+    with cache._lock:
+        cache._put_locked(url, pm)
+    row = ChatMessageRow(
+        sender_type="customer",
+        content="[图片]",
+        content_type="image",
+        image_url=url,
+    )
+    metrics = _BubbleMetrics(row, 500)
+    assert metrics.is_image
+    assert metrics.bubble_w < _BUBBLE_MAX_W
+    assert metrics.bubble_h > 200
 
 
 def test_append_and_last_id(qtbot):

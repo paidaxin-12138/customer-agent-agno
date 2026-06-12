@@ -61,7 +61,7 @@ class DatabaseManager(ChatStoreMixin):
         # 创建数据库引擎（WAL + 多线程 asyncio.to_thread 安全）
         self.engine = create_engine(
             f"sqlite:///{resolved_db_path}",
-            connect_args={"check_same_thread": False, "timeout": 10.0},
+            connect_args={"check_same_thread": False, "timeout": 30.0},
         )
         with self.engine.connect() as conn:
             conn.exec_driver_sql("PRAGMA journal_mode=WAL")

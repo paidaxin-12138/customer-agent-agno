@@ -42,20 +42,6 @@ class KeywordDetectionHandler(BaseHandler):
         "找人工",
         "接人工",
     )
-    _HUMAN_BUS_KEYWORDS = frozenset(
-        {
-            "转人工",
-            "人工客服",
-            "真人客服",
-            "真人",
-            "找人工",
-            "接人工",
-            "我要人工",
-            "工单",
-            "转售后客服",
-            "转售后",
-        }
-    )
     _HUMAN_TRANSFER_NOTICE = "稍等下 这边上报一下呢亲亲"  # 兼容旧引用；实际文案见 chat.human_transfer_notice
 
     def __init__(self):
@@ -110,60 +96,59 @@ class KeywordDetectionHandler(BaseHandler):
         c = (content or "").strip().lower()
         return any(p.lower() in c for p in self._LOCAL_HUMAN_ASSIST_PHRASES)
 
-    def _wants_human_assist_bus(self, content: str) -> bool:
-        if not isinstance(content, str) or not content.strip():
-            return False
+    def _buyer_wants_explicit_human(self, content: str) -> bool:
         if self._semantic_human_transfer_enabled() and detect_human_transfer_intent(
             content
         ):
             return True
-        if self._wants_local_human_assist(content):
-            return True
-        snapshot = self._keywords_snapshot
-        content_lower = content.lower()
-        for k in self._HUMAN_BUS_KEYWORDS:
-            if k in snapshot and k in content_lower:
-                return True
-        return False
+        return self._wants_local_human_assist(content)
 
     async def handle(self, context: Context, metadata: Dict[str, Any]) -> bool:
+        """关键词命中：代码转接 + 固定安抚，不经过 LLM。"""
         try:
             shop_id, user_id, from_uid = resolve_session_ids(context, metadata)
+            content = (
+                context.content
+                if context.type == ContextType.TEXT and isinstance(context.content, str)
+                else ""
+            )
 
-            wants_bus = False
-            if context.type == ContextType.TEXT and isinstance(context.content, str):
-                wants_bus = self._wants_human_assist_bus(context.content)
+            await send_human_transfer_comfort(
+                context, metadata, reason="keyword_human"
+            )
+            try:
+                from core.human_assist_bus import emit_human_assist
 
-            if wants_bus:
-                await send_human_transfer_comfort(
-                    context, metadata, reason="keyword_human"
+                emit_human_assist(
+                    "keyword_human",
+                    context,
+                    metadata,
+                    content,
                 )
-                try:
-                    from core.human_assist_bus import emit_human_assist
-
-                    emit_human_assist(
-                        "keyword_human",
-                        context,
-                        metadata,
-                        context.content,
-                    )
-                except Exception as e:
-                    self.logger.debug(f"emit_human_assist 跳过: {e}")
-                if not all([shop_id, user_id, from_uid]):
-                    metadata["_handler_resolved_without_outbound"] = True
-                    return True
+            except Exception as e:
+                self.logger.debug(f"emit_human_assist 跳过: {e}")
 
             if not all([shop_id, user_id, from_uid]):
-                return False
+                metadata["_handler_resolved_without_outbound"] = True
+                return True
+
+            try:
+                from utils.session_human_lock import lock_session_to_human
+
+                lock_session_to_human(
+                    context=context,
+                    metadata=metadata,
+                    reason="keyword_human",
+                )
+            except Exception as e:
+                self.logger.debug(f"keyword lock human: {e}")
 
             if await transfer_to_available_cs_async(
                 shop_id, user_id, from_uid, context=context, metadata=metadata
             ):
-                self.logger.info("会话已成功转接给其他客服")
-                return True
-
-            if wants_bus:
-                ok = await send_text_to_buyer(
+                self.logger.info("关键词命中，会话已代码转接")
+            elif self._buyer_wants_explicit_human(content):
+                await send_text_to_buyer(
                     shop_id,
                     user_id,
                     from_uid,
@@ -171,9 +156,10 @@ class KeywordDetectionHandler(BaseHandler):
                     context=context,
                     metadata=metadata,
                 )
-                return bool(ok)
 
-            return False
+            if metadata.get("_outbound_comfort_sent"):
+                metadata["_handler_resolved_without_outbound"] = True
+            return True
 
         except Exception as e:
             self.logger.error(f"客服转接处理失败: {e}")

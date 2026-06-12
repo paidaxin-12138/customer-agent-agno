@@ -47,7 +47,27 @@ def _reset_qt_process_singletons():
     """用例前后清理进程级 Qt 单例，降低全量套件中 UI 测试顺序敏感。"""
     _clear_qt_process_singletons()
     yield
+    _drain_qt_events()
     _clear_qt_process_singletons()
+
+
+def _drain_qt_events(max_rounds: int = 40) -> None:
+    """处理挂起 Qt 事件，降低 QThread 在 teardown 时仍运行导致 SIGABRT 的概率。"""
+    try:
+        from PyQt6.QtCore import QThreadPool
+        from PyQt6.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is None:
+            return
+        pool = QThreadPool.globalInstance()
+        pool.waitForDone(2000)
+        for _ in range(max_rounds):
+            app.processEvents()
+            if pool.activeThreadCount() == 0:
+                break
+    except Exception:
+        pass
 
 
 _FLUENT_LABEL_NAMES = (

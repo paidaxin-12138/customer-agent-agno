@@ -63,6 +63,36 @@ def test_get_total_unread_chat(chat_db):
     assert chat_db.get_total_unread_chat() == 0
 
 
+def test_reopen_chat_session(chat_db):
+    acc_id = _account_id(chat_db)
+    sid = chat_db.get_or_create_chat_session(
+        acc_id, "shop-001", "testuser", "buyer_reopen", "买家"
+    )
+    chat_db.close_chat_session(sid)
+    row = chat_db.get_chat_session_by_id(sid)
+    assert row["status"] == "closed"
+    assert chat_db.reopen_chat_session(sid) is True
+    row = chat_db.get_chat_session_by_id(sid)
+    assert row["status"] == "active"
+    assert chat_db.reopen_chat_session(sid) is False
+
+
+def test_get_chat_session_summaries_all_status(chat_db):
+    acc_id = _account_id(chat_db)
+    sid_active = chat_db.get_or_create_chat_session(
+        acc_id, "shop-001", "testuser", "buyer_active", "活跃"
+    )
+    sid_closed = chat_db.get_or_create_chat_session(
+        acc_id, "shop-001", "testuser", "buyer_closed", "结案"
+    )
+    chat_db.close_chat_session(sid_closed)
+    active_only = chat_db.get_chat_session_summaries(account_id=acc_id, status="active")
+    all_rows = chat_db.get_chat_session_summaries(account_id=acc_id, status=None)
+    assert len(active_only) == 1
+    assert len(all_rows) == 2
+    assert {r["id"] for r in all_rows} == {sid_active, sid_closed}
+
+
 def test_get_chat_session_summaries_and_by_buyer(chat_db):
     acc_id = _account_id(chat_db)
     sid = chat_db.get_or_create_chat_session(

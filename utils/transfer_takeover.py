@@ -140,10 +140,10 @@ async def apply_inbound_transfer_takeover(
         logger.debug("转接接管标记 inbound_transferred: {}", e)
 
     try:
-        from Agent.CustomerAgent.conversation_memory import update_session_state
+        from Agent.CustomerAgent.conversation_memory import transition_session_stage
         from database.db_manager import db_manager
 
-        update_session_state(
+        transition_session_stage(
             sid,
             stage=_transfer_stage(),
             intent="after_sales",

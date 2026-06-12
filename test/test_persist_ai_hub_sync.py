@@ -13,6 +13,7 @@ def test_persist_ai_message_syncs_hub():
     mock_db = MagicMock()
     mock_db.get_account.return_value = {"id": 1}
     mock_db.get_or_create_chat_session.return_value = 42
+    mock_db.add_chat_message.return_value = 1001
     hub = MagicMock()
 
     with (
@@ -30,6 +31,7 @@ def test_persist_ai_message_syncs_hub():
 
     assert sid == 42
     mock_db.add_chat_message.assert_called_once()
+    assert mock_db.add_chat_message.call_args.kwargs.get("immediate") is True
     hub.notify_persisted_message.assert_called_once()
     call_kw = hub.notify_persisted_message.call_args
     assert call_kw[0][4] == "buyer-99"

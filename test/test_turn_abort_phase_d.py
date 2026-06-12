@@ -116,11 +116,12 @@ def test_send_goods_link_skips_card_when_aborted_before_mms():
     with patch(
         "Agent.CustomerAgent.tools.send_goods_link.validate_shop_goods_id",
         side_effect=lambda *a, **k: (sig.abort("arun_timeout") or (True, "")),
-    ), patch("Agent.CustomerAgent.tools.send_goods_link.SendMessage") as sm_cls:
-        sm = sm_cls.return_value
+    ), patch(
+        "Message.handlers.channel_send.send_goods_card_sync",
+    ) as send_mock:
         fn = inspect.unwrap(send_goods_link.entrypoint)
         result = fn(run_ctx, "b", 12345, "1", "u")
-        sm.send_mallGoodsCard.assert_not_called()
+        send_mock.assert_not_called()
 
     reset_current_turn_abort(tok)
     assert "arun_timeout" in str(result)

@@ -7,7 +7,9 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import threading
+from collections import defaultdict
+from typing import Any, Callable, Dict, List, Optional
 
 from PyQt6.QtCore import QEvent, Qt, QThread, QTimer, QSize
 from PyQt6.QtGui import QColor, QPalette
@@ -51,12 +53,15 @@ from ui.chat.send_workers import (
     SendHumanMessageThread,
 )
 from ui.chat.session_tree import (
+    apply_session_tree_item_visual,
     format_account_tree_label,
     format_session_tree_label,
     session_matches_filter,
     session_sort_key,
+    unread_dot_icon,
 )
 from utils.logger_loguru import get_logger
+from utils.qt_threading import run_on_main_thread
 
 from ui.chat import tokens as T
 from ui.chat.styles import (
@@ -90,6 +95,13 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
         self._hub_refresh_timer = QTimer(self)
         self._hub_refresh_timer.setSingleShot(True)
         self._hub_refresh_timer.timeout.connect(self._do_hub_list_refresh)
+
+        self._tree_refresh_timer = QTimer(self)
+        self._tree_refresh_timer.setSingleShot(True)
+        self._tree_refresh_timer.timeout.connect(self._start_async_session_tree_refresh)
+        self._tree_refresh_inflight = False
+        self._tree_refresh_pending = False
+        self._tree_refresh_after: Optional[Callable[[], None]] = None
 
         from core.chat_sync import ChatSyncService
         from config import get_config
@@ -365,6 +377,10 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
         self._msg_loading_hide_not_before = 0.0
         self._msg_render_pending = False
         self._pending_after_render_refresh = False
+        self._session_switch_token = 0
+        self._active_session_switch_token = None
+        self._session_click_inflight = False
+        self._pending_session_click = None
         self._msg_load_notify = False
         self._msg_loading_total = 0
         self._msg_last_loaded_id = 0
@@ -495,7 +511,7 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
 
     def _on_session_search_changed(self, text: str) -> None:
         self._session_filter = (text or "").strip().lower()
-        self._refresh_session_trees()
+        self._schedule_session_tree_refresh()
 
     def _set_chat_enabled(self, on: bool):
         self.btn_ai.setEnabled(on and self._current is not None)
@@ -623,24 +639,16 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
         return "未验证"
 
     def _on_sync_tick(self):
-        """周期同步：MMS 会话列表 + 空闲结案 + 刷新会话树。"""
+        """周期同步：MMS 会话列表（后台）+ 连接状态提示；不在此阻塞 UI 做结案/刷树。"""
         self._refresh_ws_status_hint()
         try:
             self._sync.schedule_sync_all()
         except Exception as e:
             self.logger.debug(f"同步钩子跳过: {e}")
-        try:
-            parent = self.window()
-            closer = getattr(parent, "_session_idle_closer", None)
-            if closer is not None:
-                closer.run_once()
-        except Exception as e:
-            self.logger.debug(f"空闲结案扫描: {e}")
-        self._refresh_session_trees()
 
     def _on_mms_sync_finished(self, _count: int) -> None:
-        self._reload_accounts_from_db()
-        self._refresh_session_trees()
+        self.account_list.reload(self._filter_account_id)
+        self._schedule_session_tree_refresh()
 
     def _on_hub_list_changed(self, _account_key: str):
         try:
@@ -651,9 +659,8 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
         self._hub_refresh_timer.start(debounce_ms)
 
     def _do_hub_list_refresh(self):
-        self._reload_accounts_from_db()
         self.account_list.reload(self._filter_account_id)
-        self._refresh_session_trees()
+        self._schedule_session_tree_refresh()
 
     def _on_hub_message_logged(
         self, account_key: str, customer_uid: str, role: str, text: str, ts: float
@@ -680,12 +687,12 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
 
     def _on_account_filter(self, account_id):
         self._filter_account_id = account_id
-        self._refresh_session_trees()
-        # 选中店铺后自动打开该店下首个会话（优先未读），否则右侧一直「未选择会话」
-        if account_id is not None:
-            self._auto_open_first_session()
-        elif self._current is None:
-            self._auto_open_first_session()
+
+        def after() -> None:
+            if account_id is not None or self._current is None:
+                self._auto_open_first_session()
+
+        self._schedule_session_tree_refresh(after=after)
 
     def _auto_open_first_session(self) -> None:
         """打开当前筛选下第一个会话（未读优先，其次最近消息）。"""
@@ -711,8 +718,82 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
     def _session_matches_filter(self, s: Dict[str, Any]) -> bool:
         return session_matches_filter(s, self._session_filter)
 
-    def _refresh_session_trees(self):
-        self._reload_accounts_from_db()
+    def _tree_refresh_debounce_ms(self) -> int:
+        try:
+            ms = int(get_config("ui.session_tree_refresh_debounce_ms", 200) or 200)
+        except (TypeError, ValueError):
+            ms = 200
+        return max(0, min(ms, 2000))
+
+    def _schedule_session_tree_refresh(
+        self,
+        delay_ms: Optional[int] = None,
+        *,
+        after: Optional[Callable[[], None]] = None,
+    ) -> None:
+        if after is not None:
+            prev = self._tree_refresh_after
+            if prev is None:
+                self._tree_refresh_after = after
+            else:
+                self._tree_refresh_after = lambda p=prev, n=after: (p(), n())
+        if delay_ms is None:
+            delay_ms = self._tree_refresh_debounce_ms()
+        if delay_ms <= 0:
+            self._start_async_session_tree_refresh()
+        else:
+            self._tree_refresh_timer.start(delay_ms)
+
+    def _start_async_session_tree_refresh(self) -> None:
+        if self._tree_refresh_inflight:
+            self._tree_refresh_pending = True
+            return
+        self._tree_refresh_inflight = True
+        filter_account_id = self._filter_account_id
+        session_filter = self._session_filter
+
+        def work() -> None:
+            payload: Optional[Dict[str, Any]] = None
+            try:
+                accounts = db_manager.list_all_accounts_for_chat()
+                all_sessions = db_manager.get_chat_sessions(None, None)
+                by_account: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+                for s in all_sessions:
+                    aid = int(s.get("account_id") or 0)
+                    if aid:
+                        by_account[aid].append(s)
+                payload = {
+                    "accounts": accounts,
+                    "sessions_by_account": dict(by_account),
+                    "filter_account_id": filter_account_id,
+                    "session_filter": session_filter,
+                }
+            except Exception as e:
+                self.logger.error("后台加载会话树失败: {}", e)
+
+            def apply() -> None:
+                self._tree_refresh_inflight = False
+                if payload is not None:
+                    self._apply_session_tree_payload(payload)
+                cb = self._tree_refresh_after
+                self._tree_refresh_after = None
+                if cb is not None:
+                    try:
+                        cb()
+                    except Exception as e:
+                        self.logger.debug("会话树刷新回调失败: {}", e)
+                if self._tree_refresh_pending:
+                    self._tree_refresh_pending = False
+                    self._schedule_session_tree_refresh(0)
+
+            run_on_main_thread(apply)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_session_tree_payload(self, payload: Dict[str, Any]) -> None:
+        self._accounts = payload["accounts"]
+        filter_account_id = payload["filter_account_id"]
+        session_filter = str(payload.get("session_filter") or "")
         keep_sid: Optional[int] = None
         keep_aid: Optional[int] = None
         if self._current:
@@ -722,18 +803,19 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
             except (TypeError, ValueError):
                 keep_sid = None
                 keep_aid = None
+        sessions_by_account: Dict[int, List[Dict[str, Any]]] = payload.get(
+            "sessions_by_account", {}
+        )
         restore_item: Optional[QTreeWidgetItem] = None
         self.session_tree.clear()
         accounts = (
-            [a for a in self._accounts if a["id"] == self._filter_account_id]
-            if self._filter_account_id is not None
+            [a for a in self._accounts if a["id"] == filter_account_id]
+            if filter_account_id is not None
             else self._accounts
         )
         for acc in accounts:
-            unread = sum(
-                s.get("unread_count", 0)
-                for s in db_manager.get_chat_sessions(acc["id"], "active")
-            )
+            sessions_all = sessions_by_account.get(int(acc["id"]), [])
+            unread = sum(int(s.get("unread_count") or 0) for s in sessions_all)
             st_txt = self._account_status_text(acc)
             parent = QTreeWidgetItem(
                 [format_account_tree_label(acc, st_txt, unread)]
@@ -744,10 +826,16 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
                 {"type": "account", "account": acc},
             )
             parent.setSizeHint(0, QSize(0, 54))
+            if unread > 0:
+                parent.setIcon(0, unread_dot_icon())
             self.session_tree.addTopLevelItem(parent)
-            sessions = db_manager.get_chat_sessions(acc["id"], "active")
+            sessions = sorted(
+                sessions_all,
+                key=session_sort_key,
+                reverse=True,
+            )
             for s in sessions:
-                if not self._session_matches_filter(s):
+                if not session_matches_filter(s, session_filter):
                     continue
                 child = QTreeWidgetItem([format_session_tree_label(s)])
                 child.setData(
@@ -756,6 +844,7 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
                     {"type": "session", "session": s, "account": acc},
                 )
                 child.setSizeHint(0, QSize(0, 50))
+                apply_session_tree_item_visual(child, s)
                 parent.addChild(child)
                 if (
                     restore_item is None
@@ -769,6 +858,10 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
         if restore_item is not None:
             self.session_tree.setCurrentItem(restore_item)
             self.session_tree.scrollToItem(restore_item)
+
+    def _refresh_session_trees(self) -> None:
+        """兼容入口：调度后台刷新，避免主线程阻塞。"""
+        self._schedule_session_tree_refresh(0)
 
     def apply_human_escalation(self, payload: dict) -> None:
         """弹窗后跳转：聚焦接待账号与买家，并载入库内全部聊天记录。"""
@@ -815,23 +908,25 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
             self.logger.debug("total_unread_changed emit: {}", e)
 
     def _select_tree_session_for_buyer(self, account_id: int, buyer_uid: str) -> None:
-        self._refresh_session_trees()
-        for i in range(self.session_tree.topLevelItemCount()):
-            parent = self.session_tree.topLevelItem(i)
-            data = parent.data(0, Qt.ItemDataRole.UserRole)
-            if not isinstance(data, dict) or data.get("type") != "account":
-                continue
-            if int(data["account"]["id"]) != int(account_id):
-                continue
-            for j in range(parent.childCount()):
-                child = parent.child(j)
-                cd = child.data(0, Qt.ItemDataRole.UserRole)
-                if not isinstance(cd, dict) or cd.get("type") != "session":
+        def after() -> None:
+            for i in range(self.session_tree.topLevelItemCount()):
+                parent = self.session_tree.topLevelItem(i)
+                data = parent.data(0, Qt.ItemDataRole.UserRole)
+                if not isinstance(data, dict) or data.get("type") != "account":
                     continue
-                if str(cd["session"].get("buyer_uid")) == str(buyer_uid):
-                    self.session_tree.setCurrentItem(child)
-                    self.session_tree.scrollToItem(child)
-                    return
+                if int(data["account"]["id"]) != int(account_id):
+                    continue
+                for j in range(parent.childCount()):
+                    child = parent.child(j)
+                    cd = child.data(0, Qt.ItemDataRole.UserRole)
+                    if not isinstance(cd, dict) or cd.get("type") != "session":
+                        continue
+                    if str(cd["session"].get("buyer_uid")) == str(buyer_uid):
+                        self.session_tree.setCurrentItem(child)
+                        self.session_tree.scrollToItem(child)
+                        return
+
+        self._schedule_session_tree_refresh(0, after=after)
 
     def _on_human_assist_requested(self, payload: dict) -> None:
         """人工协助请求 - 显示弹窗并跳转到实时聊天"""
@@ -991,32 +1086,30 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
     def _find_and_select_session(self, account_id: int, buyer_uid: str, buyer_nickname: str) -> None:
         """查找并选中指定会话"""
         try:
-            # 刷新会话树
-            self._refresh_session_trees()
-            
-            # 找到并选中该会话
-            for i in range(self.session_tree.topLevelItemCount()):
-                parent = self.session_tree.topLevelItem(i)
-                data = parent.data(0, Qt.ItemDataRole.UserRole)
-                if not isinstance(data, dict) or data.get("type") != "account":
-                    continue
-                if int(data["account"]["id"]) != account_id:
-                    continue
-                for j in range(parent.childCount()):
-                    child = parent.child(j)
-                    cd = child.data(0, Qt.ItemDataRole.UserRole)
-                    if not isinstance(cd, dict) or cd.get("type") != "session":
+            def after() -> None:
+                for i in range(self.session_tree.topLevelItemCount()):
+                    parent = self.session_tree.topLevelItem(i)
+                    data = parent.data(0, Qt.ItemDataRole.UserRole)
+                    if not isinstance(data, dict) or data.get("type") != "account":
                         continue
-                    if str(cd["session"].get("buyer_uid")) == buyer_uid:
-                        self.session_tree.setCurrentItem(child)
-                        self.session_tree.scrollToItem(child)
-                        # 触发点击事件，打开会话
-                        self._on_session_clicked(child, 0)
-                        self.logger.info(f"✅ 已跳转到会话：{buyer_nickname}")
-                        return
-            
-            self.logger.warning(f"未找到对应的会话：account_id={account_id}, buyer_uid={buyer_uid}")
-            
+                    if int(data["account"]["id"]) != account_id:
+                        continue
+                    for j in range(parent.childCount()):
+                        child = parent.child(j)
+                        cd = child.data(0, Qt.ItemDataRole.UserRole)
+                        if not isinstance(cd, dict) or cd.get("type") != "session":
+                            continue
+                        if str(cd["session"].get("buyer_uid")) == buyer_uid:
+                            self.session_tree.setCurrentItem(child)
+                            self.session_tree.scrollToItem(child)
+                            self._on_session_clicked(child, 0)
+                            self.logger.info(f"✅ 已跳转到会话：{buyer_nickname}")
+                            return
+                self.logger.warning(
+                    f"未找到对应的会话：account_id={account_id}, buyer_uid={buyer_uid}"
+                )
+
+            self._schedule_session_tree_refresh(0, after=after)
         except Exception as e:
             self.logger.error(f"查找会话失败：{e}", exc_info=True)
 
@@ -1131,18 +1224,49 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
         if data.get("type") != "session":
             return
         s = data["session"]
+        if getattr(self, "_session_click_inflight", False):
+            pending = getattr(self, "_pending_session_click", None)
+            try:
+                clicked_sid = int(s.get("id") or 0)
+            except (TypeError, ValueError):
+                clicked_sid = 0
+            if (
+                isinstance(pending, dict)
+                and int(pending.get("session_id") or 0) == clicked_sid
+            ):
+                return
         fresh = db_manager.get_chat_session_by_id(int(s["id"]))
         if fresh:
             s = fresh
         acc = data["account"]
         session_id = int(s["id"])
+        if str(s.get("status") or "active") == "closed":
+            db_manager.reopen_chat_session(session_id)
+            reopened = db_manager.get_chat_session_by_id(session_id)
+            if reopened:
+                s = reopened
+        messages_ready = self._messages_match_current_session()
         was_same_session = (
             self._current is not None
             and int(self._current.get("session_id", 0)) == session_id
+            and messages_ready
+        )
+        needs_reload = (
+            not was_same_session
+            or getattr(self, "_render_in_progress", False)
+            or not messages_ready
         )
         # 切换到其它买家前，若当前会话在人工模式则自动切回 AI
-        if self._current and not was_same_session:
+        if self._current and int(self._current.get("session_id", 0)) != session_id:
             self._restore_ai_for_current_if_manual()
+        self._session_switch_token += 1
+        switch_token = self._session_switch_token
+        self._pending_session_click = {"session_id": session_id, "token": switch_token}
+        self._session_click_inflight = True
+        self._tree_refresh_timer.stop()
+        if needs_reload:
+            self._cancel_message_render()
+            self._cancel_older_fetch()
         self._current = {
             "session_id": s["id"],
             "buyer_uid": s["buyer_uid"],
@@ -1165,13 +1289,11 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
         if not self._current.get("ai_mode", True):
             self._reset_input_activity_timer()
         self._set_chat_enabled(True)
-        if not was_same_session:
+        if needs_reload:
             self._rebuild_quick_replies(int(acc["id"]))
-        if (
-            was_same_session
-            and not getattr(self, "_render_in_progress", False)
-            and self._message_widget_count() > 0
-        ):
+        if not needs_reload:
+            self._session_click_inflight = False
+            self._pending_session_click = None
             try:
                 self._hub.total_unread_changed.emit(db_manager.get_total_unread_chat())
             except Exception as e:
@@ -1180,6 +1302,7 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
         self._msg_load_notify = True
         self._show_message_loading_early()
         self._pending_after_render_refresh = True
+        self._active_session_switch_token = switch_token
         self._render_messages_from_db()
         try:
             self._hub.total_unread_changed.emit(db_manager.get_total_unread_chat())
@@ -1284,6 +1407,9 @@ class ChatLiveWidget(ChatAttachmentMixin, ChatMessageListMixin, QFrame):
             str(acc["seller_user_id"]),
             str(self._current["buyer_uid"]),
             text,
+            login_username=str(acc.get("username") or ""),
+            channel_name=str(acc.get("channel_name") or "pinduoduo"),
+            session_id=self._current.get("session_id"),
         )
         self._send_thread.finished_with_result.connect(self._on_send_done)
         self._send_thread.start()

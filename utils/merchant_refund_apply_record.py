@@ -29,6 +29,18 @@ class RefundApplyGate(str, Enum):
     EXPIRED_NOTICE = "expired_notice"
 
 
+class RefundCardSendAction(str, Enum):
+    """退货卡 MMS 发送决策（含 outbox 重试）。"""
+
+    SEND = "send"
+    SKIP_ALREADY_SENT = "skip_already_sent"
+    BLOCK_EXPIRED = "block_expired"
+
+
+REFUND_GATE_BLOCKED_PREFIX = "refund_gate_blocked:"
+REFUND_GATE_SKIP_PREFIX = "skipped:duplicate"
+
+
 def _pending_notice() -> str:
     return str(
         config.get(
@@ -99,6 +111,67 @@ def gate_notice(gate: RefundApplyGate) -> str:
     if gate == RefundApplyGate.EXPIRED_NOTICE:
         return _expired_notice()
     return ""
+
+
+def evaluate_refund_card_send_gate(
+    shop_id: str,
+    buyer_uid: str,
+    order_sn: str,
+) -> RefundCardSendAction:
+    """
+    退货卡发卡前检查（outbox 首发/重试共用）。
+
+    同单重复代申请会导致平台下行 mstate=已过期，故 pending/内存已发须跳过。
+    """
+    sn = str(order_sn or "").strip()
+    if not sn:
+        return RefundCardSendAction.BLOCK_EXPIRED
+    sid = str(shop_id or "")
+    uid = str(buyer_uid or "")
+    try:
+        from utils.session_order_cache import has_sent_refund_card
+
+        if has_sent_refund_card(sid, uid, sn):
+            return RefundCardSendAction.SKIP_ALREADY_SENT
+    except Exception:
+        pass
+    gate = check_refund_apply_gate(sid, sn)
+    if gate == RefundApplyGate.SEND:
+        return RefundCardSendAction.SEND
+    if gate == RefundApplyGate.PENDING_NOTICE:
+        return RefundCardSendAction.SKIP_ALREADY_SENT
+    return RefundCardSendAction.BLOCK_EXPIRED
+
+
+def note_refund_card_mms_success(
+    shop_id: str,
+    buyer_uid: str,
+    order_sn: str,
+    *,
+    after_sales_type: Optional[int] = None,
+    refund_amount_fen: Optional[int] = None,
+) -> None:
+    """MMS 发卡成功后立即记 pending，避免 outbox 重试连发同单。"""
+    sn = str(order_sn or "").strip()
+    if not sn:
+        return
+    sid = str(shop_id or "")
+    uid = str(buyer_uid or "")
+    try:
+        from utils.session_order_cache import mark_refund_card_sent
+
+        mark_refund_card_sent(sid, uid, sn)
+    except Exception:
+        pass
+    if check_refund_apply_gate(sid, sn) != RefundApplyGate.SEND:
+        return
+    save_pending_after_send(
+        sid,
+        uid,
+        sn,
+        after_sales_type=after_sales_type,
+        refund_amount_fen=refund_amount_fen,
+    )
 
 
 def save_pending_after_send(

@@ -55,7 +55,7 @@ async def test_takeover_enqueues_unreplied(monkeypatch):
             return_value=["转接前买家问题"],
         ),
         patch(
-            "Agent.CustomerAgent.conversation_memory.update_session_state"
+            "Agent.CustomerAgent.conversation_memory.transition_session_stage"
         ) as mock_update,
         patch("database.session_store.set_ai_mode") as mock_ai,
         patch("Message.put_message", put_mock),

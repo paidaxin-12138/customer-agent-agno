@@ -4,6 +4,7 @@
 """实时聊天 — 表情 / 图片 / 商品卡 / AI 辅助输入。"""
 from __future__ import annotations
 
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -104,6 +105,9 @@ class ChatAttachmentMixin:
             str(acc["seller_user_id"]),
             str(self._current["buyer_uid"]),
             image_url,
+            login_username=str(acc.get("username") or ""),
+            channel_name=str(acc.get("channel_name") or "pinduoduo"),
+            session_id=self._current.get("session_id"),
         )
         self._send_image_thread.finished_with_result.connect(self._on_image_send_done)
         self._send_image_thread.start()
@@ -114,6 +118,7 @@ class ChatAttachmentMixin:
             QMessageBox.warning(self, "图片发送失败", err or "")
             return
         QMessageBox.information(self, "发送成功", "图片已发送")
+        QTimer.singleShot(80, self._sync_incremental_messages)
 
     def _on_goods_card_clicked(self) -> None:
         if not self._current:
@@ -136,6 +141,9 @@ class ChatAttachmentMixin:
             str(acc["seller_user_id"]),
             str(self._current["buyer_uid"]),
             int(goods_id),
+            login_username=str(acc.get("username") or ""),
+            channel_name=str(acc.get("channel_name") or "pinduoduo"),
+            session_id=self._current.get("session_id"),
         )
         self._send_goods_thread.finished_with_result.connect(self._on_goods_send_done)
         self._send_goods_thread.start()

@@ -9,14 +9,6 @@ from PyQt6.QtWidgets import QApplication
 from utils.chat_image_cache import MAX_CACHED_IMAGES, ChatImageCache
 
 
-@pytest.fixture(scope="module")
-def qapp():
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication([])
-    return app
-
-
 def test_retain_only_evicts_off_viewport_urls(qapp):
     cache = ChatImageCache()
     cache.clear()

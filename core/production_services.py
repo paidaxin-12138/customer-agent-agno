@@ -62,6 +62,35 @@ async def _lifecycle_loop() -> None:
             _logger.error("生命周期清理失败: {}", e)
 
 
+async def _outbox_retry_loop() -> None:
+    if not bool(_cfg("chat.outbound_outbox_enabled", True)):
+        return
+    if not bool(_cfg("chat.outbound_outbox_worker_enabled", True)):
+        return
+    try:
+        interval = max(
+            10.0,
+            float(_cfg("chat.outbound_outbox_retry_interval_sec", 60) or 60),
+        )
+    except (TypeError, ValueError):
+        interval = 60.0
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            from database.outbound_outbox import fetch_due_retries, outbox_enabled
+            from utils.outbound_outbox_retry import retry_outbox_row_sync
+
+            if not outbox_enabled():
+                continue
+            rows = await asyncio.to_thread(fetch_due_retries, limit=20)
+            for row in rows:
+                await asyncio.to_thread(retry_outbox_row_sync, row)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            _logger.error("outbox 重试 worker 失败: {}", e)
+
+
 async def _arun_backlog_watch_loop() -> None:
     try:
         from core.turn_abort_watchdog import run_arun_backlog_watch_loop
@@ -84,6 +113,7 @@ async def _async_main() -> None:
     tasks = [
         asyncio.create_task(_backup_loop(), name="db_backup_loop"),
         asyncio.create_task(_lifecycle_loop(), name="lifecycle_loop"),
+        asyncio.create_task(_outbox_retry_loop(), name="outbox_retry_loop"),
         asyncio.create_task(_arun_backlog_watch_loop(), name="arun_backlog_watch"),
     ]
     await asyncio.gather(*tasks)

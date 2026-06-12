@@ -224,6 +224,102 @@ def migrate_message_dead_letters_table(engine: Engine, logger: Any = None) -> in
         conn.close()
 
 
+def migrate_outbound_outbox_table(engine: Engine, logger: Any = None) -> int:
+    path = _db_path(engine)
+    if not path:
+        return 0
+    conn = sqlite3.connect(path)
+    try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='outbound_outbox'"
+        )
+        if cur.fetchone():
+            return 0
+        conn.execute(
+            """
+            CREATE TABLE outbound_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL,
+                account_id INTEGER NOT NULL,
+                channel_name TEXT NOT NULL DEFAULT 'pinduoduo',
+                shop_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                buyer_uid TEXT NOT NULL,
+                login_username TEXT,
+                content TEXT NOT NULL,
+                message_kind TEXT NOT NULL DEFAULT 'text',
+                payload_json TEXT,
+                sender_type TEXT NOT NULL DEFAULT 'ai',
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 3,
+                last_attempt_at REAL,
+                error_detail TEXT,
+                chat_message_id INTEGER,
+                created_at REAL NOT NULL,
+                sent_at REAL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_outbox_retry "
+            "ON outbound_outbox (status, last_attempt_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_outbox_session "
+            "ON outbound_outbox (session_id, status)"
+        )
+        conn.commit()
+        if logger:
+            logger.info("outbound_outbox 表已创建")
+        return 1
+    except Exception as e:
+        if logger:
+            logger.warning(f"outbound_outbox 迁移失败: {e}")
+        return 0
+    finally:
+        conn.close()
+
+
+def migrate_outbound_outbox_kind_columns(engine: Engine, logger: Any = None) -> int:
+    path = _db_path(engine)
+    if not path:
+        return 0
+    conn = sqlite3.connect(path)
+    applied = 0
+    try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='outbound_outbox'"
+        )
+        if not cur.fetchone():
+            return 0
+        cur = conn.execute("PRAGMA table_info(outbound_outbox)")
+        cols = {row[1] for row in cur.fetchall()}
+        alters = []
+        if "message_kind" not in cols:
+            alters.append(
+                "ALTER TABLE outbound_outbox "
+                "ADD COLUMN message_kind TEXT NOT NULL DEFAULT 'text'"
+            )
+        if "payload_json" not in cols:
+            alters.append(
+                "ALTER TABLE outbound_outbox ADD COLUMN payload_json TEXT"
+            )
+        for sql in alters:
+            conn.execute(sql)
+            applied += 1
+        if alters:
+            conn.commit()
+            if logger:
+                logger.info(f"outbound_outbox 扩展列迁移: {applied} 列")
+    except Exception as e:
+        if logger:
+            logger.warning(f"outbound_outbox 扩展列迁移失败: {e}")
+    finally:
+        conn.close()
+    return applied
+
+
 def apply_legacy_migrations(engine: Engine, logger: Any = None) -> int:
     """幂等执行全部遗留补丁，返回大致变更计数。"""
     total = 0
@@ -233,4 +329,6 @@ def apply_legacy_migrations(engine: Engine, logger: Any = None) -> int:
     total += migrate_utc_timestamps_to_shanghai(engine, logger)
     total += migrate_chat_messages_unread_index(engine, logger)
     total += migrate_message_dead_letters_table(engine, logger)
+    total += migrate_outbound_outbox_table(engine, logger)
+    total += migrate_outbound_outbox_kind_columns(engine, logger)
     return total

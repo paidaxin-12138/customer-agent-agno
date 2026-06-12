@@ -182,6 +182,13 @@ def set_ai_mode(session_id: int, ai_mode: bool) -> bool:
     return bool(db_manager.set_session_ai_mode(int(session_id), bool(ai_mode)))
 
 
+def lock_session_human_atomic(session_id: int) -> bool:
+    """转人工：单事务写入 ai_mode=False 并重置 stage/slots。"""
+    from database.db_manager import db_manager
+
+    return bool(db_manager.lock_session_human_atomic(int(session_id)))
+
+
 def mark_session_read(session_id: int) -> bool:
     """标记会话消息已读并重置未读计数。"""
     from database.db_manager import db_manager

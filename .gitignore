@@ -69,4 +69,10 @@ htmlcov/
 coverage.xml
 test-results/
 
+# SSH keys (never commit)
+id_*
+id_*.pub
+*.pem
+ssh-keygen*
+
 启动 AI 客服.app/

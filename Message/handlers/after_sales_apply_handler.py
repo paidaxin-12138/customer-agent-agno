@@ -481,19 +481,22 @@ class AfterSalesApplyHandler(BaseHandler):
 
         result: Optional[dict] = None
         try:
-            from Channel.pinduoduo.utils.API.send_message import SendMessage
+            from Message.handlers.channel_send import send_refund_apply_card_to_buyer
 
-            sender = SendMessage(str(shop_id), str(user_id))
-            result = await asyncio.to_thread(
-                sender.send_ask_refund_apply,
-                order_sn,
+            ok, result = await send_refund_apply_card_to_buyer(
+                shop_id,
+                user_id,
+                from_uid,
+                order_sn=order_sn,
                 after_sales_type=card_params.after_sales_type,
                 question_type=card_params.question_type,
                 refund_amount=card_params.refund_amount,
                 message=card_params.message or None,
                 user_ship_status=card_params.user_ship_status,
+                context=context,
+                metadata=metadata,
+                notify_watchdog=False,
             )
-            ok = isinstance(result, dict) and result.get("success") is True
             if not ok and isinstance(result, dict):
                 err = result.get("errorMsg") or result.get("error_msg")
                 self.logger.error(

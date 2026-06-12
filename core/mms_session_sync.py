@@ -233,7 +233,10 @@ def _enqueue_new_buyer_message(
 
 
 def sync_mms_sessions_for_account(
-    account_id: int, *, reconnect_boost: bool = False
+    account_id: int,
+    *,
+    reconnect_boost: bool = False,
+    enqueue_new: Optional[bool] = None,
 ) -> int:
     """
     拉取 MMS 会话列表并写入本地库。
@@ -273,7 +276,7 @@ def sync_mms_sessions_for_account(
 
     account_id_int = int(row["id"])
     synced = 0
-    enqueue = _should_enqueue_new()
+    enqueue = _should_enqueue_new() if enqueue_new is None else bool(enqueue_new)
 
     for item in sessions:
         try:

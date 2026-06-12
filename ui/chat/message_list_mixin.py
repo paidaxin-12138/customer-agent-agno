@@ -67,7 +67,10 @@ class ChatMessageListMixin:
         view = getattr(self, "msg_list_view", None)
         if view is not None and view.message_count() > 0:
             view.set_list_width(self._message_area_width())
-            view.viewport().update()
+            if hasattr(view, "relayout_items"):
+                view.relayout_items()
+            else:
+                view.viewport().update()
 
     def _reflow_message_list(self) -> None:
         self._schedule_message_list_reflow()
@@ -78,7 +81,7 @@ class ChatMessageListMixin:
             return
         self._pending_after_render_refresh = False
         self.account_list.reload(self._filter_account_id)
-        self._refresh_session_trees()
+        self._schedule_session_tree_refresh()
 
     def _clear_messages(self) -> None:
         if not self._ensure_message_area():
@@ -193,6 +196,12 @@ class ChatMessageListMixin:
         self._render_token += 1
         self._msg_render_job = None
 
+    def _messages_match_current_session(self) -> bool:
+        if not self._current:
+            return False
+        sid = int(self._current["session_id"])
+        return getattr(self, "_msg_last_loaded_session_id", None) == sid
+
     def _is_message_loading_visible(self) -> bool:
         bar = getattr(self, "_msg_loading_bar", None)
         return bar is not None and bar.isVisible()
@@ -299,6 +308,11 @@ class ChatMessageListMixin:
             return "no_job"
         if job.get("token") != self._render_token:
             return f"token_mismatch job={job.get('token')} cur={self._render_token}"
+        if self._current:
+            job_sid = int(job.get("session_id") or 0)
+            cur_sid = int(self._current.get("session_id") or 0)
+            if job_sid and cur_sid and job_sid != cur_sid:
+                return f"session_mismatch job={job_sid} cur={cur_sid}"
         if not self._ensure_message_area():
             return "layout_unavailable"
         return "ok"
@@ -308,7 +322,7 @@ class ChatMessageListMixin:
         reason = self._render_tick_reason(job)
         if reason != "ok":
             self.logger.warning("消息渲染跳过: {}", reason)
-            if reason == "layout_unavailable":
+            if reason in ("layout_unavailable",) or str(reason).startswith("session_mismatch"):
                 self._render_in_progress = False
                 self._msg_render_job = None
                 self._hide_message_loading()
@@ -349,6 +363,13 @@ class ChatMessageListMixin:
         remain_ms = max(0, int(T.MSG_LOADING_MIN_MS - elapsed_ms))
         QTimer.singleShot(remain_ms, self._complete_message_render)
 
+    def _release_session_click_inflight(self) -> None:
+        token = getattr(self, "_active_session_switch_token", None)
+        if token is not None and token != getattr(self, "_session_switch_token", None):
+            return
+        self._session_click_inflight = False
+        self._pending_session_click = None
+
     def _complete_message_render(self) -> None:
         if getattr(self, "_msg_render_job", None):
             return
@@ -359,8 +380,9 @@ class ChatMessageListMixin:
         self._scroll_messages_to_bottom()
         if self._msg_render_pending:
             self._msg_render_pending = False
-            QTimer.singleShot(120, self._sync_incremental_messages)
+            QTimer.singleShot(0, self._render_messages_from_db)
             return
+        self._release_session_click_inflight()
         if getattr(self, "_msg_load_notify", False):
             self._msg_load_notify = False
             self._notify_message_load_success(int(getattr(self, "_msg_loading_total", 0)))
@@ -368,11 +390,11 @@ class ChatMessageListMixin:
     def _render_messages_from_db(self) -> None:
         if not self._current:
             return
-        if getattr(self, "_render_in_progress", False):
-            self._msg_render_pending = True
-            return
         sid = int(self._current["session_id"])
-        self._cancel_message_render()
+        if getattr(self, "_render_in_progress", False):
+            self._cancel_message_render()
+            self._cancel_older_fetch()
+            self._render_in_progress = False
         render_token = self._render_token
         self._msg_render_pending = False
         self._render_in_progress = True
@@ -392,6 +414,7 @@ class ChatMessageListMixin:
             self._msg_render_job = None
             self._render_in_progress = False
             self._clear_messages()
+            self._release_session_click_inflight()
             QTimer.singleShot(0, self._hide_message_loading)
             QTimer.singleShot(0, self._flush_after_render_refresh)
             if getattr(self, "_msg_load_notify", False):
@@ -402,12 +425,14 @@ class ChatMessageListMixin:
         if not self._ensure_message_area():
             self.logger.error("消息区不可用，取消加载 session={}", sid)
             self._render_in_progress = False
+            self._release_session_click_inflight()
             QTimer.singleShot(0, self._hide_message_loading)
             return
 
         self._show_message_loading(total)
         self._clear_messages()
         self._msg_render_job = {
+            "session_id": sid,
             "rows": rows,
             "index": 0,
             "total": total,
@@ -452,7 +477,7 @@ class ChatMessageListMixin:
         self._schedule_message_list_reflow()
         self._scroll_messages_to_bottom()
         if refresh_tree:
-            self._refresh_session_trees()
+            self._schedule_session_tree_refresh()
         self.logger.debug("增量载入 {} 条新消息 session={}", len(rows), sid)
         return True
 

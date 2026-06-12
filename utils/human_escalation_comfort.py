@@ -24,6 +24,8 @@ _DIALOG_COMFORT_REASONS = frozenset(
         "order_address_change",
         "order_modify",
         "buyer_emotion_escalate",
+        "high_risk_second_turn",
+        "ai_model_transfer",
     }
 )
 
@@ -91,6 +93,7 @@ async def send_human_transfer_comfort(
     try:
         from Message.handlers.channel_send import send_text_to_buyer
 
+        meta["_outbox_sender_type"] = "human"
         ok = await send_text_to_buyer(
             shop_id,
             user_id,
@@ -98,6 +101,7 @@ async def send_human_transfer_comfort(
             notice,
             context=context,
             metadata=meta,
+            sender_type="human",
         )
         if ok:
             _log.info("转人工安抚已发送: reason={} buyer={}", reason, from_uid)
@@ -109,6 +113,35 @@ async def send_human_transfer_comfort(
 
 def should_send_dialog_comfort_on_dismiss(reason: str) -> bool:
     return str(reason or "") in _DIALOG_COMFORT_REASONS
+
+
+def send_human_transfer_comfort_sync(
+    shop_id: str,
+    user_id: str,
+    buyer_uid: str,
+) -> bool:
+    """同步发送转人工安抚（供 LLM 工具线程调用）。"""
+    if not all(
+        str(x or "").strip() for x in (shop_id, user_id, buyer_uid)
+    ):
+        return False
+    notice = human_transfer_comfort_notice()
+    try:
+        from Channel.pinduoduo.utils.API.send_message import SendMessage
+
+        sender = SendMessage(str(shop_id), str(user_id))
+        result = sender.send_text(str(buyer_uid), notice)
+        if isinstance(result, dict) and result.get("success"):
+            _log.info(
+                "LLM 工具转接前安抚已发送: buyer={}",
+                buyer_uid,
+            )
+            return True
+        _log.warning("LLM 工具转接前安抚失败: {}", result)
+        return False
+    except Exception as e:
+        _log.warning("LLM 工具转接前安抚异常: {}", e)
+        return False
 
 
 def send_human_transfer_comfort_from_payload(payload: Dict[str, Any]) -> bool:

@@ -329,6 +329,53 @@ def persist_seller_mall_cs_from_context(
     return sid
 
 
+def persist_human_image_message(
+    channel_name: str,
+    platform_shop_id: str,
+    seller_user_id: str,
+    login_username: str,
+    buyer_uid: str,
+    image_url: str,
+) -> Optional[int]:
+    """人工发送图片落库。"""
+    url = str(image_url or "").strip()
+    if not url:
+        return None
+    account_id, sid = _ensure_chat_session(
+        channel_name,
+        platform_shop_id,
+        seller_user_id,
+        login_username,
+        buyer_uid,
+    )
+    if account_id is None or sid is None:
+        return None
+    from database.db_manager import db_manager
+
+    preview = url if len(url) <= 50 else url[:50] + "…"
+    db_manager.add_chat_message(
+        session_id=sid,
+        account_id=account_id,
+        sender_type="human",
+        content=url,
+        message_id=None,
+        content_type="image",
+        image_url=url,
+        increment_unread=False,
+        sent_at=shanghai_naive_now(),
+    )
+    _sync_hub_after_outbound(
+        channel_name,
+        platform_shop_id,
+        seller_user_id,
+        login_username,
+        buyer_uid,
+        preview,
+        role="agent",
+    )
+    return sid
+
+
 def persist_human_message(
     channel_name: str,
     platform_shop_id: str,
@@ -398,6 +445,89 @@ def persist_escalation_system_note(payload: dict, note: str) -> None:
         _log.warning("persist_escalation_system_note 失败: {}", e)
 
 
+def _persist_ai_message_once(
+    channel_name: str,
+    platform_shop_id: str,
+    seller_user_id: str,
+    login_username: str,
+    buyer_uid: str,
+    text: str,
+) -> Optional[int]:
+    import time
+
+    from sqlalchemy.exc import OperationalError
+
+    last_err: Optional[Exception] = None
+    for attempt in range(6):
+        try:
+            account_id, sid = _ensure_chat_session(
+                channel_name,
+                platform_shop_id,
+                seller_user_id,
+                login_username,
+                buyer_uid,
+            )
+            if account_id is None or sid is None:
+                return None
+            from database.db_manager import db_manager
+
+            body = (text or "").strip()
+            if body:
+                try:
+                    recent = db_manager.get_chat_messages_recent(int(sid), limit=8)
+                    for row in recent:
+                        if (row.get("sender_type") or "") != "ai":
+                            continue
+                        if (str(row.get("content") or "").strip()) == body:
+                            _sync_hub_after_outbound(
+                                channel_name,
+                                platform_shop_id,
+                                seller_user_id,
+                                login_username,
+                                buyer_uid,
+                                text,
+                                role="ai",
+                            )
+                            return sid
+                except Exception:
+                    pass
+
+            msg_id = db_manager.add_chat_message(
+                session_id=sid,
+                account_id=account_id,
+                sender_type="ai",
+                content=text,
+                message_id=None,
+                increment_unread=False,
+                sent_at=shanghai_naive_now(),
+                immediate=True,
+            )
+            if msg_id is None and attempt < 5:
+                time.sleep(0.08 * (attempt + 1))
+                continue
+            _sync_hub_after_outbound(
+                channel_name,
+                platform_shop_id,
+                seller_user_id,
+                login_username,
+                buyer_uid,
+                text,
+                role="ai",
+            )
+            return sid
+        except OperationalError as e:
+            last_err = e
+            if "locked" not in str(e).lower() or attempt >= 5:
+                break
+            time.sleep(0.08 * (attempt + 1))
+        except Exception as e:
+            last_err = e
+            break
+    if last_err is not None:
+        _log.warning("persist_ai_message 失败 buyer={}: {}", buyer_uid, last_err)
+    return None
+
+
 def persist_ai_message(
     channel_name: str,
     platform_shop_id: str,
@@ -406,33 +536,53 @@ def persist_ai_message(
     buyer_uid: str,
     text: str,
 ) -> Optional[int]:
-    account_id, sid = _ensure_chat_session(
-        channel_name,
-        platform_shop_id,
-        seller_user_id,
-        login_username,
-        buyer_uid,
-    )
-    if account_id is None or sid is None:
-        return None
-    from database.db_manager import db_manager
-
-    db_manager.add_chat_message(
-        session_id=sid,
-        account_id=account_id,
-        sender_type="ai",
-        content=text,
-        message_id=None,
-        increment_unread=False,
-        sent_at=shanghai_naive_now(),
-    )
-    _sync_hub_after_outbound(
+    sid = _persist_ai_message_once(
         channel_name,
         platform_shop_id,
         seller_user_id,
         login_username,
         buyer_uid,
         text,
-        role="ai",
     )
+    if sid is None:
+        schedule_persist_ai_retry(
+            channel_name,
+            platform_shop_id,
+            seller_user_id,
+            login_username,
+            buyer_uid,
+            text,
+        )
     return sid
+
+
+def schedule_persist_ai_retry(
+    channel_name: str,
+    platform_shop_id: str,
+    seller_user_id: str,
+    login_username: str,
+    buyer_uid: str,
+    text: str,
+) -> None:
+    """主库锁竞争时后台补写 AI 消息，避免补偿误判未回复。"""
+    import threading
+
+    def _worker() -> None:
+        import time
+
+        for attempt in range(12):
+            time.sleep(min(30.0, 0.5 * (attempt + 1)))
+            sid = _persist_ai_message_once(
+                channel_name,
+                platform_shop_id,
+                seller_user_id,
+                login_username,
+                buyer_uid,
+                text,
+            )
+            if sid is not None:
+                return
+
+    threading.Thread(
+        target=_worker, daemon=True, name=f"PersistAI-{buyer_uid}"
+    ).start()

@@ -63,6 +63,39 @@ _TIME_H = 18
 _LOADING_ROW_H = 44
 
 
+def _scale_chat_image(pm: QPixmap, max_w: int, max_h: int) -> QPixmap:
+    """按最大宽高等比缩放聊天图片。"""
+    if pm.isNull():
+        return pm
+    cap_w = max(1, min(int(max_w), _IMG_MAX_W))
+    cap_h = max(1, int(max_h))
+    return pm.scaled(
+        cap_w,
+        cap_h,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
+def _image_bubble_dimensions(
+    pm: Optional[QPixmap],
+    *,
+    list_inner_max: int,
+    loaded: bool,
+) -> tuple[int, int]:
+    """返回图片气泡 (宽, 高)，宽高度贴合实际图片而非文本最大宽。"""
+    pad_w = _BUBBLE_PAD_H * 2
+    pad_h = _BUBBLE_PAD_V * 2
+    max_inner_w = min(max(80, list_inner_max - pad_w), _IMG_MAX_W)
+    if loaded and pm is not None and not pm.isNull():
+        scaled = _scale_chat_image(pm, max_inner_w, _IMG_MAX_H)
+        bubble_w = max(80, scaled.width()) + pad_w
+        bubble_h = max(_IMG_PLACEHOLDER_H - pad_h, scaled.height()) + pad_h
+        return bubble_w, bubble_h
+    placeholder_w = min(180, list_inner_max)
+    return placeholder_w, _IMG_PLACEHOLDER_H + pad_h
+
+
 @dataclass
 class ChatMessageRow:
     msg_id: int = 0
@@ -227,16 +260,12 @@ class _BubbleMetrics:
         if self.is_image:
             cache = get_chat_image_cache()
             pm = cache.get(self.image_url)
-            if pm is not None and not pm.isNull():
-                scaled = pm.scaled(
-                    min(self.bubble_w - 24, _IMG_MAX_W),
-                    _IMG_MAX_H,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                self.bubble_h = max(_IMG_PLACEHOLDER_H, scaled.height()) + _BUBBLE_PAD_V * 2
-            else:
-                self.bubble_h = _IMG_PLACEHOLDER_H + _BUBBLE_PAD_V * 2
+            loaded = pm is not None and not pm.isNull()
+            self.bubble_w, self.bubble_h = _image_bubble_dimensions(
+                pm,
+                list_inner_max=inner_max,
+                loaded=loaded,
+            )
         elif self.text_fmt == Qt.TextFormat.RichText:
             doc = QTextDocument()
             doc.setDefaultFont(QFont("", 15))
@@ -302,8 +331,8 @@ class ChatMessageItemDelegate(QStyledItemDelegate):
 
     def _on_pixmap_loaded(self, _url: str) -> None:
         view = self.parent()
-        if isinstance(view, QListView):
-            view.viewport().update()
+        if isinstance(view, ChatMessageListView):
+            view.relayout_items()
 
     def sizeHint(self, option, index) -> QSize:  # noqa: N802
         row = index.data(ChatMessageListModel.RowRole)
@@ -432,14 +461,10 @@ class ChatMessageItemDelegate(QStyledItemDelegate):
             cache = get_chat_image_cache()
             pm = cache.get(m.image_url)
             if pm is not None and not pm.isNull():
-                scaled = pm.scaled(
-                    inner.width(),
-                    _IMG_MAX_H,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+                scaled = _scale_chat_image(pm, inner.width(), _IMG_MAX_H)
+                img_x = inner.left() + max(0, (inner.width() - scaled.width()) // 2)
                 img_rect = QRect(
-                    inner.left(),
+                    img_x,
                     inner.top(),
                     scaled.width(),
                     scaled.height(),
@@ -543,6 +568,11 @@ class ChatMessageListView(QListView):
     def scroll_to_bottom(self) -> None:
         bar = self.verticalScrollBar()
         bar.setValue(bar.maximum())
+
+    def relayout_items(self) -> None:
+        """图片加载后重新计算各行高度，避免气泡被裁切。"""
+        self.doItemsLayout()
+        self.viewport().update()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)

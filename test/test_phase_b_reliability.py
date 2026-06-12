@@ -87,18 +87,19 @@ def test_hub_list_changed_debounced(qapp, qtbot):
     qtbot.addWidget(widget)
     widget._sync.stop()
     widget._hub_refresh_timer.stop()
-    widget._reload_accounts_from_db = MagicMock()
     widget.account_list.reload = MagicMock()
-    widget._refresh_session_trees = MagicMock()
+    widget._schedule_session_tree_refresh = MagicMock()
 
     with patch("ui.chat_ui.get_config", return_value=200):
         widget._on_hub_list_changed("acc1")
         widget._on_hub_list_changed("acc1")
         widget._on_hub_list_changed("acc2")
 
-    assert widget._reload_accounts_from_db.call_count == 0
+    assert widget.account_list.reload.call_count == 0
+    assert widget._schedule_session_tree_refresh.call_count == 0
     qtbot.wait(350)
-    assert widget._reload_accounts_from_db.call_count == 1
+    assert widget.account_list.reload.call_count == 1
+    assert widget._schedule_session_tree_refresh.call_count == 1
     widget._hub_refresh_timer.stop()
 
 

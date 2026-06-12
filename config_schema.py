@@ -156,6 +156,8 @@ class ChatConfig(BaseModel):
     transfer_auto_rose_enabled: bool = False
     buyer_emotion_alert_enabled: bool = True
     buyer_emotion_escalate_threshold: int = 2
+    high_risk_second_turn_enabled: bool = True
+    high_risk_second_turn_threshold: int = 2
     ai_pm_escalation_enabled: bool = True
     ai_max_tokens: int = 500
     ai_temperature: float = 0.5
@@ -176,6 +178,15 @@ class ChatConfig(BaseModel):
     ws_reconnect_reconcile_enabled: bool = True
     ws_reconnect_enqueue_unreplied: bool = True
     ws_reconnect_reconcile_cooldown_sec: int = 120
+    ws_reconnect_compensate_on_cold_start: bool = False
+    ws_reconnect_outbound_guard_sec: int = 21600
+    outbound_outbox_enabled: bool = True
+    outbound_outbox_worker_enabled: bool = True
+    outbound_outbox_retry_interval_sec: int = 60
+    outbound_outbox_max_attempts: int = 3
+    stage_cycle_detect_enabled: bool = True
+    stage_cycle_window_sec: int = 120
+    stage_cycle_repeat_threshold: int = 3
     knowledge_retrieval_timeout_sec: float = 5.0
     unhandled_fallback_enabled: bool = True
     unhandled_fallback_notice: str = (
@@ -376,6 +387,15 @@ config_base = {
         "ws_reconnect_reconcile_enabled": True,
         "ws_reconnect_enqueue_unreplied": True,
         "ws_reconnect_reconcile_cooldown_sec": 120,
+        "ws_reconnect_compensate_on_cold_start": False,
+        "ws_reconnect_outbound_guard_sec": 21600,
+        "outbound_outbox_enabled": True,
+        "outbound_outbox_worker_enabled": True,
+        "outbound_outbox_retry_interval_sec": 60,
+        "outbound_outbox_max_attempts": 3,
+        "stage_cycle_detect_enabled": True,
+        "stage_cycle_window_sec": 120,
+        "stage_cycle_repeat_threshold": 3,
         "llm_sync_retry_enabled": True,
         "llm_sync_retry_delay_sec": 1.5,
         "llm_arun_timeout_sec": 120,
@@ -518,6 +538,8 @@ config_base = {
         "human_transfer_notice": "稍等下 这边上报一下呢亲亲",
         "buyer_emotion_alert_enabled": True,
         "buyer_emotion_escalate_threshold": 2,
+        "high_risk_second_turn_enabled": True,
+        "high_risk_second_turn_threshold": 2,
         "ai_pm_escalation_enabled": True,
         "ai_max_tokens": 500,
         "ai_temperature": 0.5,

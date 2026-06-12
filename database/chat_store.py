@@ -119,6 +119,31 @@ class ChatStoreMixin:
         """实时统计买家未读消息数。"""
         return self._count_unread_buyer_messages_bulk([session_id]).get(session_id, 0)
 
+    def get_unread_sum_by_account(self) -> Dict[int, int]:
+        """按接待账号汇总买家未读数（单条 SQL，供左侧账号列表使用）。"""
+        db = self.get_session()
+        try:
+            rows = (
+                db.query(ChatSession.account_id, func.count(ChatMessage.id))
+                .join(ChatMessage, ChatMessage.session_id == ChatSession.id)
+                .filter(
+                    ChatMessage.is_read == False,  # noqa: E712
+                    ChatMessage.sender_type == "customer",
+                )
+                .group_by(ChatSession.account_id)
+                .all()
+            )
+            return {
+                int(aid): int(cnt)
+                for aid, cnt in rows
+                if aid is not None
+            }
+        except SQLAlchemyError as e:
+            self.logger.error(f"get_unread_sum_by_account 失败: {e}")
+            return {}
+        finally:
+            db.close()
+
     def get_chat_session_summaries(
         self, account_id: Optional[int] = None, status: Optional[str] = "active"
     ) -> List[Dict[str, Any]]:
@@ -158,9 +183,39 @@ class ChatStoreMixin:
             session.close()
 
     def get_chat_sessions(
-        self, account_id: Optional[int] = None, status: str = "active"
+        self, account_id: Optional[int] = None, status: Optional[str] = "active"
     ) -> List[Dict[str, Any]]:
         return self.get_chat_session_summaries(account_id, status)
+
+    def reopen_chat_session(self, session_id: int) -> bool:
+        """将 closed 会话重新标为 active（人工再次打开时）。"""
+        session = self.get_session()
+        try:
+            s = session.query(ChatSession).filter(ChatSession.id == int(session_id)).first()
+            if not s or (s.status or "active") != "closed":
+                return False
+            s.status = "active"
+            s.updated_at = now_for_db()
+            session.commit()
+            try:
+                from Agent.CustomerAgent.conversation_memory import (
+                    reset_session_flow_memory,
+                )
+
+                reset_session_flow_memory(int(s.id), source="SessionReopenManual")
+            except Exception as e:
+                self.logger.debug(
+                    "reopen_chat_session 重置 task_state 失败 session={}: {}",
+                    s.id,
+                    e,
+                )
+            return True
+        except SQLAlchemyError as e:
+            session.rollback()
+            self.logger.error(f"reopen_chat_session 失败: {e}")
+            return False
+        finally:
+            session.close()
 
     def get_chat_session_by_buyer(
         self, account_id: int, buyer_uid: str, status: str = "active"
@@ -466,6 +521,43 @@ class ChatStoreMixin:
         finally:
             session.close()
 
+    def lock_session_human_atomic(self, session_id: int) -> bool:
+        """单事务：ai_mode=False + stage 置 idle 并清空业务槽位。"""
+        import json
+
+        session = self.get_session()
+        try:
+            s = session.query(ChatSession).filter(ChatSession.id == session_id).first()
+            if not s:
+                return False
+            s.ai_mode = False
+            try:
+                from Agent.CustomerAgent.conversation_memory import TaskState
+
+                task = TaskState.from_dict(
+                    json.loads(s.task_state_json) if s.task_state_json else None
+                )
+                task.stage = "idle"
+                task.flow_node = "idle"
+                task.slots = {}
+                task.pending_confirm = []
+                s.task_state_json = json.dumps(task.to_dict(), ensure_ascii=False)
+            except Exception as e:
+                self.logger.debug(
+                    "lock_session_human_atomic task_state 重置跳过 session={}: {}",
+                    session_id,
+                    e,
+                )
+            s.updated_at = now_for_db()
+            session.commit()
+            return True
+        except SQLAlchemyError as e:
+            session.rollback()
+            self.logger.error(f"lock_session_human_atomic 失败: {e}")
+            return False
+        finally:
+            session.close()
+
     @staticmethod
     def _default_ai_mode_for_account(account_id: int) -> bool:
         try:
@@ -531,26 +623,41 @@ class ChatStoreMixin:
         long_term_summary: Optional[str] = None,
         memory_summary_through_id: Optional[int] = None,
     ) -> bool:
-        session = self.get_session()
-        try:
-            s = session.query(ChatSession).filter(ChatSession.id == session_id).first()
-            if not s:
-                return False
-            if task_state_json is not None:
-                s.task_state_json = task_state_json
-            if long_term_summary is not None:
-                s.long_term_summary = long_term_summary
-            if memory_summary_through_id is not None:
-                s.memory_summary_through_id = memory_summary_through_id
-            s.updated_at = now_for_db()
-            session.commit()
-            return True
-        except SQLAlchemyError as e:
-            session.rollback()
-            self.logger.error(f"update_session_memory 失败: {e}")
-            return False
-        finally:
-            session.close()
+        import time
+
+        from sqlalchemy.exc import OperationalError
+
+        last_err: Optional[Exception] = None
+        for attempt in range(4):
+            session = self.get_session()
+            try:
+                s = session.query(ChatSession).filter(ChatSession.id == session_id).first()
+                if not s:
+                    return False
+                if task_state_json is not None:
+                    s.task_state_json = task_state_json
+                if long_term_summary is not None:
+                    s.long_term_summary = long_term_summary
+                if memory_summary_through_id is not None:
+                    s.memory_summary_through_id = memory_summary_through_id
+                s.updated_at = now_for_db()
+                session.commit()
+                return True
+            except OperationalError as e:
+                session.rollback()
+                last_err = e
+                if "locked" not in str(e).lower() or attempt >= 3:
+                    break
+                time.sleep(0.05 * (attempt + 1))
+            except SQLAlchemyError as e:
+                session.rollback()
+                last_err = e
+                break
+            finally:
+                session.close()
+        if last_err is not None:
+            self.logger.error(f"update_session_memory 失败: {last_err}")
+        return False
 
     def add_chat_message(
         self,
@@ -947,7 +1054,6 @@ class ChatStoreMixin:
                 session.query(func.count(ChatMessage.id))
                 .join(ChatSession, ChatMessage.session_id == ChatSession.id)
                 .filter(
-                    ChatSession.status == "active",
                     ChatMessage.is_read == False,  # noqa: E712
                     ChatMessage.sender_type == "customer",
                 )

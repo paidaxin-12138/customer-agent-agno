@@ -6,7 +6,29 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PyQt6.QtWidgets import QTreeWidgetItem
+
 from utils.chat_time import format_chat_display_relative
+
+_UNREAD_DOT_ICON: Optional[QIcon] = None
+
+
+def unread_dot_icon(size: int = 10) -> QIcon:
+    """未读红点（缓存单例）。"""
+    global _UNREAD_DOT_ICON
+    if _UNREAD_DOT_ICON is None:
+        pm = QPixmap(size, size)
+        pm.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QColor("#FF3B30"))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(0, 0, size - 1, size - 1)
+        painter.end()
+        _UNREAD_DOT_ICON = QIcon(pm)
+    return _UNREAD_DOT_ICON
 
 
 def session_sort_key(session: Dict[str, Any]) -> Tuple[bool, int, float]:
@@ -37,9 +59,20 @@ def format_session_tree_label(session: Dict[str, Any]) -> str:
     nick = (session.get("buyer_nickname") or "买家").strip()
     if len(nick) > 12:
         nick = nick[:11] + "…"
+    status = str(session.get("status") or "active").strip()
+    closed_tag = "  ·  已结案" if status == "closed" else ""
+    return f"{nick}  ·  {ts}{closed_tag}\n{prev or '（暂无消息）'}"
+
+
+def apply_session_tree_item_visual(item: QTreeWidgetItem, session: Dict[str, Any]) -> None:
+    """未读会话左侧显示红点；有未读时在工具提示中显示数量。"""
     unread = int(session.get("unread_count") or 0)
-    unread_suffix = f"  ·  未读{unread}" if unread else ""
-    return f"{nick}  ·  {ts}{unread_suffix}\n{prev or '（暂无消息）'}"
+    if unread > 0:
+        item.setIcon(0, unread_dot_icon())
+        item.setToolTip(0, f"未读 {unread} 条")
+    else:
+        item.setIcon(0, QIcon())
+        item.setToolTip(0, "")
 
 
 def session_matches_filter(session: Dict[str, Any], query: str) -> bool:

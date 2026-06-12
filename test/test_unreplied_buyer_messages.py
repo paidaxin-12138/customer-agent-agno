@@ -30,6 +30,16 @@ def test_platform_civility_not_counted_as_reply():
     assert "脏话" in parts
 
 
+def test_agent_reply_from_mms_sync_counts_as_effective():
+    rows = [
+        {"sender_type": "customer", "content": "别人家比你便宜"},
+        {"sender_type": "agent", "content": "亲亲，咱们这款灯主打速干…"},
+        {"sender_type": "customer", "content": "？"},
+    ]
+    parts = collect_unreplied_buyer_messages(rows, max_scan=5, max_parts=3)
+    assert parts == ["？"]
+
+
 def test_merge_prompt():
     text = merge_unreplied_parts(["A", "B", "C"])
     assert "用户先问：A" in text

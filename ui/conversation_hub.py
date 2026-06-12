@@ -183,7 +183,7 @@ class ConversationHub(QObject):
         from database.db_manager import db_manager
         from database.session_store import summary_from_row
 
-        rows = db_manager.get_chat_session_summaries(account_id, "active")
+        rows = db_manager.get_chat_session_summaries(account_id, None)
         with self._lock:
             self._account_id_by_key[account_key] = int(account_id)
             acc = self._by_account.setdefault(account_key, OrderedDict())

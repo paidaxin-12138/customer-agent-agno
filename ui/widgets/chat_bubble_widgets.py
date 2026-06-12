@@ -45,7 +45,7 @@ SYSTEM_TEXT = UI.TEXT_SECONDARY
 _URL_RE = re.compile(r"https?://", re.I)
 _BUBBLE_MAX_W = 420
 _IMG_MAX_W = 280
-_IMG_MAX_H = 320
+_IMG_MAX_H = 480
 _IMG_PLACEHOLDER_H = 120
 # 多行 QLabel 高度估算余量（fontMetrics / 圆角边框）
 _BUBBLE_HEIGHT_SLACK = 10
@@ -166,8 +166,8 @@ class _ChatImageLoaderThread(QThread):
     loaded = pyqtSignal(QPixmap)
     failed = pyqtSignal()
 
-    def __init__(self, url: str):
-        super().__init__()
+    def __init__(self, url: str, parent: Optional[QWidget] = None):
+        super().__init__(parent)
         self._url = (url or "").strip()
 
     def run(self) -> None:
@@ -232,7 +232,25 @@ class _ImageBubbleBody(QWidget):
         self._loader = _ChatImageLoaderThread(url)
         self._loader.loaded.connect(self._on_loaded)
         self._loader.failed.connect(self._on_failed)
+        self._loader.finished.connect(self._loader.deleteLater)
         self._loader.start()
+
+    def _shutdown_loader(self) -> None:
+        loader = getattr(self, "_loader", None)
+        if loader is None:
+            return
+        try:
+            loader.loaded.disconnect(self._on_loaded)
+            loader.failed.disconnect(self._on_failed)
+        except (TypeError, RuntimeError):
+            pass
+        if loader.isRunning():
+            loader.wait(10_000)
+        self._loader = None
+
+    def closeEvent(self, event) -> None:
+        self._shutdown_loader()
+        super().closeEvent(event)
 
     def _scale_pixmap(self, pixmap: QPixmap, max_w: int) -> QPixmap:
         w = min(max_w, _IMG_MAX_W)

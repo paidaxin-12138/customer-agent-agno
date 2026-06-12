@@ -423,6 +423,10 @@ class MessageConsumer:
                     wrapper.context, metadata, processed=processed
                 )
 
+                if not processed and metadata.get("_outbound_comfort_sent"):
+                    processed = True
+                    metadata.setdefault("handled_by", "outbound_sent")
+
                 if not processed and not metadata.get("_outbound_comfort_sent"):
                     try:
                         from Agent.CustomerAgent.conversation_memory import (

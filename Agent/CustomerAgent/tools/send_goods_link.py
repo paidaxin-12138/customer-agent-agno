@@ -3,7 +3,6 @@
 # https://creativecommons.org/licenses/by-nc/4.0/
 from agno.run import RunContext
 from agno.tools import tool
-from Channel.pinduoduo.utils.API.send_message import SendMessage
 from utils.agent_tool_guard import bind_tool_session_params, validate_shop_goods_id
 from utils.agno_tool_offload import offload_tool
 from utils.logger_loguru import get_logger
@@ -62,16 +61,30 @@ def send_goods_link(
 
         check_turn_abort()
 
-        sender = SendMessage(shop_id, user_id)
-        result = sender.send_mallGoodsCard(recipient_uid, goods_id, biz_type=2)
+        from Message.handlers.channel_send import send_goods_card_sync
 
-        if result and result.get("success"):
+        tool_meta = {
+            "shop_id": shop_id,
+            "user_id": user_id,
+            "from_uid": recipient_uid,
+            "channel_name": deps.get("channel_name") or "pinduoduo",
+            "username": deps.get("username") or deps.get("login_username") or "",
+            "session_id": deps.get("session_id"),
+        }
+        ok, error_msg = send_goods_card_sync(
+            shop_id,
+            user_id,
+            recipient_uid,
+            goods_id=int(goods_id),
+            biz_type=2,
+            metadata=tool_meta,
+        )
+
+        if ok:
             logger.info(f"商品卡片发送成功: goods_id={goods_id}, to={recipient_uid}")
             return "商品卡片发送成功"
-        else:
-            error_msg = result.get('error_msg', '发送失败') if result else '发送失败'
-            logger.error(f"商品卡片发送失败: {error_msg}, goods_id={goods_id}")
-            return f"商品卡片发送失败: {error_msg}"
+        logger.error(f"商品卡片发送失败: {error_msg}, goods_id={goods_id}")
+        return f"商品卡片发送失败: {error_msg}"
 
     except Exception as e:
         logger.error(f"发送商品卡片异常: {str(e)}")

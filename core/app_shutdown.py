@@ -96,6 +96,13 @@ def shutdown_application() -> None:
 
     _logger.info("应用正在退出，开始清理后台资源…")
     try:
+        from utils.chat_image_cache import get_chat_image_cache
+
+        get_chat_image_cache().drain_running_threads()
+        get_chat_image_cache().clear()
+    except Exception as exc:
+        _logger.debug("聊天图片缓存清理跳过: {}", exc)
+    try:
         from database.chat_message_buffer import flush_chat_message_buffer
 
         flushed = flush_chat_message_buffer()

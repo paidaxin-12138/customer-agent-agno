@@ -19,6 +19,7 @@ class _SilentBusinessHandler(MessageHandler):
     """模拟业务 Handler：标记已处理但不发买家消息。"""
 
     async def handle(self, context: Context, metadata: Dict[str, Any]) -> bool:
+        metadata["_handler_resolved_without_outbound"] = True
         return True
 
     def can_handle(self, context: Context, metadata: Dict[str, Any] = None) -> bool:

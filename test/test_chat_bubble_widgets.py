@@ -20,14 +20,6 @@ from ui.widgets.chat_bubble_widgets import (
 )
 
 
-@pytest.fixture(scope="module")
-def qapp():
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication([])
-    return app
-
-
 def test_chat_bg_colors():
     from ui import apple_ui_tokens as T
 
@@ -76,7 +68,14 @@ def test_incoming_bubble_widget(qapp):
     assert "买家你好" in label.text()
 
 
-def test_image_bubble_uses_pixmap_loader(qapp):
+def test_image_bubble_uses_pixmap_loader(qapp, monkeypatch):
+    async def _empty_fetch(*_args, **_kwargs):
+        return b""
+
+    monkeypatch.setattr(
+        "utils.url_fetch_guard.aiohttp_fetch_bytes",
+        _empty_fetch,
+    )
     w = ChatMessageBubbleWidget(
         sender_type="customer",
         content="",
@@ -91,6 +90,12 @@ def test_image_bubble_uses_pixmap_loader(qapp):
     placeholder = body.findChild(QLabel, "ChatBubbleImagePlaceholder")
     assert placeholder is not None
     assert "加载中" in placeholder.text()
+    if hasattr(body, "_shutdown_loader"):
+        body._shutdown_loader()
+    w.close()
+    w.deleteLater()
+    for _ in range(10):
+        qapp.processEvents()
 
 
 def test_multiline_ai_bubble_frame_height(qapp):

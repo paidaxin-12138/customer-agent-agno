@@ -114,7 +114,7 @@ def try_intent_stage_reset(
     from Agent.CustomerAgent.conversation_memory import (
         get_current_stage,
         resolve_session_id,
-        update_session_state,
+        transition_session_stage,
     )
 
     text = message_text
@@ -129,7 +129,7 @@ def try_intent_stage_reset(
     sid = resolve_session_id(context, metadata)
     if sid is None:
         return False
-    update_session_state(
+    transition_session_stage(
         sid,
         stage="idle",
         intent=guessed,

@@ -136,6 +136,59 @@ class AIReplyHandler(BaseHandler):
     def _should_escalate_to_human(self, text: str) -> bool:
         return has_explicit_transfer_intent(text)
 
+    @staticmethod
+    def _should_direct_transfer_weak_high_risk(
+        session_key: Optional[str], text: str
+    ) -> bool:
+        from utils.high_risk_escalation import should_direct_transfer_second_weak
+
+        return should_direct_transfer_second_weak(session_key, text)
+
+    async def _direct_code_transfer(
+        self,
+        context: Context,
+        metadata: Dict[str, Any],
+        question: str,
+        *,
+        reason: str,
+    ) -> bool:
+        """代码直转：固定安抚 + 转接尝试，不经过 LLM。"""
+        from utils.human_escalation_comfort import (
+            resolve_session_ids,
+            send_human_transfer_comfort,
+        )
+        from Message.handlers.channel_send import transfer_to_available_cs_async
+
+        await send_human_transfer_comfort(context, metadata, reason=reason)
+        try:
+            from core.human_assist_bus import emit_human_assist
+
+            emit_human_assist(reason, context, metadata, question)
+        except Exception as e:
+            self.logger.debug("emit_human_assist({}): {}", reason, e)
+
+        shop_id, user_id, from_uid = resolve_session_ids(context, metadata)
+        if all([shop_id, user_id, from_uid]):
+            if await transfer_to_available_cs_async(
+                shop_id, user_id, from_uid, context=context, metadata=metadata
+            ):
+                self.logger.info("代码直转成功: reason={}", reason)
+
+        try:
+            from utils.session_human_lock import lock_session_to_human
+
+            lock_session_to_human(
+                context=context,
+                metadata=metadata,
+                reason=reason,
+            )
+        except Exception as e:
+            self.logger.debug("direct_code_transfer lock human: {}", e)
+
+        if metadata.get("_outbound_comfort_sent"):
+            metadata["_handler_resolved_without_outbound"] = True
+        return True
+
     async def _handle_turn_aborted_silent(
         self,
         context: Context,
@@ -339,7 +392,31 @@ class AIReplyHandler(BaseHandler):
                     )
                 except Exception as e:
                     self.logger.debug(f"emit_human_assist(keyword_human): {e}")
+                try:
+                    from utils.session_human_lock import lock_session_to_human
+
+                    lock_session_to_human(
+                        context=context,
+                        metadata=metadata,
+                        reason="explicit_transfer_intent",
+                    )
+                except Exception as e:
+                    self.logger.debug("explicit transfer lock human: {}", e)
                 return True
+
+            if self._should_direct_transfer_weak_high_risk(
+                session_key, raw_buyer_text
+            ):
+                self.logger.info(
+                    "弱高风险累计达阈值，代码直转（跳过排队降级与 LLM）: {!r}",
+                    raw_buyer_text,
+                )
+                return await self._direct_code_transfer(
+                    context,
+                    metadata,
+                    raw_buyer_text,
+                    reason="high_risk_second_turn",
+                )
 
             try:
                 from core.ops_telemetry import set_rewrite, set_intent, start_turn
@@ -670,20 +747,21 @@ class AIReplyHandler(BaseHandler):
                 metadata=metadata,
             )
             if ok:
-                try:
-                    from database.chat_persist import persist_ai_message
+                if not metadata.get("_outbound_outbox_id"):
+                    try:
+                        from database.chat_persist import persist_ai_message
 
-                    await asyncio.to_thread(
-                        persist_ai_message,
-                        metadata.get("channel_name") or "pinduoduo",
-                        str(metadata.get("shop_id") or ""),
-                        str(metadata.get("user_id") or ""),
-                        str(metadata.get("username") or ""),
-                        str(from_uid),
-                        reply,
-                    )
-                except Exception as e:
-                    self.logger.warning("persist_ai_message 失败: {}", e)
+                        await asyncio.to_thread(
+                            persist_ai_message,
+                            metadata.get("channel_name") or "pinduoduo",
+                            str(metadata.get("shop_id") or ""),
+                            str(metadata.get("user_id") or ""),
+                            str(metadata.get("username") or ""),
+                            str(from_uid),
+                            reply,
+                        )
+                    except Exception as e:
+                        self.logger.warning("persist_ai_message 失败: {}", e)
                 self._stats["send_ok"] += 1
                 return True
             self._stats["send_fail"] += 1

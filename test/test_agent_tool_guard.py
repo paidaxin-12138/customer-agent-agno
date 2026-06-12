@@ -16,20 +16,42 @@ def test_buyer_message_from_dependencies():
     assert buyer_message_from_dependencies({"buyer_message": " 转人工 "}) == "转人工"
 
 
-def test_transfer_denied_without_intent():
+def test_transfer_allowed_when_model_escalates_without_explicit_intent():
+    ok, msg = allow_transfer_tool_call(
+        {
+            "shop_id": "s1",
+            "user_id": "u1",
+            "from_uid": "buyer1",
+            "buyer_message": "用了你们的产品过敏了",
+        }
+    )
+    assert ok
+    assert msg == ""
+
+
+def test_transfer_allowed_with_explicit_intent():
+    ok, msg = allow_transfer_tool_call(
+        {
+            "shop_id": "s1",
+            "user_id": "u1",
+            "from_uid": "buyer1",
+            "buyer_message": "我要转人工客服",
+        }
+    )
+    assert ok
+    assert msg == ""
+
+
+def test_transfer_denied_without_session_context():
     ok, msg = allow_transfer_tool_call({"buyer_message": "这个多少钱"})
     assert not ok
     assert "拒绝" in msg
 
 
-def test_transfer_allowed_with_intent():
-    ok, msg = allow_transfer_tool_call({"buyer_message": "我要转人工客服"})
-    assert ok
-    assert msg == ""
-
-
 def test_transfer_denied_without_message():
-    ok, _ = allow_transfer_tool_call({})
+    ok, _ = allow_transfer_tool_call(
+        {"shop_id": "s1", "user_id": "u1", "from_uid": "buyer1"}
+    )
     assert not ok
 
 

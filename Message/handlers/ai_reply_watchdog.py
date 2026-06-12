@@ -23,6 +23,7 @@ logger = get_logger("AIReplyWatchdog")
 _tasks: Dict[str, "asyncio.Task[Any]"] = {}
 _epoch: Dict[str, int] = {}
 _replied_epoch: Dict[str, int] = {}
+_outbound_delivered_at: Dict[str, float] = {}
 _escalated_epoch: Dict[str, int] = {}
 _turn_store: Dict[str, Dict[str, Any]] = {}
 _lock = asyncio.Lock()
@@ -139,6 +140,21 @@ def mark_delivered(session_key: Optional[str], epoch: int) -> None:
     cur = _replied_epoch.get(session_key, 0)
     if epoch >= cur:
         _replied_epoch[session_key] = epoch
+        _outbound_delivered_at[session_key] = time.monotonic()
+
+
+def was_recently_replied(session_key: Optional[str], within_sec: float = 300.0) -> bool:
+    """进程内近期已成功出站（含 AI/安抚），用于补偿入队门禁。"""
+    if not session_key:
+        return False
+    ts = _outbound_delivered_at.get(session_key)
+    if ts is None:
+        return False
+    try:
+        window = max(30.0, min(float(within_sec), 86400.0))
+    except (TypeError, ValueError):
+        window = 300.0
+    return time.monotonic() - ts < window
 
 
 def _is_delivered(session_key: str, epoch: int) -> bool:

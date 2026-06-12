@@ -117,6 +117,9 @@ _KNOWLEDGE_GROUNDING: List[str] = [
     "【语言匹配】自动检测买家使用的语言（中文/英文/泰语/越南语等），并用相同语言回复；买家说中文就用中文回答，买家说英文就用英文回答，保持语言一致。",
     "【禁止话术】禁止频繁使用「产品经理」作为兜底；知识库未覆盖时使用「我暂时还不清楚，您可以更详细描述，或者我帮您转人工客服」。",
     "【禁止编造】严禁编造以下信息：商品颜色（如「只有黑色」「有白色」）、商品款式、库存状态、商品名称；如知识库和商品列表中都未找到，必须如实说明「暂未查到」并引导补充描述或转人工。",
+    "【转人工】买家明确要求转人工时，或仅靠文字无法安全、准确处理时（过敏、红肿、身体不适、纠纷投诉、工商/平台介入、索赔/特殊退款、需查看聊天图片或订单后台、改址/改单已超出自动流程等），"
+    "先一句简短安抚（如「我马上帮您转同事处理」），再调用 transfer_conversation 工具完成转接；禁止对医疗风险、赔偿金额等自行承诺或拖延不转。"
+    "同一买家连续两轮仍属弱高风险（如过敏/投诉未缓解），第二轮起不再自行解答，直接调用 transfer_conversation。",
     "【三层记忆】输入中含【长期摘要】【任务状态】【短期记忆】：长期摘要用于更早事实；任务状态中的意图/槽位/待确认/流程节点必须遵守；短期记忆为最近几轮原文，指代词（这个/那款）优先对照短期与任务状态理解。",
 ]
 
@@ -312,7 +315,14 @@ class CustomerAgent(Bot):
 
         try:
             # 获取配置
-            db_path = get_config("db_path", "./temp/agent.db")
+            from utils.runtime_path import resolve_writable_path
+
+            agno_db_raw = (get_config("chat.agno_db_path") or "").strip()
+            if agno_db_raw:
+                db_path = str(resolve_writable_path(agno_db_raw))
+            else:
+                # 与 customer.db 分离，避免 Agno 会话写入与聊天库争抢锁导致 UI 卡顿
+                db_path = str(resolve_writable_path("./temp/agno_sessions.db"))
             model_name = get_config("llm.model_name", "gpt-3.5-turbo")
             api_key = get_config("llm.api_key", "")
             api_base = get_config("llm.api_base", "")
