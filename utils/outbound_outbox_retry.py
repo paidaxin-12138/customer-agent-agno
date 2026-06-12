@@ -78,9 +78,9 @@ def _persist_outbox_content(row: Dict[str, Any]) -> Optional[int]:
 
 
 def retry_outbox_row_sync(row: Dict[str, Any]) -> bool:
-    """同步重试单条 outbox；成功返回 True。"""
+    """发送已认领的 outbox 行（单次 MMS，无发送时重试）；成功返回 True。"""
     from database.outbound_outbox import (
-        claim_for_send,
+        claim_by_id,
         mark_failed,
         mark_sent,
         outbox_enabled,
@@ -91,8 +91,12 @@ def retry_outbox_row_sync(row: Dict[str, Any]) -> bool:
     oid = int(row.get("id") or 0)
     if not oid:
         return False
-    if not claim_for_send(oid):
-        return False
+    status = str(row.get("status") or "").strip().lower()
+    if status != "processing":
+        claimed = claim_by_id(oid)
+        if not claimed:
+            return False
+        row = claimed
 
     session_key = _session_key_from_row(row)
     kind = str(row.get("message_kind") or "text").strip() or "text"
@@ -183,12 +187,12 @@ def retry_outbox_for_account_sync(
     account_id: int,
     limit: int = 10,
 ) -> int:
-    """同步重试某账号下 due 的 outbox 记录，返回成功条数。"""
-    from database.outbound_outbox import fetch_due_retries, outbox_enabled
+    """同步认领并发送某账号下 due 的 outbox，返回成功条数。"""
+    from database.outbound_outbox import claim_due_outbox, outbox_enabled
 
     if not outbox_enabled():
         return 0
-    rows = fetch_due_retries(account_id=int(account_id), limit=limit)
+    rows = claim_due_outbox(account_id=int(account_id), limit=limit)
     ok_count = 0
     for row in rows:
         if retry_outbox_row_sync(row):

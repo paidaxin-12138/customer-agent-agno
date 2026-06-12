@@ -1,7 +1,6 @@
 # Copyright (c) 2026 paidaxin-12138
 # Licensed under CC BY-NC 4.0 — see LICENSE in repository root.
 # https://creativecommons.org/licenses/by-nc/4.0/
-import time
 
 from ..base_request import BaseRequest
 from typing import Any, Dict, Optional
@@ -161,21 +160,16 @@ class SendMessage(BaseRequest):
             "user_ship_status": int(user_ship_status),
             "reposeInfo": repose_info,
         }
-        if config.get("chat.after_sales_apply_send_card_valid_time", True):
-            hours = int(config.get("chat.after_sales_apply_card_valid_hours", 48) or 48)
-            if hours > 0:
-                data["valid_time"] = int(time.time()) + hours * 3600
+        # 不传 valid_time，由平台决定卡片默认有效期（避免本地小时数与平台不一致）
         headers = _chat_mms_headers(self.cookies)
         headers["priority"] = "u=1, i"
 
         result = self.post(url, json_data=data, headers=headers)
         if result and result.get("success"):
-            vt = data.get("valid_time")
             self.logger.info(
                 f"申请退换货卡片已发送: order_sn={order_sn} type={after_sales_type} "
                 f"question_type={question_type} amount_fen={refund_amount} "
-                f"ship={user_ship_status}"
-                + (f" valid_time={vt}" if vt else "")
+                f"ship={user_ship_status}（平台默认有效期）"
             )
         else:
             err = None

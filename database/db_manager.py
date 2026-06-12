@@ -66,6 +66,7 @@ class DatabaseManager(ChatStoreMixin):
         with self.engine.connect() as conn:
             conn.exec_driver_sql("PRAGMA journal_mode=WAL")
             conn.exec_driver_sql("PRAGMA synchronous=NORMAL")
+            conn.exec_driver_sql("PRAGMA busy_timeout=5000")
         self.Session = sessionmaker(bind=self.engine)
         
         self.logger = get_logger()
@@ -1056,6 +1057,28 @@ class DatabaseManager(ChatStoreMixin):
         except SQLAlchemyError as e:
             self.logger.error(f"get_latest_refund_apply_for_order 失败: {e}")
             return None
+        finally:
+            session.close()
+
+    def has_successful_refund_apply_for_order(
+        self, shop_id: str, order_sn: str
+    ) -> bool:
+        """该订单是否已成功代发过快捷退款卡（每单仅允许一次）。"""
+        session = self.get_session()
+        try:
+            cnt = (
+                session.query(MerchantRefundApplyLog)
+                .filter(
+                    MerchantRefundApplyLog.shop_id == str(shop_id),
+                    MerchantRefundApplyLog.order_sn == str(order_sn).strip(),
+                    MerchantRefundApplyLog.api_success.is_(True),
+                )
+                .count()
+            )
+            return int(cnt or 0) > 0
+        except SQLAlchemyError as e:
+            self.logger.error(f"has_successful_refund_apply_for_order 失败: {e}")
+            return False
         finally:
             session.close()
 

@@ -16,7 +16,7 @@ async def test_refund_card_skipped_duplicate_flag():
         finalize_kwargs.update(kwargs)
 
     with patch.object(channel_send, "_prepare_outbox", return_value=None), patch.object(
-        channel_send, "_claim_outbox_before_mms"
+        channel_send, "_claim_outbox_before_mms", return_value=None
     ), patch.object(
         channel_send, "_finalize_outbox_success", side_effect=capture_finalize
     ), patch(

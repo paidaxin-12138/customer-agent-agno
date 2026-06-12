@@ -83,7 +83,8 @@ def check_health_exposure(*, strict: bool = False) -> tuple[List[str], List[str]
         if protect and not token:
             warnings.append(
                 "未设置 HEALTH_CHECK_TOKEN：/ready 与 /metrics 将拒绝匿名访问；"
-                "PM2/探活请配置 Token 或设 production.health_protect_sensitive_endpoints=false"
+                "PM2/探活需 curl -H \"Authorization: Bearer $HEALTH_CHECK_TOKEN\" "
+                "或设 production.health_protect_sensitive_endpoints=false"
             )
         return errors, warnings
     if token:

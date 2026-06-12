@@ -256,9 +256,18 @@ def migrate_outbound_outbox_table(engine: Engine, logger: Any = None) -> int:
                 last_attempt_at REAL,
                 error_detail TEXT,
                 chat_message_id INTEGER,
+                buyer_msg_id TEXT NOT NULL DEFAULT '',
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                processing_at REAL,
                 created_at REAL NOT NULL,
                 sent_at REAL
             )
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_outbox_session_buyer_msg_channel
+            ON outbound_outbox (session_id, buyer_msg_id, channel_name)
             """
         )
         conn.execute(
@@ -320,6 +329,73 @@ def migrate_outbound_outbox_kind_columns(engine: Engine, logger: Any = None) -> 
     return applied
 
 
+def migrate_outbound_outbox_v2(engine: Engine, logger: Any = None) -> int:
+    """buyer_msg_id / retry_count / processing_at + 去重唯一索引。"""
+    path = _db_path(engine)
+    if not path:
+        return 0
+    conn = sqlite3.connect(path)
+    applied = 0
+    try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='outbound_outbox'"
+        )
+        if not cur.fetchone():
+            return 0
+        cur = conn.execute("PRAGMA table_info(outbound_outbox)")
+        cols = {row[1] for row in cur.fetchall()}
+        alters = []
+        if "buyer_msg_id" not in cols:
+            alters.append(
+                "ALTER TABLE outbound_outbox "
+                "ADD COLUMN buyer_msg_id TEXT NOT NULL DEFAULT ''"
+            )
+        if "retry_count" not in cols:
+            alters.append(
+                "ALTER TABLE outbound_outbox "
+                "ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "processing_at" not in cols:
+            alters.append(
+                "ALTER TABLE outbound_outbox ADD COLUMN processing_at REAL"
+            )
+        for sql in alters:
+            conn.execute(sql)
+            applied += 1
+        if "retry_count" not in cols:
+            conn.execute(
+                "UPDATE outbound_outbox SET retry_count = attempts WHERE retry_count = 0"
+            )
+        # 去重后建唯一索引
+        conn.execute(
+            """
+            DELETE FROM outbound_outbox
+            WHERE id NOT IN (
+                SELECT MIN(id) FROM outbound_outbox
+                GROUP BY session_id, buyer_msg_id, channel_name
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_outbox_session_buyer_msg_channel
+            ON outbound_outbox (session_id, buyer_msg_id, channel_name)
+            """
+        )
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.commit()
+        if logger:
+            logger.info("outbound_outbox v2 迁移完成（列/唯一索引/WAL）")
+        return max(applied, 1)
+    except Exception as e:
+        if logger:
+            logger.warning(f"outbound_outbox v2 迁移失败: {e}")
+    finally:
+        conn.close()
+    return 0
+
+
 def apply_legacy_migrations(engine: Engine, logger: Any = None) -> int:
     """幂等执行全部遗留补丁，返回大致变更计数。"""
     total = 0
@@ -331,4 +407,5 @@ def apply_legacy_migrations(engine: Engine, logger: Any = None) -> int:
     total += migrate_message_dead_letters_table(engine, logger)
     total += migrate_outbound_outbox_table(engine, logger)
     total += migrate_outbound_outbox_kind_columns(engine, logger)
+    total += migrate_outbound_outbox_v2(engine, logger)
     return total

@@ -77,12 +77,12 @@ async def _outbox_retry_loop() -> None:
     while True:
         await asyncio.sleep(interval)
         try:
-            from database.outbound_outbox import fetch_due_retries, outbox_enabled
+            from database.outbound_outbox import claim_due_outbox, outbox_enabled
             from utils.outbound_outbox_retry import retry_outbox_row_sync
 
             if not outbox_enabled():
                 continue
-            rows = await asyncio.to_thread(fetch_due_retries, limit=20)
+            rows = await asyncio.to_thread(claim_due_outbox, limit=20)
             for row in rows:
                 await asyncio.to_thread(retry_outbox_row_sync, row)
         except asyncio.CancelledError:

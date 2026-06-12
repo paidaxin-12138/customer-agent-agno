@@ -10,7 +10,7 @@ def test_send_image_sync_uses_outbox():
         return_value=7,
     ), patch(
         "Message.handlers.channel_send._claim_outbox_before_mms",
-        return_value=True,
+        return_value=None,
     ), patch(
         "utils.outbound_mms_dispatch.execute_outbox_mms_send",
         return_value=(True, ""),

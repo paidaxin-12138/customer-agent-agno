@@ -109,6 +109,32 @@ def _resolve_outbox_ids(
     return session_id, account_id, channel_name, login_username
 
 
+def _resolve_buyer_msg_id(
+    *,
+    context: Optional[Context],
+    metadata: Dict[str, Any],
+) -> str:
+    """出站去重键：优先买家入站 msg_id / turn_id，否则生成一次性 nonce。"""
+    import uuid
+
+    for key in ("buyer_msg_id", "msg_id", "_inbound_msg_id"):
+        raw = str(metadata.get(key) or "").strip()
+        if raw:
+            return raw
+    if context is not None:
+        kw = getattr(context, "kwargs", None)
+        if kw is not None:
+            mid = getattr(kw, "msg_id", None)
+            if mid is None and isinstance(kw, dict):
+                mid = kw.get("msg_id")
+            if mid:
+                return str(mid).strip()
+    turn = str(metadata.get("_turn_id") or "").strip()
+    if turn:
+        return f"turn:{turn}"
+    return f"outbound:{uuid.uuid4().hex}"
+
+
 def _prepare_outbox(
     shop_id: Any,
     user_id: Any,
@@ -136,6 +162,7 @@ def _prepare_outbox(
         st = str(metadata.get("_outbox_sender_type") or sender_type or "ai")
         if not (sid and aid):
             return None
+        buyer_msg_id = _resolve_buyer_msg_id(context=context, metadata=meta)
         outbox_id = create_pending(
             session_id=int(sid),
             account_id=int(aid),
@@ -143,6 +170,7 @@ def _prepare_outbox(
             shop_id=str(shop_id),
             user_id=str(user_id),
             buyer_uid=str(from_uid),
+            buyer_msg_id=buyer_msg_id,
             content=str(content or "").strip(),
             sender_type=st,
             login_username=login_user,
@@ -157,20 +185,24 @@ def _prepare_outbox(
         return None
 
 
-def _claim_outbox_before_mms(outbox_id: Optional[int]) -> bool:
-    """MMS 调用前 claim；失败时勿并发发送。"""
+OUTBOX_CLAIM_CONTENTED = "outbox_claim_contended"
+OUTBOX_CLAIM_ERROR = "outbox_claim_error"
+
+
+def _claim_outbox_before_mms(outbox_id: Optional[int]) -> Optional[str]:
+    """MMS 调用前 claim；None=成功，否则为错误码（争用 / 异常）。"""
     if not outbox_id:
-        return True
+        return None
     try:
         from database.outbound_outbox import claim_for_send
 
-        ok = claim_for_send(int(outbox_id))
-        if not ok:
-            _logger.warning("outbox claim 失败 id={}（可能并发处理中）", outbox_id)
-        return bool(ok)
+        if claim_for_send(int(outbox_id)):
+            return None
+        _logger.warning("outbox claim 争用 id={}（可能并发处理中）", outbox_id)
+        return OUTBOX_CLAIM_CONTENTED
     except Exception as e:
-        _logger.debug("outbox claim 异常 id={}: {}", outbox_id, e)
-        return False
+        _logger.warning("outbox claim 异常 id={}: {}", outbox_id, e)
+        return OUTBOX_CLAIM_ERROR
 
 
 def _finalize_outbox_success(
@@ -286,11 +318,15 @@ async def send_structured_outbound(
     )
 
     try:
-        if outbox_id and not _claim_outbox_before_mms(outbox_id):
-            from database.outbound_outbox import mark_failed
-
-            mark_failed(int(outbox_id), "outbox_claim_failed")
-            return False, {"success": False, "error_msg": "outbox_claim_failed"}
+        claim_err = _claim_outbox_before_mms(outbox_id)
+        if claim_err:
+            _logger.info(
+                "send_structured_outbound outbox claim 中止 id={} kind={} err={}",
+                outbox_id,
+                message_kind,
+                claim_err,
+            )
+            return False, {"success": False, "error_msg": claim_err}
         from utils.outbound_mms_dispatch import execute_outbox_mms_send
 
         row = {
@@ -501,11 +537,15 @@ def send_outbound_sync(
     from utils.merchant_refund_apply_record import is_refund_gate_skip_error
     from utils.outbound_mms_dispatch import execute_outbox_mms_send
 
-    if outbox_id and not _claim_outbox_before_mms(outbox_id):
-        from database.outbound_outbox import mark_failed
-
-        mark_failed(int(outbox_id), "outbox_claim_failed")
-        return False, "outbox_claim_failed"
+    claim_err = _claim_outbox_before_mms(outbox_id)
+    if claim_err:
+        _logger.info(
+            "send_outbound_sync outbox claim 中止 id={} kind={} err={}",
+            outbox_id,
+            message_kind,
+            claim_err,
+        )
+        return False, claim_err
     ok, err = execute_outbox_mms_send(row)
     if not ok:
         if outbox_id:

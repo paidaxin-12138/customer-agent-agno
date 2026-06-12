@@ -522,6 +522,11 @@ class AfterSalesApplyHandler(BaseHandler):
                     f"（outbox/内存门禁，未再次调用平台）"
                 )
                 _set_cooldown(str(shop_id), str(from_uid), cooldown_sec)
+                notice = refund_card_action_notice(
+                    RefundCardSendAction.SKIP_ALREADY_SENT
+                )
+                if notice:
+                    await self._send_text(shop_id, user_id, from_uid, notice)
             else:
                 self.logger.info(
                     f"代申请已提交 order_sn={order_sn} "
@@ -536,6 +541,20 @@ class AfterSalesApplyHandler(BaseHandler):
             err_msg = None
             if isinstance(result, dict):
                 err_msg = result.get("errorMsg") or result.get("error_msg")
+            from Message.handlers.channel_send import (
+                OUTBOX_CLAIM_CONTENTED,
+                OUTBOX_CLAIM_ERROR,
+            )
+
+            if str(err_msg or "") in (OUTBOX_CLAIM_CONTENTED, OUTBOX_CLAIM_ERROR):
+                self.logger.info(
+                    f"退货卡 outbox claim 中止 order_sn={order_sn} err={err_msg} "
+                    f"（不记 failed、不发已提交提示，由并发方或 outbox 重试兜底）"
+                )
+                _set_cooldown(str(shop_id), str(from_uid), cooldown_sec)
+                return self._finish(
+                    context, metadata, order_sn=order_sn, release_stage=True
+                )
             fail_cd = _fail_cooldown_sec(
                 str(err_msg) if err_msg is not None else None
             )

@@ -81,7 +81,7 @@ def is_refund_card_unusable(shop_id: str, buyer_uid: str, order_sn: str) -> bool
     return True
 
 
-_REFUND_CARD_SENT: Dict[str, float] = {}
+_REFUND_CARD_SENT: set[str] = set()
 
 
 def mark_refund_card_sent(
@@ -89,21 +89,19 @@ def mark_refund_card_sent(
     buyer_uid: str,
     order_sn: str,
     *,
-    ttl_sec: int = 86400,
+    ttl_sec: Optional[int] = None,
 ) -> None:
-    """该订单已成功调用过 ask_refund_apply/send（平台对同单代申请次数/时效有限）。"""
+    """该订单已成功调用过 ask_refund_apply/send（每单仅一次，进程内永久标记）。"""
+    del ttl_sec  # 保留参数兼容旧调用；不再按 TTL 过期
     if not all([shop_id, buyer_uid, order_sn]):
         return
     key = _refund_block_key(str(shop_id), str(buyer_uid), str(order_sn).strip())
-    _REFUND_CARD_SENT[key] = time.time() + max(300, int(ttl_sec))
+    _REFUND_CARD_SENT.add(key)
+    if len(_REFUND_CARD_SENT) > _MAX_CACHE_KEYS:
+        # 极端长跑兜底：丢弃任意一条，DB 仍有权威记录
+        _REFUND_CARD_SENT.pop()
 
 
 def has_sent_refund_card(shop_id: str, buyer_uid: str, order_sn: str) -> bool:
     key = _refund_block_key(str(shop_id), str(buyer_uid), str(order_sn).strip())
-    until = _REFUND_CARD_SENT.get(key)
-    if until is None:
-        return False
-    if time.time() > until:
-        _REFUND_CARD_SENT.pop(key, None)
-        return False
-    return True
+    return key in _REFUND_CARD_SENT

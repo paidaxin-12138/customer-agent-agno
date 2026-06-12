@@ -3,8 +3,6 @@
 # https://creativecommons.org/licenses/by-nc/4.0/
 """代申请订单级状态与发卡前检查。"""
 
-import os
-import tempfile
 import time
 
 import pytest
@@ -52,7 +50,7 @@ def test_gate_expired_status(refund_db):
     refund_db.record_merchant_refund_apply(
         shop, buyer, order, api_success=False, status=STATUS_FAILED
     )
-    assert check_refund_apply_gate(shop, order) == RefundApplyGate.EXPIRED_NOTICE
+    assert check_refund_apply_gate(shop, order) == RefundApplyGate.SEND
     refund_db.record_merchant_refund_apply(
         shop, buyer, order, api_success=True, status=STATUS_EXPIRED
     )
@@ -61,6 +59,14 @@ def test_gate_expired_status(refund_db):
 
 def test_gate_send_when_no_record(refund_db):
     assert check_refund_apply_gate("s1", "new-order") == RefundApplyGate.SEND
+
+
+def test_gate_send_when_only_failed_record(refund_db):
+    shop, buyer, order = "s1", "b1", "260527-fail"
+    refund_db.record_merchant_refund_apply(
+        shop, buyer, order, api_success=False, status=STATUS_FAILED
+    )
+    assert check_refund_apply_gate(shop, order) == RefundApplyGate.SEND
 
 
 def test_gate_pending_without_valid_time_stays_blocked(refund_db, monkeypatch):
@@ -73,6 +79,19 @@ def test_gate_pending_without_valid_time_stays_blocked(refund_db, monkeypatch):
     assert check_refund_apply_gate(shop, order) == RefundApplyGate.PENDING_NOTICE
     monkeypatch.setattr(rec_mod.time, "time", lambda: t0 + 999999.0)
     assert check_refund_apply_gate(shop, order) == RefundApplyGate.PENDING_NOTICE
+
+
+def test_gate_platform_valid_time_expired(refund_db):
+    shop, buyer, order = "s1", "b1", "260527-vt"
+    refund_db.record_merchant_refund_apply(
+        shop,
+        buyer,
+        order,
+        api_success=True,
+        status=STATUS_PENDING,
+        valid_time_unix=int(time.time()) - 60,
+    )
+    assert check_refund_apply_gate(shop, order) == RefundApplyGate.EXPIRED_NOTICE
 
 
 def test_update_from_card_push(refund_db):

@@ -3,6 +3,8 @@
 # https://creativecommons.org/licenses/by-nc/4.0/
 """
 商家代消费者申请快捷退款：订单级状态（pending / expired / failed）与发卡前检查。
+
+每单仅允许成功发卡一次；卡片有效期以平台下行 type=19 的 valid_time 为准，不发本地自定义 valid_time。
 """
 
 from __future__ import annotations
@@ -58,40 +60,39 @@ def _expired_notice() -> str:
 
 def check_refund_apply_gate(shop_id: str, order_sn: str) -> RefundApplyGate:
     """
-    发卡前检查该 order_sn 最近一条记录。
-    pending 且 now < valid_time → 不再发卡；
-    expired / failed（或 pending 已过 valid_time）→ 不再发卡。
+    发卡前检查该 order_sn：已成功代发过则不再发卡（每单一次）。
+    有效期仅依据平台 valid_time / 下行过期，不做本地小时数配置。
     """
-    row = db_manager.get_latest_refund_apply_for_order(shop_id, order_sn)
-    if not row:
+    sid = str(shop_id or "")
+    sn = str(order_sn or "").strip()
+    if not sn:
+        return RefundApplyGate.EXPIRED_NOTICE
+
+    if not db_manager.has_successful_refund_apply_for_order(sid, sn):
         return RefundApplyGate.SEND
 
-    status = (row.get("status") or "").strip().lower()
-    now = time.time()
-    vt = row.get("valid_time_unix")
+    row = db_manager.get_latest_refund_apply_for_order(sid, sn)
+    if not row or row.get("api_success") is not True:
+        return RefundApplyGate.SEND
 
-    if row.get("api_success") is False:
-        return RefundApplyGate.EXPIRED_NOTICE
     if row.get("card_expired") is True:
         return RefundApplyGate.EXPIRED_NOTICE
 
+    status = (row.get("status") or "").strip().lower()
     if status in (STATUS_EXPIRED, STATUS_FAILED):
         return RefundApplyGate.EXPIRED_NOTICE
 
-    if status == STATUS_PENDING:
-        if vt and now < float(vt):
-            return RefundApplyGate.PENDING_NOTICE
-        if vt and now >= float(vt):
-            db_manager.mark_refund_apply_expired(
-                shop_id,
-                order_sn,
-                buyer_uid=row.get("buyer_uid"),
-            )
-            return RefundApplyGate.EXPIRED_NOTICE
-        # 已 send、尚未收到 type=19 的 valid_time：持续拦截重复发卡，不自动标 expired
-        return RefundApplyGate.PENDING_NOTICE
+    now = time.time()
+    vt = row.get("valid_time_unix")
+    if vt and now >= float(vt):
+        db_manager.mark_refund_apply_expired(
+            sid,
+            sn,
+            buyer_uid=row.get("buyer_uid"),
+        )
+        return RefundApplyGate.EXPIRED_NOTICE
 
-    return RefundApplyGate.SEND
+    return RefundApplyGate.PENDING_NOTICE
 
 
 def gate_notice(gate: RefundApplyGate) -> str:
@@ -123,7 +124,7 @@ def evaluate_refund_card_send_gate(
     """
     退货卡发卡前检查（outbox 首发/重试共用）。
 
-    同单重复代申请会导致平台下行 mstate=已过期，故 pending/内存已发须跳过。
+    同单重复代申请会导致平台下行 mstate=已过期，故每单仅允许成功发卡一次。
     """
     sn = str(order_sn or "").strip()
     if not sn:
@@ -131,9 +132,12 @@ def evaluate_refund_card_send_gate(
     sid = str(shop_id or "")
     uid = str(buyer_uid or "")
     try:
-        from utils.session_order_cache import has_sent_refund_card
+        from utils.session_order_cache import (
+            has_sent_refund_card,
+            is_refund_card_unusable,
+        )
 
-        if has_sent_refund_card(sid, uid, sn):
+        if is_refund_card_unusable(sid, uid, sn) or has_sent_refund_card(sid, uid, sn):
             return RefundCardSendAction.SKIP_ALREADY_SENT
     except Exception:
         pass
@@ -165,7 +169,7 @@ def note_refund_card_mms_success(
         mark_refund_card_sent(sid, uid, sn)
     except Exception:
         pass
-    if check_refund_apply_gate(sid, sn) != RefundApplyGate.SEND:
+    if db_manager.has_successful_refund_apply_for_order(sid, sn):
         return
     save_pending_after_send(
         sid,

@@ -152,11 +152,19 @@ def test_retry_refund_card_not_skipped_by_text_receipt(outbox_db, monkeypatch):
             "user_ship_status": 0,
         },
     )
+    from database.outbound_outbox import claim_by_id
+
     row = get_row(int(oid))
     assert row is not None
+    claimed = claim_by_id(int(oid))
+    assert claimed is not None
     mark_failed(int(oid), "prev")
     row = get_row(int(oid))
 
+    monkeypatch.setattr(
+        "database.outbound_outbox._retry_interval_sec",
+        lambda: 0.0,
+    )
     monkeypatch.setattr(
         "utils.outbound_receipt.has_recent_outbound_receipt",
         lambda *args, **kwargs: True,
@@ -191,12 +199,20 @@ def test_retry_abandons_when_gate_blocked(outbox_db, monkeypatch):
             "user_ship_status": 0,
         },
     )
+    from database.outbound_outbox import claim_by_id
+
     row = get_row(int(oid))
     assert row is not None
+    claimed = claim_by_id(int(oid))
+    assert claimed is not None
     mark_failed(int(oid), "prev")
     row = get_row(int(oid))
     abandoned = []
 
+    monkeypatch.setattr(
+        "database.outbound_outbox._retry_interval_sec",
+        lambda: 0.0,
+    )
     monkeypatch.setattr(
         "database.outbound_outbox.mark_abandoned",
         lambda oid, reason: abandoned.append((oid, reason)),
@@ -224,7 +240,7 @@ def outbox_db(tmp_path, monkeypatch):
         lambda: str(db_file),
     )
     conn = sqlite3.connect(str(db_file))
-    conn.execute(
+    conn.executescript(
         """
         CREATE TABLE outbound_outbox (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -234,6 +250,7 @@ def outbox_db(tmp_path, monkeypatch):
             shop_id TEXT NOT NULL,
             user_id TEXT NOT NULL,
             buyer_uid TEXT NOT NULL,
+            buyer_msg_id TEXT NOT NULL DEFAULT '',
             login_username TEXT,
             content TEXT NOT NULL,
             message_kind TEXT NOT NULL DEFAULT 'text',
@@ -242,15 +259,18 @@ def outbox_db(tmp_path, monkeypatch):
             status TEXT NOT NULL DEFAULT 'pending',
             attempts INTEGER NOT NULL DEFAULT 0,
             max_attempts INTEGER NOT NULL DEFAULT 3,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            processing_at REAL,
             created_at REAL NOT NULL,
             last_attempt_at REAL,
             sent_at REAL,
             chat_message_id INTEGER,
             error_detail TEXT
-        )
+        );
+        CREATE UNIQUE INDEX uq_outbox_session_buyer_msg_channel
+        ON outbound_outbox (session_id, buyer_msg_id, channel_name);
         """
     )
-    conn.commit()
     conn.close()
     yield db_file
 

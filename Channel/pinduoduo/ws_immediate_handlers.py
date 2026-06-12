@@ -278,7 +278,6 @@ async def handle_mall_cs_message(
         notice = gate_notice(RefundApplyGate.EXPIRED_NOTICE)
         await asyncio.to_thread(send_message.send_text, str(buyer_uid), notice)
         return
-    cfg_hours = int(config.get("chat.after_sales_apply_card_valid_hours", 48) or 48)
     remain_h: Optional[float] = None
     try:
         vt = float(payload.get("valid_time") or 0)
@@ -289,13 +288,12 @@ async def handle_mall_cs_message(
     if remain_h is not None:
         log.info(
             f"快捷退款卡有效 order_sn={order_sn} "
-            f"(mstate.status={mstate_status} 配置截止={cfg_hours}h "
-            f"平台valid_time剩余={remain_h:.1f}h)"
+            f"(mstate.status={mstate_status} 平台valid_time剩余={remain_h:.1f}h)"
         )
     else:
         log.info(
             f"快捷退款卡有效 order_sn={order_sn} "
-            f"(mstate.status={mstate_status} 配置截止={cfg_hours}h)"
+            f"(mstate.status={mstate_status} 平台未下发 valid_time)"
         )
     follow = config.get("chat.after_sales_apply_follow_text") or ""
     if follow:

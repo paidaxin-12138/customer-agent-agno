@@ -184,6 +184,7 @@ class ChatConfig(BaseModel):
     outbound_outbox_worker_enabled: bool = True
     outbound_outbox_retry_interval_sec: int = 60
     outbound_outbox_max_attempts: int = 3
+    outbound_outbox_processing_timeout_sec: int = 300
     stage_cycle_detect_enabled: bool = True
     stage_cycle_window_sec: int = 120
     stage_cycle_repeat_threshold: int = 3
@@ -394,6 +395,7 @@ config_base = {
         "outbound_outbox_worker_enabled": True,
         "outbound_outbox_retry_interval_sec": 60,
         "outbound_outbox_max_attempts": 3,
+        "outbound_outbox_processing_timeout_sec": 300,
         "stage_cycle_detect_enabled": True,
         "stage_cycle_window_sec": 120,
         "stage_cycle_repeat_threshold": 3,
@@ -412,7 +414,7 @@ config_base = {
         "after_sales_apply_return_refund_days": 7,
         "after_sales_apply_card_valid_hours": 48,
         "after_sales_apply_pending_stub_sec": None,
-        "after_sales_apply_send_card_valid_time": True,
+        "after_sales_apply_send_card_valid_time": False,
         "after_sales_apply_exchange_max_days": 90,
         "after_sales_apply_after_sales_type": 3,
         "after_sales_apply_question_type": 1,
